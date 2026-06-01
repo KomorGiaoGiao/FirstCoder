@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 
@@ -49,16 +50,20 @@ class JsonlSessionStore:
 
     def rebuild_session_view(self, session_id: str) -> SessionView:
         view = SessionView(session_id=session_id)
-        for event in self.list_events(session_id):
-            self._apply_event(view, event)
+        for sequence, event in enumerate(self.list_events(session_id), start=1):
+            self._apply_event(view, event, sequence=sequence)
         return view
 
     def _session_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.jsonl"
 
-    def _apply_event(self, view: SessionView, event: SessionEvent) -> None:
+    def _apply_event(self, view: SessionView, event: SessionEvent, *, sequence: int) -> None:
         if event.type == "session_created":
             view.metadata.update(event.payload)
+            return
+
+        if event.type == "checkpoint_created":
+            view.checkpoints.append(Checkpoint.from_dict(_checkpoint_payload(event, sequence=sequence)))
             return
 
         role = EVENT_ROLE_MAP.get(event.type)
@@ -89,3 +94,11 @@ def _parts_from_payload(parts: Iterable[dict[str, object]], *, message_id: str) 
         data.setdefault("message_id", message_id)
         result.append(MessagePart.from_dict(data))
     return result
+
+
+def _checkpoint_payload(event: SessionEvent, *, sequence: int) -> dict[str, object]:
+    payload: dict[str, object] = dict(event.payload)
+    payload.setdefault("created_at", event.created_at)
+    payload.setdefault("session_id", event.session_id)
+    payload.setdefault("sequence", sequence)
+    return payload

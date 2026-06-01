@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from firstcoder.context.checkpoint import Checkpoint
 
 
 MessageRole = Literal["user", "assistant", "tool", "system_meta"]
@@ -93,4 +96,5 @@ class SessionView:
 
     session_id: str
     messages: list[AgentMessage] = field(default_factory=list)
+    checkpoints: list[Checkpoint] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
