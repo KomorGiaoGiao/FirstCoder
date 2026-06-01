@@ -1,0 +1,157 @@
+"""`web_search` 工具。"""
+
+from __future__ import annotations
+
+import os
+from urllib import error, parse, request
+
+from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.utils.introspection import tool_from_function
+from firstcoder.utils.json_utils import dumps_json, loads_json
+
+
+EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+DEFAULT_TIMEOUT_SECONDS = 25
+DEFAULT_NUM_RESULTS = 8
+DEFAULT_CONTEXT_MAX_CHARACTERS = 10000
+
+
+def create_web_search_tool() -> Tool:
+    """创建基于 Exa MCP 的网页搜索工具。"""
+
+    def web_search(
+        query: str,
+        num_results: int = DEFAULT_NUM_RESULTS,
+        search_type: str = "auto",
+        livecrawl: str = "fallback",
+        context_max_characters: int = DEFAULT_CONTEXT_MAX_CHARACTERS,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    ) -> ToolResult:
+        """使用 Exa Web Search 搜索网页，适合查找最新资料或外部文档。"""
+
+        if not query.strip():
+            return make_error_result("web_search", "query 不能为空")
+        if num_results <= 0:
+            return make_error_result("web_search", "num_results 必须大于 0")
+        if context_max_characters <= 0:
+            return make_error_result("web_search", "context_max_characters 必须大于 0")
+        if timeout_seconds <= 0:
+            return make_error_result("web_search", "timeout_seconds 必须大于 0")
+        if search_type not in ("auto", "fast", "deep"):
+            return make_error_result("web_search", "search_type 只能是 auto、fast 或 deep")
+        if livecrawl not in ("fallback", "preferred"):
+            return make_error_result("web_search", "livecrawl 只能是 fallback 或 preferred")
+
+        url = _exa_mcp_url()
+        body = dumps_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "web_search_exa",
+                    "arguments": {
+                        "query": query,
+                        "type": search_type,
+                        "numResults": num_results,
+                        "livecrawl": livecrawl,
+                        "contextMaxCharacters": context_max_characters,
+                    },
+                },
+            }
+        ).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "User-Agent": "FirstCoder/0.1",
+            },
+        )
+
+        try:
+            with request.urlopen(req, timeout=timeout_seconds) as response:
+                raw_body = response.read()
+                status = getattr(response, "status", None)
+                headers = dict(response.getheaders())
+        except error.URLError as exc:
+            return make_error_result("web_search", f"搜索请求失败：{exc}", provider="exa")
+
+        text = raw_body.decode("utf-8", errors="replace")
+        result = parse_mcp_search_response(text)
+        if not result:
+            result = "没有找到搜索结果，请尝试换一个查询。"
+
+        return make_text_result(
+            "web_search",
+            result,
+            provider="exa",
+            query=query,
+            url=url,
+            status=status,
+            headers=headers,
+        )
+
+    return tool_from_function(web_search)
+
+
+def _exa_mcp_url() -> str:
+    """生成 Exa MCP URL。
+
+    opencode 的实现也是优先连接 hosted MCP；如果存在 `EXA_API_KEY`，会把 key
+    作为查询参数传给 Exa MCP。这里保留同样约定，方便后续和外部工具生态对齐。
+    """
+
+    api_key = os.getenv("EXA_API_KEY")
+    if not api_key:
+        return EXA_MCP_URL
+    return f"{EXA_MCP_URL}?exaApiKey={parse.quote(api_key, safe='')}"
+
+
+def parse_mcp_search_response(body: str) -> str | None:
+    """从 MCP JSON-RPC 或 SSE 响应中提取文本结果。"""
+
+    trimmed = body.strip()
+    if trimmed:
+        direct = _parse_payload(trimmed)
+        if direct:
+            return direct
+
+    for line in body.splitlines():
+        if not line.startswith("data: "):
+            continue
+        data = _parse_payload(line.removeprefix("data: "))
+        if data:
+            return data
+    return None
+
+
+def _parse_payload(payload: str) -> str | None:
+    """解析单个 JSON-RPC payload。
+
+    Exa MCP 可能直接返回 JSON，也可能通过 SSE 的 `data:` 行返回 JSON。
+    非 JSON 帧，例如 `[DONE]`，应该被忽略。
+    """
+
+    trimmed = payload.strip()
+    if not trimmed.startswith("{"):
+        return None
+    try:
+        data = loads_json(trimmed)
+    except ValueError:
+        return None
+
+    result = data.get("result") if isinstance(data, dict) else None
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, list):
+        return None
+
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            return text
+    return None

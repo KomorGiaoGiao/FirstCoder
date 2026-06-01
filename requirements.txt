@@ -1,0 +1,6 @@
+textual
+openai
+anthropic
+python-dotenv
+pydantic
+pytest
