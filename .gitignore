@@ -18,3 +18,4 @@ dist/
 build/
 *.egg-info/
 .codex_tmp/
+.firstcoder/

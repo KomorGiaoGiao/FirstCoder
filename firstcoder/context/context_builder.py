@@ -26,7 +26,11 @@ class ContextBuilder:
             return []
 
         if message.role == "tool":
-            return [_project_tool_part(part) for part in message.parts if part.kind == "tool_result"]
+            return [
+                _project_tool_part(part)
+                for part in message.parts
+                if part.kind in {"tool_result", "archive_placeholder"}
+            ]
 
         if message.role == "assistant":
             return [_project_assistant_message(message)]

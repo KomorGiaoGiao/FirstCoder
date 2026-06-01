@@ -99,6 +99,35 @@ def test_context_builder_filters_system_meta_messages() -> None:
     assert ContextBuilder().build_provider_messages(view) == []
 
 
+def test_context_builder_projects_tool_archive_placeholder_as_tool_message() -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            AgentMessage(
+                id="msg_tool",
+                session_id="sess_test",
+                role="tool",
+                parts=[
+                    MessagePart(
+                        id="part_archive",
+                        message_id="msg_tool",
+                        kind="archive_placeholder",
+                        content="[Tool result archived]\narchive_id=ar_1",
+                        metadata={"tool_call_id": "call_1", "tool_name": "shell"},
+                    )
+                ],
+            )
+        ],
+    )
+
+    messages = ContextBuilder().build_provider_messages(view)
+
+    assert len(messages) == 1
+    assert messages[0].role == "tool"
+    assert messages[0].content == "[Tool result archived]\narchive_id=ar_1"
+    assert messages[0].tool_call_id == "call_1"
+
+
 def test_context_builder_accepts_stable_system_prefix_from_builder() -> None:
     prefix = SystemPromptBuilder().build(
         SystemPromptInputs(
