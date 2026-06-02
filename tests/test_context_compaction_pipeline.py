@@ -211,6 +211,28 @@ def test_pipeline_does_nothing_when_already_within_budget(tmp_path: Path) -> Non
     assert not (tmp_path / ".firstcoder").exists()
 
 
+def test_already_within_budget_noop_is_deduped(tmp_path: Path) -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[_message("msg_current", content="short", task_hash="task_current")],
+    )
+    pipeline = CompactionPipeline(root=tmp_path)
+    request = CompactionRequest(
+        view=view,
+        active_task_hash="task_current",
+        target_tokens=10_000,
+        current_turn=10,
+    )
+
+    first = pipeline.compact(request)
+    second = pipeline.compact(request)
+
+    assert first.event.noop is True
+    assert first.event.deduped is False
+    assert second.event.noop is True
+    assert second.event.deduped is True
+
+
 def test_l1_does_not_compact_old_task_tool_call_or_tool_result_chain(tmp_path: Path) -> None:
     view = SessionView(
         session_id="sess_test",

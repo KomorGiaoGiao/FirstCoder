@@ -61,6 +61,8 @@ class CompactionPipeline:
         input_fingerprint = _view_fingerprint(request.view)
         before_tokens = _estimate_view_tokens(view)
         if before_tokens <= request.target_tokens:
+            deduped = input_fingerprint in self._seen_noop_fingerprints
+            self._seen_noop_fingerprints.add(input_fingerprint)
             return CompactionResult(
                 view=view,
                 event=CompactionEvent(
@@ -71,7 +73,7 @@ class CompactionPipeline:
                     stopped_at="already_within_budget",
                     changed_parts=0,
                     noop=True,
-                    deduped=False,
+                    deduped=deduped,
                 ),
             )
 

@@ -13,6 +13,46 @@ def _utc_after(minutes: int) -> str:
     )
 
 
+def parse_utc_iso(value: str) -> datetime:
+    """解析 JSONL/runtime state 使用的 UTC ISO 字符串。
+
+    会话状态里主要写入 `...Z` 形式；这里也兼容没有时区的值，并按 UTC 处理，避免不同
+    调用点各自实现时产生熔断过期判断漂移。
+    """
+
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def active_auto_compact_disabled_until(state: "SessionRuntimeState") -> str | None:
+    """返回仍有效的自动压缩禁用截止时间，过期则返回 None。"""
+
+    if not state.auto_compact_disabled_until:
+        return None
+
+    disabled_until = parse_utc_iso(state.auto_compact_disabled_until)
+    if disabled_until > datetime.now(UTC):
+        return state.auto_compact_disabled_until
+    return None
+
+
+def auto_compact_circuit_is_open(state: "SessionRuntimeState") -> bool:
+    """判断自动压缩熔断是否仍打开。
+
+    这里会顺手清理已经过期的 disabled_until，让后续 compact/status 看到一致状态。
+    """
+
+    if active_auto_compact_disabled_until(state):
+        return True
+
+    if state.auto_compact_disabled_until:
+        state.auto_compact_disabled_until = None
+    return False
+
+
 @dataclass(slots=True)
 class SessionRuntimeState:
     """不应该塞进自然语言消息的会话状态。"""
