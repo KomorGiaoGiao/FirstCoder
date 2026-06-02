@@ -18,9 +18,11 @@ class FakeSummarizer:
     def __init__(self, responses: list[LlmCompactSummary | Exception]) -> None:
         self.responses = responses
         self.calls: list[list[str]] = []
+        self.summary_modes: list[str] = []
 
-    def summarize(self, messages: list[AgentMessage]) -> LlmCompactSummary:
+    def summarize(self, messages: list[AgentMessage], *, summary_mode: str = "default") -> LlmCompactSummary:
         self.calls.append([message.id for message in messages])
+        self.summary_modes.append(summary_mode)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -386,6 +388,31 @@ def test_l4_retries_no_summary_once_then_succeeds(tmp_path: Path) -> None:
     assert result.event.retry_count == 1
     assert len(summarizer.calls) == 2
     assert state.latest_checkpoint_id == result.checkpoint.id
+
+
+def test_l4_passes_summary_mode_to_summarizer(tmp_path: Path) -> None:
+    summarizer = FakeSummarizer(
+        [
+            LlmCompactSummary(
+                summary="更强摘要",
+                tail_start_message_id="msg_2",
+                covered_until_message_id="msg_1",
+            )
+        ]
+    )
+
+    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
+        LlmCompactRequest(
+            view=SessionView(
+                session_id="sess_test",
+                messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
+            ),
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            summary_mode="stronger",
+        )
+    )
+
+    assert summarizer.summary_modes == ["stronger"]
 
 
 def test_auto_compact_failure_opens_circuit_breaker_after_limit(tmp_path: Path) -> None:

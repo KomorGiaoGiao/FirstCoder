@@ -53,7 +53,7 @@ class LlmCompactSummarizer(Protocol):
     Anthropic 等外部消息格式提前泄漏进 checkpoint 写入逻辑。
     """
 
-    def summarize(self, messages: list[AgentMessage]) -> LlmCompactSummary:
+    def summarize(self, messages: list[AgentMessage], *, summary_mode: str = "default") -> LlmCompactSummary:
         ...
 
 
@@ -63,6 +63,7 @@ class LlmCompactRequest:
     runtime_state: SessionRuntimeState
     mode: CompactMode = "auto"
     expected_source_fingerprint: str | None = None
+    summary_mode: str = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,8 @@ class LlmCompactEvent:
     retry_count: int = 0
     failure_reason: str | None = None
     checkpoint_id: str | None = None
+    fallback_steps: list[dict[str, object]] | None = None
+    final_failure_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +124,11 @@ class LlmCompactService:
         while True:
             attempts += 1
             try:
-                summary = self.summarizer.summarize(source_messages)
+                summary = _summarize(
+                    self.summarizer,
+                    source_messages,
+                    summary_mode=request.summary_mode,
+                )
                 _validate_summary_boundary(summary, source=source)
                 checkpoint = self._write_checkpoint(
                     request.view,
@@ -302,6 +309,22 @@ def _source_fingerprint(session_id: str, source: L4Source) -> str:
         },
         length=24,
     )
+
+
+def _summarize(
+    summarizer: LlmCompactSummarizer,
+    messages: list[AgentMessage],
+    *,
+    summary_mode: str,
+) -> LlmCompactSummary:
+    """调用 summarizer，并兼容暂未接收 summary_mode 的旧实现。"""
+
+    try:
+        return summarizer.summarize(messages, summary_mode=summary_mode)
+    except TypeError as error:
+        if "summary_mode" not in str(error):
+            raise
+        return summarizer.summarize(messages)
 
 
 def _failure_reason(error: Exception) -> str:
