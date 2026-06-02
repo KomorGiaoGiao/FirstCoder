@@ -69,6 +69,24 @@ class SessionEventWriter:
         )
         return message_id
 
+    def append_assistant_parts(
+        self,
+        parts: list[MessagePart],
+        *,
+        metadata: dict[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> str:
+        """写入已经由 agent 层转换好的 assistant parts。"""
+
+        message_id = message_id or new_message_id()
+        self._append_message_event(
+            "assistant_message",
+            message_id=message_id,
+            parts=parts,
+            metadata=metadata,
+        )
+        return message_id
+
     def append_tool_result(self, *, tool_call: ToolCall, result: ToolResult) -> str:
         message_id = new_message_id()
         part = MessagePart(
@@ -84,6 +102,13 @@ class SessionEventWriter:
                 "error": result.error,
             },
         )
+        self._append_message_event("tool_result", message_id=message_id, parts=[part])
+        return message_id
+
+    def append_tool_result_part(self, part: MessagePart, *, message_id: str | None = None) -> str:
+        """写入已经由 agent 层转换好的 tool_result part。"""
+
+        message_id = message_id or part.message_id
         self._append_message_event("tool_result", message_id=message_id, parts=[part])
         return message_id
 

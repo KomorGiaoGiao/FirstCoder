@@ -195,6 +195,20 @@ def test_resume_does_not_expand_archived_tool_result() -> None:
         session_id="sess_test",
         messages=[
             AgentMessage(
+                id="msg_assistant",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_call",
+                        message_id="msg_assistant",
+                        kind="tool_call",
+                        content="",
+                        metadata={"tool_name": "shell", "tool_call_id": "call_1", "arguments": {}},
+                    )
+                ],
+            ),
+            AgentMessage(
                 id="msg_tool",
                 session_id="sess_test",
                 role="tool",
@@ -219,10 +233,11 @@ def test_resume_does_not_expand_archived_tool_result() -> None:
 
     messages = ContextBuilder().build_provider_messages(view)
 
-    assert len(messages) == 1
-    assert messages[0].role == "tool"
-    assert messages[0].content.startswith("[Tool result archived]")
-    assert messages[0].content != "原始工具输出"
+    assert len(messages) == 2
+    assert messages[0].role == "assistant"
+    assert messages[1].role == "tool"
+    assert messages[1].content.startswith("[Tool result archived]")
+    assert messages[1].content != "原始工具输出"
 
 
 def test_checkpoint_tail_cannot_start_with_orphan_tool_result() -> None:

@@ -9,13 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from firstcoder.agent.tool_flow import assistant_response_to_parts, tool_result_to_part
+from firstcoder.context.identity import new_message_id
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.system_prompt import PromptPrefixCache, SystemPromptBuilder, SystemPromptInputs
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.providers.types import ChatResponse, ToolCall, ToolDefinition
 from firstcoder.tools.registry import ToolRegistry
-from firstcoder.tools.task_boundary import create_task_boundary_tool
+from firstcoder.tools.session_registry import create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult
 
 
@@ -57,7 +59,7 @@ class AgentSession:
         tools: list[Tool] | None = None,
     ) -> "AgentSession":
         runtime_state = SessionRuntimeState(session_id=session_id)
-        registry = _build_session_tool_registry(runtime_state, tools=tools)
+        registry = create_session_tool_registry(session_id=session_id, runtime_state=runtime_state, tools=tools)
         session = cls(
             session_id=session_id,
             store=store,
@@ -103,18 +105,26 @@ class AgentSession:
         return self.writer.append_user_message(content)
 
     def append_assistant_response(self, response: ChatResponse) -> str:
-        return self.writer.append_assistant_response(response)
+        message_id = new_message_id()
+        return self.writer.append_assistant_parts(
+            assistant_response_to_parts(message_id=message_id, response=response),
+            message_id=message_id,
+            metadata={
+                "provider": response.provider,
+                "model": response.model,
+                "finish_reason": response.finish_reason,
+            },
+        )
+
+    def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
+        return self.tool_registry.execute(tool_call.name, tool_call.arguments)
 
     def append_tool_result(self, *, tool_call: ToolCall, result: ToolResult) -> str:
-        return self.writer.append_tool_result(tool_call=tool_call, result=result)
+        message_id = new_message_id()
+        return self.writer.append_tool_result_part(
+            tool_result_to_part(message_id=message_id, tool_call=tool_call, result=result),
+            message_id=message_id,
+        )
 
     def rebuild_view(self):
         return self.store.rebuild_session_view(self.session_id)
-
-
-def _build_session_tool_registry(runtime_state: SessionRuntimeState, *, tools: list[Tool] | None) -> ToolRegistry:
-    registry = ToolRegistry(tools or [])
-    if "task_boundary" not in registry.names():
-        registry.register(create_task_boundary_tool(runtime_state))
-    return registry
-

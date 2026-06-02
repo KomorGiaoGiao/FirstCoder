@@ -68,7 +68,7 @@ class AgentLoop:
 
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> None:
         for tool_call in tool_calls:
-            result = self.session.tool_registry.execute(tool_call.name, tool_call.arguments)
+            result = self.session.execute_tool_call(tool_call)
             self.session.append_tool_result(tool_call=tool_call, result=result)
 
     def _tool_round_limit_response(self, response: ChatResponse) -> ChatResponse:

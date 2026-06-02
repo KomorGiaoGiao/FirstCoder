@@ -104,6 +104,20 @@ def test_context_builder_projects_tool_archive_placeholder_as_tool_message() -> 
         session_id="sess_test",
         messages=[
             AgentMessage(
+                id="msg_assistant",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_call",
+                        message_id="msg_assistant",
+                        kind="tool_call",
+                        content="",
+                        metadata={"tool_call_id": "call_1", "tool_name": "shell", "arguments": {}},
+                    )
+                ],
+            ),
+            AgentMessage(
                 id="msg_tool",
                 session_id="sess_test",
                 role="tool",
@@ -122,10 +136,11 @@ def test_context_builder_projects_tool_archive_placeholder_as_tool_message() -> 
 
     messages = ContextBuilder().build_provider_messages(view)
 
-    assert len(messages) == 1
-    assert messages[0].role == "tool"
-    assert messages[0].content == "[Tool result archived]\narchive_id=ar_1"
-    assert messages[0].tool_call_id == "call_1"
+    assert len(messages) == 2
+    assert messages[0].role == "assistant"
+    assert messages[1].role == "tool"
+    assert messages[1].content == "[Tool result archived]\narchive_id=ar_1"
+    assert messages[1].tool_call_id == "call_1"
 
 
 def test_context_builder_accepts_stable_system_prefix_from_builder() -> None:

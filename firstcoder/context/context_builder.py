@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from firstcoder.context.checkpoint import Checkpoint, CheckpointIndex, checkpoint_summary_content
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.tool_sequence import validate_tool_call_sequence
 from firstcoder.providers.types import ChatMessage, ToolCall
 
 
@@ -26,7 +27,9 @@ class ContextBuilder:
         if active_checkpoint is not None:
             messages.append(ChatMessage(role="user", content=checkpoint_summary_content(active_checkpoint)))
 
-        for message in self._tail_messages(view, checkpoint=active_checkpoint):
+        tail_messages = self._tail_messages(view, checkpoint=active_checkpoint)
+        validate_tool_call_sequence(tail_messages)
+        for message in tail_messages:
             projected = self._project_message(message)
             messages.extend(projected)
         return messages
