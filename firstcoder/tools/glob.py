@@ -15,7 +15,7 @@ def create_glob_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def glob(pattern: str, path: str = ".", max_results: int = 200) -> ToolResult:
-        """按 glob pattern 查找项目目录内的文件和文件夹路径。"""
+        """按 glob 匹配项目内路径；只返回文件和目录名。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="dir")

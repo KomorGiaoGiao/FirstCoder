@@ -16,7 +16,7 @@ def create_git_status_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def git_status() -> ToolResult:
-        """查看当前项目 git 工作区状态。"""
+        """查看项目 git 工作区状态；不显示 diff 内容。"""
 
         repo_result = git_utils.run_git(sandbox, ["rev-parse", "--is-inside-work-tree"])
         if repo_result.returncode != 0:

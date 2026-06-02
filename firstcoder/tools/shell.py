@@ -29,7 +29,7 @@ def create_shell_tool(root: str | Path) -> Tool:
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
     ) -> ToolResult:
-        """在项目目录内执行 shell 命令并返回输出。高风险，必须由用户显式启用。"""
+        """在项目内执行 shell 命令；高风险，需显式启用。"""
 
         if timeout_seconds <= 0:
             return make_error_result("shell", "timeout_seconds 必须大于 0")

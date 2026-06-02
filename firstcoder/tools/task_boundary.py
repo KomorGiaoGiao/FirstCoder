@@ -72,13 +72,17 @@ def create_task_boundary_tool(
             should_trigger_compaction=observation.should_trigger_compaction,
             triggered_compaction=observation.triggered_compaction,
             stable_count=observation.stable_count,
+            required_stable_count=observation.required_stable_count,
             confirmation_reason=observation.confirmation_reason,
+            event_version=observation.event_version,
+            strategy_version=observation.strategy_version,
+            created_at=observation.created_at,
         )
 
     return Tool(
         definition=ToolDefinition(
             name="task_boundary",
-            description="报告当前消息是否开启了新任务；只提交 same/new/uncertain 和 basis_message_id。",
+            description="判断当前消息是否开启新任务；只提交 decision 和 basis_message_id。",
             parameters={
                 "type": "object",
                 "properties": {

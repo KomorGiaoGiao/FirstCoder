@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from firstcoder.context.events import SessionEvent
-from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.runtime_state import CompactionHistoryEntry, SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
 
 
@@ -37,6 +37,7 @@ def _apply_event(state: SessionRuntimeState, event: SessionEvent) -> None:
         input_fingerprint = compaction_event.get("input_fingerprint")
         if input_fingerprint:
             state.last_compaction_input_fingerprint = str(input_fingerprint)
+        state.record_compaction_event(_compaction_history_entry(event, compaction_event))
         return
 
     if event.type == "llm_compaction_completed":
@@ -69,6 +70,7 @@ def _apply_l4_compaction(state: SessionRuntimeState, event: SessionEvent) -> Non
     source_fingerprint = l4_event.get("source_fingerprint")
     if source_fingerprint:
         state.last_compaction_input_fingerprint = str(source_fingerprint)
+    state.record_compaction_event(_compaction_history_entry(event, l4_event))
 
     if l4_event.get("status") == "success":
         checkpoint_id = l4_event.get("checkpoint_id")
@@ -84,3 +86,41 @@ def _apply_l4_compaction(state: SessionRuntimeState, event: SessionEvent) -> Non
 def _event_payload(event: SessionEvent) -> dict[str, object]:
     nested = event.payload.get("event")
     return dict(nested) if isinstance(nested, dict) else {}
+
+
+def _compaction_history_entry(event: SessionEvent, nested_event: dict[str, object]) -> CompactionHistoryEntry:
+    payload = event.payload
+    input_fingerprint = payload.get("input_fingerprint") or nested_event.get("input_fingerprint")
+    if input_fingerprint is None:
+        input_fingerprint = nested_event.get("source_fingerprint")
+
+    return CompactionHistoryEntry(
+        event_type=event.type,
+        trigger=str(payload.get("trigger") or ""),
+        target_tokens=_optional_int(payload.get("target_tokens")),
+        input_fingerprint=_optional_str(input_fingerprint),
+        status=str(payload.get("status") or nested_event.get("status") or _status_from_compaction(nested_event)),
+        reason=_optional_str(payload.get("reason") or nested_event.get("reason") or nested_event.get("failure_reason")),
+        before_tokens=_optional_int(payload.get("before_tokens") or nested_event.get("before_tokens")),
+        after_tokens=_optional_int(payload.get("after_tokens") or nested_event.get("after_tokens")),
+        checkpoint_id=_optional_str(payload.get("checkpoint_id") or nested_event.get("checkpoint_id")),
+        created_at=_optional_str(payload.get("created_at") or nested_event.get("created_at")),
+    )
+
+
+def _status_from_compaction(compaction_event: dict[str, object]) -> str:
+    if "success" in compaction_event:
+        return "success" if compaction_event.get("success") else "failed"
+    return "success"
+
+
+def _optional_str(value: object) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    return int(value)

@@ -62,6 +62,34 @@ def test_l1_skips_current_task_content(tmp_path: Path) -> None:
     assert result.event.stopped_at in {"l1", "l2", "l3", "not_reached"}
 
 
+def test_compaction_event_records_full_schema(tmp_path: Path) -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[_message("msg_old", content="旧任务内容" * 80, task_hash="task_old")],
+    )
+
+    result = CompactionPipeline(root=tmp_path).compact(
+        CompactionRequest(
+            view=view,
+            active_task_hash="task_current",
+            target_tokens=1,
+            current_turn=10,
+        )
+    )
+
+    assert result.event.event_version == "v1"
+    assert result.event.strategy_version == "v1"
+    assert result.event.reason in {"l1", "l2", "l3", "not_reached"}
+    assert result.event.target_tokens == 1
+    assert result.event.source_part_ids == ["part_msg_old"]
+    assert result.event.output_part_ids == ["part_msg_old"]
+    assert result.event.checkpoint_id is None
+    assert result.event.llm_used is False
+    assert result.event.success is True
+    assert result.event.error is None
+    assert result.event.created_at.endswith("Z")
+
+
 def test_l2_archives_large_tool_result_and_skips_already_archived_part(tmp_path: Path) -> None:
     view = SessionView(
         session_id="sess_test",

@@ -14,8 +14,9 @@ from firstcoder.context.content.detector import (
     is_old_task_part,
 )
 from firstcoder.context.identity import stable_json_hash
-from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.models import AgentMessage, MessagePart, SessionView, utc_now_iso
 from firstcoder.context.token_budget import estimate_text_tokens
+from firstcoder.context.versions import COMPACTION_STRATEGY_VERSION, CONTEXT_EVENT_SCHEMA_VERSION
 
 
 CompactionLevel = Literal["l1", "l2", "l3"]
@@ -38,6 +39,17 @@ class CompactionEvent:
     levels_attempted: list[str]
     stopped_at: str
     changed_parts: int
+    reason: str = "programmatic_compaction"
+    target_tokens: int = 0
+    source_part_ids: list[str] = field(default_factory=list)
+    output_part_ids: list[str] = field(default_factory=list)
+    checkpoint_id: str | None = None
+    strategy_version: str = COMPACTION_STRATEGY_VERSION
+    event_version: str = CONTEXT_EVENT_SCHEMA_VERSION
+    llm_used: bool = False
+    success: bool = True
+    error: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
     noop: bool = False
     deduped: bool = False
 
@@ -72,24 +84,27 @@ class CompactionPipeline:
                     levels_attempted=[],
                     stopped_at="already_within_budget",
                     changed_parts=0,
+                    reason="already_within_budget",
+                    target_tokens=request.target_tokens,
                     noop=True,
                     deduped=deduped,
                 ),
             )
 
         levels_attempted: list[str] = []
-        changed_parts = 0
+        changed_part_ids: list[tuple[str, str]] = []
         stopped_at = "not_reached"
 
         for level in request.enabled_levels:
             levels_attempted.append(level)
-            changed_parts += self._apply_level(view, request=request, level=level)
+            changed_part_ids.extend(self._apply_level(view, request=request, level=level))
             after_level_tokens = _estimate_view_tokens(view)
             if after_level_tokens <= request.target_tokens:
                 stopped_at = level
                 break
 
         after_tokens = _estimate_view_tokens(view)
+        changed_parts = len(changed_part_ids)
         noop = changed_parts == 0
         deduped = noop and input_fingerprint in self._seen_noop_fingerprints
         if noop:
@@ -104,6 +119,10 @@ class CompactionPipeline:
                 levels_attempted=levels_attempted,
                 stopped_at=stopped_at,
                 changed_parts=changed_parts,
+                reason=stopped_at,
+                target_tokens=request.target_tokens,
+                source_part_ids=[source for source, _ in changed_part_ids],
+                output_part_ids=[output for _, output in changed_part_ids],
                 noop=noop,
                 deduped=deduped,
             ),
@@ -115,7 +134,7 @@ class CompactionPipeline:
         *,
         request: CompactionRequest,
         level: CompactionLevel,
-    ) -> int:
+    ) -> list[tuple[str, str]]:
         if level == "l1":
             return self._apply_l1(view, active_task_hash=request.active_task_hash)
         if level == "l2":
@@ -126,25 +145,27 @@ class CompactionPipeline:
                 active_task_hash=request.active_task_hash,
                 current_turn=request.current_turn,
             )
-        return 0
+        return []
 
-    def _apply_l1(self, view: SessionView, *, active_task_hash: str | None) -> int:
-        changed = 0
+    def _apply_l1(self, view: SessionView, *, active_task_hash: str | None) -> list[tuple[str, str]]:
+        changed: list[tuple[str, str]] = []
         for message in view.messages:
             for index, part in enumerate(message.parts):
                 if is_old_task_part(part, active_task_hash=active_task_hash):
-                    if _replace_if_smaller(message.parts, index, compact_old_task_part(part)):
-                        changed += 1
+                    compacted = compact_old_task_part(part)
+                    if _replace_if_smaller(message.parts, index, compacted):
+                        changed.append((part.id, compacted.id))
         return changed
 
-    def _apply_l2(self, view: SessionView) -> int:
-        changed = 0
+    def _apply_l2(self, view: SessionView) -> list[tuple[str, str]]:
+        changed: list[tuple[str, str]] = []
         archive = ToolResultArchive(self.root)
         for message in view.messages:
             for index, part in enumerate(message.parts):
                 if is_large_tool_result(part, min_tokens=self.large_tool_result_tokens):
-                    message.parts[index] = archive.archive_part(session_id=view.session_id, part=part)
-                    changed += 1
+                    archived = archive.archive_part(session_id=view.session_id, part=part)
+                    message.parts[index] = archived
+                    changed.append((part.id, archived.id))
         return changed
 
     def _apply_l3(
@@ -153,8 +174,8 @@ class CompactionPipeline:
         *,
         active_task_hash: str | None,
         current_turn: int,
-    ) -> int:
-        changed = 0
+    ) -> list[tuple[str, str]]:
+        changed: list[tuple[str, str]] = []
         for message in view.messages:
             for index, part in enumerate(message.parts):
                 if is_current_task_cold_part(
@@ -168,7 +189,7 @@ class CompactionPipeline:
                         preview_chars=self.cold_preview_chars,
                     )
                     if _replace_if_smaller(message.parts, index, compacted):
-                        changed += 1
+                        changed.append((part.id, compacted.id))
         return changed
 
 

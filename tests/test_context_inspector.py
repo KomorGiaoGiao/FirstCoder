@@ -1,7 +1,7 @@
 from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.inspector import ContextInspector
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
-from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.runtime_state import CompactionHistoryEntry, SessionRuntimeState
 
 
 def _message(
@@ -184,12 +184,28 @@ def test_inspector_reports_missing_checkpoint_tail_boundary() -> None:
 
 
 def test_inspector_report_can_be_serialized_for_tui_status() -> None:
+    runtime = SessionRuntimeState(session_id="sess_test")
+    runtime.record_compaction_event(
+        CompactionHistoryEntry(
+            event_type="compaction_completed",
+            trigger="auto",
+            target_tokens=100,
+            input_fingerprint="fp_1",
+            status="success",
+            reason="l1",
+            before_tokens=500,
+            after_tokens=100,
+            checkpoint_id=None,
+            created_at="2026-06-02T00:00:00Z",
+        )
+    )
     report = ContextInspector().inspect(
         SessionView(session_id="sess_test"),
-        SessionRuntimeState(session_id="sess_test"),
+        runtime,
     )
 
     assert report.to_dict()["session_id"] == "sess_test"
+    assert report.to_dict()["recent_compaction_events"][0]["input_fingerprint"] == "fp_1"
     assert set(report.to_dict()) >= {
         "session_id",
         "active_task_hash",
@@ -204,4 +220,5 @@ def test_inspector_report_can_be_serialized_for_tui_status() -> None:
         "last_failure_reason",
         "auto_compact_status",
         "checkpoint_boundary_status",
+        "recent_compaction_events",
     }

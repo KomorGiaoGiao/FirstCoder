@@ -18,7 +18,7 @@ def create_python_exec_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def python_exec(code: str, cwd: str = ".", timeout_seconds: int = 30, max_output_chars: int = 20000) -> ToolResult:
-        """在项目目录内执行一段 Python 代码。高风险，必须由用户显式启用。"""
+        """在项目内执行 Python 代码；高风险，需显式启用。"""
 
         if timeout_seconds <= 0:
             return make_error_result("python_exec", "timeout_seconds 必须大于 0")

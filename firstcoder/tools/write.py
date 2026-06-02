@@ -15,7 +15,7 @@ def create_write_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def write(path: str, content: str, create_dirs: bool = True, overwrite: bool = True) -> ToolResult:
-        """写入项目目录内的 UTF-8 文本文件。"""
+        """写入项目内 UTF-8 文本文件；可创建目录或覆盖文件。"""
 
         target = sandbox.resolve(path)
         if target.exists() and target.is_dir():

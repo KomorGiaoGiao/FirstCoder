@@ -14,7 +14,7 @@ def create_think_tool() -> Tool:
     """创建推理思考工具。"""
 
     def think(thought: str) -> ToolResult:
-        """把模型的中间推理过程写入上下文，不产生外部副作用。"""
+        """记录内部思考；不访问外部资源，不修改状态。"""
 
         return make_text_result("think", thought, thought=thought)
 

@@ -92,7 +92,7 @@ def create_todo_tool() -> Tool:
         todo_id: str | None = None,
         status: str | None = None,
     ) -> ToolResult:
-        """管理任务清单：add、update、delete、list、clear。"""
+        """管理会话内任务清单；支持 add/update/delete/list/clear。"""
 
         if action == "add":
             if not content:

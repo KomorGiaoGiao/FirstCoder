@@ -16,7 +16,7 @@ def create_edit_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def edit(path: str, old: str, new: str, replace_all: bool = False) -> ToolResult:
-        """替换项目目录内 UTF-8 文本文件中的指定文本。"""
+        """替换项目内 UTF-8 文本片段；默认只替换唯一匹配。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="file")

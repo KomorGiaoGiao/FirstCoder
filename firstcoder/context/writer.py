@@ -14,9 +14,10 @@ from firstcoder.context.compaction import CompactionEvent
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.identity import new_event_id, new_message_id, new_part_id
 from firstcoder.context.llm_compact import LlmCompactEvent
-from firstcoder.context.models import MessagePart
+from firstcoder.context.models import MessagePart, utc_now_iso
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.task_boundary import TaskBoundaryObservation, TaskBoundaryService
+from firstcoder.context.versions import CONTEXT_EVENT_SCHEMA_VERSION
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -120,15 +121,24 @@ class SessionEventWriter:
         target_tokens: int,
         event: CompactionEvent,
     ) -> None:
+        event_payload = asdict(event)
         self.store.append_event(
             SessionEvent(
                 id=new_event_id(),
                 session_id=self.session_id,
                 type="compaction_completed",
                 payload={
+                    "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
                     "trigger": trigger,
                     "target_tokens": target_tokens,
-                    "event": asdict(event),
+                    "created_at": event.created_at,
+                    "input_fingerprint": event.input_fingerprint,
+                    "status": "success" if event.success else "failed",
+                    "reason": event.reason,
+                    "before_tokens": event.before_tokens,
+                    "after_tokens": event.after_tokens,
+                    "checkpoint_id": event.checkpoint_id,
+                    "event": event_payload,
                 },
             )
         )
@@ -140,15 +150,25 @@ class SessionEventWriter:
         target_tokens: int,
         event: LlmCompactEvent,
     ) -> None:
+        event_payload = asdict(event)
+        created_at = utc_now_iso()
         self.store.append_event(
             SessionEvent(
                 id=new_event_id(),
                 session_id=self.session_id,
                 type="llm_compaction_completed",
                 payload={
+                    "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
                     "trigger": trigger,
                     "target_tokens": target_tokens,
-                    "event": asdict(event),
+                    "created_at": created_at,
+                    "input_fingerprint": event.source_fingerprint,
+                    "status": event.status,
+                    "reason": event.failure_reason or event.status,
+                    "before_tokens": None,
+                    "after_tokens": None,
+                    "checkpoint_id": event.checkpoint_id,
+                    "event": event_payload,
                 },
             )
         )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 
@@ -54,6 +54,22 @@ def auto_compact_circuit_is_open(state: "SessionRuntimeState") -> bool:
 
 
 @dataclass(slots=True)
+class CompactionHistoryEntry:
+    """供 inspector/status 展示的最近压缩事件摘要。"""
+
+    event_type: str
+    trigger: str
+    target_tokens: int | None
+    input_fingerprint: str | None
+    status: str
+    reason: str | None
+    before_tokens: int | None
+    after_tokens: int | None
+    checkpoint_id: str | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
 class SessionRuntimeState:
     """不应该塞进自然语言消息的会话状态。"""
 
@@ -67,6 +83,7 @@ class SessionRuntimeState:
     last_auto_compact_failure_reason: str | None = None
     system_prompt_fingerprint: str | None = None
     last_compaction_input_fingerprint: str | None = None
+    recent_compaction_events: list[CompactionHistoryEntry] = field(default_factory=list)
 
     def observe_task_hash_candidate(
         self,
@@ -120,3 +137,8 @@ class SessionRuntimeState:
         self.auto_compact_failure_count = 0
         self.auto_compact_disabled_until = None
         self.last_auto_compact_failure_reason = None
+
+    def record_compaction_event(self, entry: CompactionHistoryEntry, *, limit: int = 10) -> None:
+        self.recent_compaction_events.append(entry)
+        if len(self.recent_compaction_events) > limit:
+            self.recent_compaction_events = self.recent_compaction_events[-limit:]

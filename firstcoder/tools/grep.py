@@ -27,7 +27,7 @@ def create_grep_tool(root: str | Path) -> Tool:
         case_sensitive: bool = False,
         max_results: int = DEFAULT_MAX_SEARCH_RESULTS,
     ) -> ToolResult:
-        """在项目目录内搜索文本内容。优先使用 ripgrep，失败时回退到 Python 搜索。"""
+        """在项目内按固定字符串搜索文本；返回文件、行号和匹配行。"""
 
         try:
             target = sandbox.resolve_validated(path)

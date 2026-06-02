@@ -15,7 +15,7 @@ def create_ls_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def ls(path: str = ".", recursive: bool = False, max_entries: int = 200) -> ToolResult:
-        """列出项目目录中的文件和文件夹。只能访问当前项目目录内的路径。"""
+        """列出项目内目录项；只返回名称和文件/目录类型。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="dir")

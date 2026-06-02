@@ -18,7 +18,7 @@ def create_ask_user_tool() -> Tool:
     """创建向用户提问的工具。"""
 
     def ask_user(question: str, options: list[str] | None = None) -> ToolResult:
-        """向用户提出问题并等待回答。模型在需要确认或澄清时应使用此工具。"""
+        """缺少关键信息或需要用户确认时提问；会暂停等待回答。"""
 
         if not question.strip():
             return make_error_result("ask_user", "question 不能为空")

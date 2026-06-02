@@ -17,7 +17,7 @@ def create_git_diff_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def git_diff(path: str = ".", staged: bool = False, max_chars: int = 20000) -> ToolResult:
-        """查看当前项目 git diff。"""
+        """查看项目未提交 diff；staged=true 时查看暂存区。"""
 
         if max_chars <= 0:
             return make_error_result("git_diff", "max_chars 必须大于 0")

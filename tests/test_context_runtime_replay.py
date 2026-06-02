@@ -186,3 +186,51 @@ def test_replay_records_compaction_input_fingerprint(tmp_path) -> None:
     state = replay_runtime_state(store, "sess_test")
 
     assert state.last_compaction_input_fingerprint == "fp_programmatic"
+
+
+def test_replay_exposes_recent_compaction_events_for_inspector(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    event = CompactionEvent(
+        input_fingerprint="fp_programmatic",
+        before_tokens=500,
+        after_tokens=100,
+        levels_attempted=["l1"],
+        stopped_at="l1",
+        changed_parts=1,
+        reason="l1",
+        target_tokens=100,
+        source_part_ids=["part_old"],
+        output_part_ids=["part_old"],
+    )
+    store.append_event(
+        SessionEvent(
+            id="evt_compact",
+            session_id="sess_test",
+            type="compaction_completed",
+            payload={
+                "event_version": "v1",
+                "trigger": "auto",
+                "target_tokens": 100,
+                "created_at": event.created_at,
+                "input_fingerprint": event.input_fingerprint,
+                "status": "success",
+                "reason": event.reason,
+                "before_tokens": event.before_tokens,
+                "after_tokens": event.after_tokens,
+                "checkpoint_id": None,
+                "event": asdict(event),
+            },
+        )
+    )
+
+    state = replay_runtime_state(store, "sess_test")
+
+    assert len(state.recent_compaction_events) == 1
+    recent = state.recent_compaction_events[0]
+    assert recent.event_type == "compaction_completed"
+    assert recent.trigger == "auto"
+    assert recent.input_fingerprint == "fp_programmatic"
+    assert recent.status == "success"
+    assert recent.reason == "l1"
+    assert recent.before_tokens == 500
+    assert recent.after_tokens == 100

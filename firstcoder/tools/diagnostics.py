@@ -18,7 +18,7 @@ def create_diagnostics_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def diagnostics(command: str = "python -m pytest -q", timeout_seconds: int = 120, max_output_chars: int = 20000) -> ToolResult:
-        """运行项目诊断命令，默认执行测试。"""
+        """运行项目诊断命令，适合测试、lint、类型检查。"""
 
         if timeout_seconds <= 0:
             return make_error_result("diagnostics", "timeout_seconds 必须大于 0")

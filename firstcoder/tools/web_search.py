@@ -27,7 +27,7 @@ def create_web_search_tool() -> Tool:
         context_max_characters: int = DEFAULT_CONTEXT_MAX_CHARACTERS,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> ToolResult:
-        """使用 Exa Web Search 搜索网页，适合查找最新资料或外部文档。"""
+        """搜索网页资料；适合最新信息和外部文档。"""
 
         if not query.strip():
             return make_error_result("web_search", "query 不能为空")

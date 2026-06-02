@@ -16,7 +16,7 @@ def create_delete_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def delete(path: str, recursive: bool = False) -> ToolResult:
-        """删除项目目录内的文件或目录。"""
+        """删除项目内文件或目录；目录删除必须 recursive=true。"""
 
         try:
             target = sandbox.resolve_validated(path)

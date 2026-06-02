@@ -203,3 +203,22 @@ def test_task_hash_event_records_active_hash_and_trigger_reason() -> None:
     assert event.payload["active_task_hash"] == observation.candidate_hash
     assert event.payload["triggered_compaction"] is True
     assert event.payload["confirmation_reason"] == "stable_window"
+
+
+def test_task_hash_event_records_stable_window_state() -> None:
+    state = SessionRuntimeState(session_id="sess_test", active_task_hash="task_active")
+    service = TaskBoundaryService(required_stable_count=3)
+
+    observation = service.observe(state, decision=TaskBoundaryDecision.NEW, basis_message_id="msg_new")
+    event = service.to_event(session_id="sess_test", observation=observation)
+
+    assert event.payload["event_version"] == "v1"
+    assert event.payload["strategy_version"] == "v1"
+    assert event.payload["active_hash"] == "task_active"
+    assert event.payload["active_task_hash"] == "task_active"
+    assert event.payload["candidate_hash"] == observation.candidate_hash
+    assert event.payload["stable_count"] == 1
+    assert event.payload["required_stable_count"] == 3
+    assert event.payload["triggered_compaction"] is False
+    assert event.payload["confirmation_reason"] == "stable_window_pending"
+    assert event.payload["created_at"].endswith("Z")

@@ -19,7 +19,7 @@ def create_git_log_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def git_log(path: str = ".", max_entries: int = 10) -> ToolResult:
-        """查看当前项目 git 提交历史。"""
+        """查看项目提交历史；可限制路径和条数。"""
 
         if max_entries <= 0:
             return make_error_result("git_log", "max_entries 必须大于 0")

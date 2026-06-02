@@ -15,7 +15,7 @@ def create_tree_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def tree(path: str = ".", max_depth: int = 3, max_entries: int = 200) -> ToolResult:
-        """以树状文本展示项目目录结构。"""
+        """展示项目内目录树；适合快速了解结构。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="dir")

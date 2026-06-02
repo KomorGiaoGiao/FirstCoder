@@ -47,7 +47,7 @@ def create_apply_patch_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def apply_patch(patch: str, dry_run: bool = False) -> ToolResult:
-        """应用 `*** Begin Patch` 格式的多文件文本补丁。"""
+        """按 patch 语法新增、更新、删除或移动项目内文本文件。"""
 
         try:
             plan = parse_patch(patch)

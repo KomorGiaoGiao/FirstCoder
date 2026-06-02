@@ -13,7 +13,8 @@ from typing import Collection
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.identity import new_event_id, stable_json_hash
 from firstcoder.context.runtime_state import SessionRuntimeState
-from firstcoder.context.versions import TASK_BOUNDARY_TOOL_VERSION
+from firstcoder.context.models import utc_now_iso
+from firstcoder.context.versions import CONTEXT_EVENT_SCHEMA_VERSION, TASK_BOUNDARY_TOOL_VERSION
 
 
 class TaskBoundaryDecision(StrEnum):
@@ -39,6 +40,10 @@ class TaskBoundaryObservation:
     active_task_hash: str | None = None
     triggered_compaction: bool = False
     confirmation_reason: str = "not_confirmed"
+    required_stable_count: int = 2
+    event_version: str = CONTEXT_EVENT_SCHEMA_VERSION
+    strategy_version: str = TASK_BOUNDARY_TOOL_VERSION
+    created_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,8 @@ class TaskBoundaryService:
                 active_task_hash=state.active_task_hash,
                 triggered_compaction=False,
                 confirmation_reason="reset_candidate",
+                required_stable_count=self.required_stable_count,
+                created_at=utc_now_iso(),
             )
 
         candidate_hash = self.candidate_hash(
@@ -124,6 +131,8 @@ class TaskBoundaryService:
                 confirmed_change,
                 single_observation_policy=single_observation_policy,
             ),
+            required_stable_count=required_stable_count,
+            created_at=utc_now_iso(),
         )
 
     def to_event(self, *, session_id: str, observation: TaskBoundaryObservation) -> SessionEvent:
@@ -132,14 +141,19 @@ class TaskBoundaryService:
             session_id=session_id,
             type="task_boundary_observed",
             payload={
+                "event_version": observation.event_version,
+                "strategy_version": observation.strategy_version,
+                "created_at": observation.created_at or utc_now_iso(),
                 "decision": observation.decision.value,
                 "basis_message_id": observation.basis_message_id,
                 "candidate_hash": observation.candidate_hash,
+                "active_hash": observation.active_task_hash,
                 "active_task_hash": observation.active_task_hash,
                 "confirmed_change": observation.confirmed_change,
                 "should_trigger_compaction": observation.should_trigger_compaction,
                 "triggered_compaction": observation.triggered_compaction,
                 "stable_count": observation.stable_count,
+                "required_stable_count": observation.required_stable_count,
                 "confirmation_reason": observation.confirmation_reason,
             },
         )
@@ -190,6 +204,10 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
         triggered_compaction=bool(data.get("triggered_compaction")),
         stable_count=int(data.get("stable_count") or 0),
         confirmation_reason=str(data.get("confirmation_reason") or "not_confirmed"),
+        required_stable_count=int(data.get("required_stable_count") or 2),
+        event_version=str(data.get("event_version") or CONTEXT_EVENT_SCHEMA_VERSION),
+        strategy_version=str(data.get("strategy_version") or TASK_BOUNDARY_TOOL_VERSION),
+        created_at=str(data.get("created_at") or ""),
     )
 
 

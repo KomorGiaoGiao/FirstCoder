@@ -16,7 +16,7 @@ def create_view_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def view(path: str, offset: int = 0, limit: int = 200) -> ToolResult:
-        """按行查看项目目录内的 UTF-8 文本文件内容。"""
+        """按行读取项目内 UTF-8 文本文件；支持分页。"""
 
         try:
             target = sandbox.resolve_validated(path, expect="file")

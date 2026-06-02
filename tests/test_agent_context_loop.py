@@ -9,6 +9,7 @@ from firstcoder.context.runtime_replay import replay_runtime_state
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall, ToolDefinition
+from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.types import Tool, ToolResult
 
 
@@ -234,6 +235,31 @@ def test_agent_loop_rejects_task_boundary_unknown_basis_message_id(tmp_path) -> 
     assert "task_boundary_observed" not in event_types
     assert session.runtime_state.active_task_hash is None
     assert replayed.active_task_hash is None
+
+
+def test_task_boundary_tool_result_append_preserves_stable_window_metadata(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
+    basis_message_id = session.append_user_message("新任务")
+    tool = create_task_boundary_tool(session.runtime_state, required_stable_count=3)
+    tool_call = ToolCall(
+        id="call_boundary",
+        name="task_boundary",
+        arguments={"decision": "new", "basis_message_id": basis_message_id},
+    )
+
+    result = tool.executor(decision="new", basis_message_id=basis_message_id)
+    session.append_tool_result(tool_call=tool_call, result=result)
+
+    event = next(event for event in store.list_events("sess_test") if event.type == "task_boundary_observed")
+    assert result.data["required_stable_count"] == 3
+    assert result.data["event_version"]
+    assert result.data["strategy_version"]
+    assert result.data["created_at"]
+    assert event.payload["required_stable_count"] == 3
+    assert event.payload["event_version"] == result.data["event_version"]
+    assert event.payload["strategy_version"] == result.data["strategy_version"]
+    assert event.payload["created_at"] == result.data["created_at"]
 
 
 def test_agent_loop_does_not_persist_unexecuted_tool_calls_after_round_limit(tmp_path) -> None:

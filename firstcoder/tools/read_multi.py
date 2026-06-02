@@ -19,7 +19,7 @@ def create_read_multi_tool(root: str | Path) -> Tool:
     sandbox = PathSandbox(root)
 
     def read_multi(paths: list[str], max_total_chars: int = 100000) -> ToolResult:
-        """按路径列表批量读取项目目录内的 UTF-8 文本文件。"""
+        """批量读取项目内 UTF-8 文本文件；总输出受限。"""
 
         if not paths:
             return make_error_result("read_multi", "paths 不能为空列表")

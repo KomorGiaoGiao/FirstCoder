@@ -17,7 +17,7 @@ def create_fetch_tool() -> Tool:
     """创建 HTTP GET 工具。"""
 
     def fetch(url: str, timeout_seconds: int = DEFAULT_FETCH_TIMEOUT_SECONDS, max_chars: int = DEFAULT_MAX_CHARS) -> ToolResult:
-        """读取 http 或 https URL 的文本响应。"""
+        """读取单个 http/https URL 的文本响应；不做网页搜索。"""
 
         parsed = parse.urlparse(url)
         if parsed.scheme not in ("http", "https"):

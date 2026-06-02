@@ -34,6 +34,7 @@ class ContextInspectionReport:
     last_failure_reason: str | None
     auto_compact_status: AutoCompactStatus
     checkpoint_boundary_status: CheckpointBoundaryStatus
+    recent_compaction_events: list[dict[str, object]]
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -74,6 +75,7 @@ class ContextInspector:
                 active_disabled_until=auto_compact_disabled_until,
             ),
             checkpoint_boundary_status=tail.status,
+            recent_compaction_events=[asdict(event) for event in runtime.recent_compaction_events],
         )
 
 
