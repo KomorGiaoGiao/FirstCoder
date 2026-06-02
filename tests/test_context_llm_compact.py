@@ -440,3 +440,62 @@ def test_manual_compact_ignores_auto_circuit_breaker(tmp_path: Path) -> None:
 
     assert result.checkpoint is not None
     assert summarizer.calls == [["msg_1", "msg_2"]]
+
+
+def test_l4_rejects_checkpoint_tail_that_starts_with_tool_result(tmp_path: Path) -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            AgentMessage(
+                id="msg_assistant",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_call",
+                        message_id="msg_assistant",
+                        kind="tool_call",
+                        content="",
+                        metadata={
+                            "tool_call_id": "call_1",
+                            "tool_name": "shell",
+                            "arguments": {"command": "git status"},
+                        },
+                    )
+                ],
+            ),
+            AgentMessage(
+                id="msg_tool",
+                session_id="sess_test",
+                role="tool",
+                parts=[
+                    MessagePart(
+                        id="part_result",
+                        message_id="msg_tool",
+                        kind="tool_result",
+                        content="git status output",
+                        metadata={"tool_call_id": "call_1", "tool_name": "shell"},
+                    )
+                ],
+            ),
+            _message("msg_tail", "后续用户消息"),
+        ],
+    )
+    summarizer = FakeSummarizer(
+        [
+            LlmCompactSummary(
+                summary="工具调用前半段摘要",
+                tail_start_message_id="msg_tool",
+                covered_until_message_id="msg_assistant",
+            )
+        ]
+    )
+
+    try:
+        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
+            LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
+        )
+    except InvalidLlmCheckpointBoundaryError as exc:
+        assert "tool_call/tool_result sequence" in str(exc)
+    else:
+        raise AssertionError("expected checkpoint tail sequence boundary to be rejected")

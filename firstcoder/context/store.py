@@ -66,6 +66,10 @@ class JsonlSessionStore:
             view.checkpoints.append(Checkpoint.from_dict(_checkpoint_payload(event, sequence=sequence)))
             return
 
+        if event.type == "compaction_completed":
+            _apply_compaction_replacements(view, event)
+            return
+
         role = EVENT_ROLE_MAP.get(event.type)
         if role is None:
             return
@@ -102,3 +106,34 @@ def _checkpoint_payload(event: SessionEvent, *, sequence: int) -> dict[str, obje
     payload.setdefault("session_id", event.session_id)
     payload.setdefault("sequence", sequence)
     return payload
+
+
+def _apply_compaction_replacements(view: SessionView, event: SessionEvent) -> None:
+    event_payload = event.payload.get("event")
+    if not isinstance(event_payload, dict):
+        return
+
+    replacements = event_payload.get("replacements")
+    if not isinstance(replacements, list):
+        return
+
+    part_index: dict[tuple[str, str], tuple[AgentMessage, int]] = {}
+    for message in view.messages:
+        for index, part in enumerate(message.parts):
+            part_index[(message.id, part.id)] = (message, index)
+
+    for item in replacements:
+        if not isinstance(item, dict):
+            continue
+        message_id = str(item.get("message_id") or "")
+        source_part_id = str(item.get("source_part_id") or "")
+        replacement_part = item.get("replacement_part")
+        if not message_id or not source_part_id or not isinstance(replacement_part, dict):
+            continue
+        target = part_index.get((message_id, source_part_id))
+        if target is None:
+            continue
+        message, index = target
+        replacement_data = dict(replacement_part)
+        replacement_data.setdefault("message_id", message_id)
+        message.parts[index] = MessagePart.from_dict(replacement_data)

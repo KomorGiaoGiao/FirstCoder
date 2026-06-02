@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from firstcoder.context.archive import ToolResultArchive
+from firstcoder.context.checkpoint import CheckpointIndex
 from firstcoder.context.content.compressors import compact_cold_text_part, compact_old_task_part
 from firstcoder.context.content.detector import (
     is_current_task_cold_part,
@@ -43,6 +44,7 @@ class CompactionEvent:
     target_tokens: int = 0
     source_part_ids: list[str] = field(default_factory=list)
     output_part_ids: list[str] = field(default_factory=list)
+    replacements: list[dict[str, object]] = field(default_factory=list)
     checkpoint_id: str | None = None
     strategy_version: str = COMPACTION_STRATEGY_VERSION
     event_version: str = CONTEXT_EVENT_SCHEMA_VERSION
@@ -92,19 +94,19 @@ class CompactionPipeline:
             )
 
         levels_attempted: list[str] = []
-        changed_part_ids: list[tuple[str, str]] = []
+        replacements: list[dict[str, object]] = []
         stopped_at = "not_reached"
 
         for level in request.enabled_levels:
             levels_attempted.append(level)
-            changed_part_ids.extend(self._apply_level(view, request=request, level=level))
+            replacements.extend(self._apply_level(view, request=request, level=level))
             after_level_tokens = _estimate_view_tokens(view)
             if after_level_tokens <= request.target_tokens:
                 stopped_at = level
                 break
 
         after_tokens = _estimate_view_tokens(view)
-        changed_parts = len(changed_part_ids)
+        changed_parts = len(replacements)
         noop = changed_parts == 0
         deduped = noop and input_fingerprint in self._seen_noop_fingerprints
         if noop:
@@ -121,8 +123,9 @@ class CompactionPipeline:
                 changed_parts=changed_parts,
                 reason=stopped_at,
                 target_tokens=request.target_tokens,
-                source_part_ids=[source for source, _ in changed_part_ids],
-                output_part_ids=[output for _, output in changed_part_ids],
+                source_part_ids=[str(replacement["source_part_id"]) for replacement in replacements],
+                output_part_ids=[str(replacement["replacement_part"]["id"]) for replacement in replacements],
+                replacements=replacements,
                 noop=noop,
                 deduped=deduped,
             ),
@@ -134,7 +137,7 @@ class CompactionPipeline:
         *,
         request: CompactionRequest,
         level: CompactionLevel,
-    ) -> list[tuple[str, str]]:
+    ) -> list[dict[str, object]]:
         if level == "l1":
             return self._apply_l1(view, active_task_hash=request.active_task_hash)
         if level == "l2":
@@ -147,25 +150,25 @@ class CompactionPipeline:
             )
         return []
 
-    def _apply_l1(self, view: SessionView, *, active_task_hash: str | None) -> list[tuple[str, str]]:
-        changed: list[tuple[str, str]] = []
-        for message in view.messages:
+    def _apply_l1(self, view: SessionView, *, active_task_hash: str | None) -> list[dict[str, object]]:
+        changed: list[dict[str, object]] = []
+        for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
                 if is_old_task_part(part, active_task_hash=active_task_hash):
                     compacted = compact_old_task_part(part)
                     if _replace_if_smaller(message.parts, index, compacted):
-                        changed.append((part.id, compacted.id))
+                        changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
         return changed
 
-    def _apply_l2(self, view: SessionView) -> list[tuple[str, str]]:
-        changed: list[tuple[str, str]] = []
+    def _apply_l2(self, view: SessionView) -> list[dict[str, object]]:
+        changed: list[dict[str, object]] = []
         archive = ToolResultArchive(self.root)
-        for message in view.messages:
+        for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
                 if is_large_tool_result(part, min_tokens=self.large_tool_result_tokens):
                     archived = archive.archive_part(session_id=view.session_id, part=part)
                     message.parts[index] = archived
-                    changed.append((part.id, archived.id))
+                    changed.append(_replacement_event(message_id=message.id, source=part, replacement=archived))
         return changed
 
     def _apply_l3(
@@ -174,9 +177,9 @@ class CompactionPipeline:
         *,
         active_task_hash: str | None,
         current_turn: int,
-    ) -> list[tuple[str, str]]:
-        changed: list[tuple[str, str]] = []
-        for message in view.messages:
+    ) -> list[dict[str, object]]:
+        changed: list[dict[str, object]] = []
+        for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
                 if is_current_task_cold_part(
                     part,
@@ -189,7 +192,7 @@ class CompactionPipeline:
                         preview_chars=self.cold_preview_chars,
                     )
                     if _replace_if_smaller(message.parts, index, compacted):
-                        changed.append((part.id, compacted.id))
+                        changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
         return changed
 
 
@@ -214,6 +217,31 @@ def _clone_view(view: SessionView) -> SessionView:
         checkpoints=list(view.checkpoints),
         metadata=dict(view.metadata),
     )
+
+
+def _effective_tail_messages(view: SessionView) -> list[AgentMessage]:
+    """只让程序化压缩处理 latest checkpoint 之后的真实 tail。
+
+    checkpoint 覆盖过的旧历史已经由 summary 表达；L1-L3 如果继续扫描旧 raw message，
+    会和 ContextBuilder/L4 的 effective context 边界不一致。
+    """
+
+    checkpoint = CheckpointIndex(view.checkpoints).latest()
+    if checkpoint is None:
+        return view.messages
+
+    for index, message in enumerate(view.messages):
+        if message.id == checkpoint.tail_start_message_id:
+            return view.messages[index:]
+    raise ValueError(f"latest checkpoint tail_start_message_id not found: {checkpoint.tail_start_message_id}")
+
+
+def _replacement_event(*, message_id: str, source: MessagePart, replacement: MessagePart) -> dict[str, object]:
+    return {
+        "message_id": message_id,
+        "source_part_id": source.id,
+        "replacement_part": replacement.to_dict(),
+    }
 
 
 def _replace_if_smaller(parts: list[MessagePart], index: int, compacted: MessagePart) -> bool:

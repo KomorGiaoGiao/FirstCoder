@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 
@@ -358,3 +359,37 @@ def test_pipeline_does_not_replace_part_when_compaction_would_increase_tokens(tm
 
     assert result.view.messages[0].parts[0].content == "短"
     assert result.event.noop is True
+
+
+def test_l1_l3_skip_checkpoint_covered_history(tmp_path: Path) -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _message("msg_checkpointed", content="旧任务已 checkpoint" * 160, task_hash="task_old", created_turn=1),
+            _message("msg_tail", content="当前 tail 内容" * 160, task_hash="task_current", created_turn=1),
+        ],
+        checkpoints=[
+            Checkpoint(
+                id="ckpt_1",
+                session_id="sess_test",
+                summary="旧历史摘要",
+                tail_start_message_id="msg_tail",
+                covered_until_message_id="msg_checkpointed",
+                source_fingerprint="fp_1",
+                sequence=1,
+            )
+        ],
+    )
+
+    result = CompactionPipeline(root=tmp_path, cold_turn_distance=5).compact(
+        CompactionRequest(
+            view=view,
+            active_task_hash="task_current",
+            target_tokens=1,
+            current_turn=10,
+        )
+    )
+
+    assert result.view.messages[0].parts[0].content == "旧任务已 checkpoint" * 160
+    assert "part_msg_checkpointed" not in result.event.source_part_ids
+    assert result.view.messages[1].parts[0].metadata["compaction_state"] == "route_compacted"

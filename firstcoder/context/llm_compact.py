@@ -12,6 +12,7 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.retry_policy import CompactRetryPolicy
 from firstcoder.context.runtime_state import SessionRuntimeState, auto_compact_circuit_is_open
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
 from firstcoder.context.versions import CHECKPOINT_STRATEGY_VERSION
 
 
@@ -272,6 +273,22 @@ def _validate_summary_boundary(summary: LlmCompactSummary, *, source: L4Source) 
         raise InvalidLlmCheckpointBoundaryError(
             "covered_until_message_id must be before tail_start_message_id",
         )
+
+    tail_messages = _source_tail_messages(source)
+    tail_start_index = tail_order[summary.tail_start_message_id]
+    try:
+        validate_tool_call_sequence(tail_messages[tail_start_index:])
+    except InvalidToolCallSequenceError as error:
+        raise InvalidLlmCheckpointBoundaryError(
+            "checkpoint tail would break assistant tool_call/tool_result sequence",
+        ) from error
+
+
+def _source_tail_messages(source: L4Source) -> list[AgentMessage]:
+    if source.base_checkpoint_id is None:
+        return source.messages
+    tail_ids = set(source.tail_message_ids)
+    return [message for message in source.messages if message.id in tail_ids]
 
 
 def _source_fingerprint(session_id: str, source: L4Source) -> str:
