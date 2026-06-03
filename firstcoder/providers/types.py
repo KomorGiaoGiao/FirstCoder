@@ -17,6 +17,7 @@ FinishReason = Literal[
     "tool_round_limit",
 ]
 TokenParam = Literal["max_tokens", "max_completion_tokens"]
+ToolChoiceMode = Literal["auto", "none", "required"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +95,27 @@ class ToolCall:
     arguments: dict[str, Any] | str
 
 
+@dataclass(frozen=True, slots=True)
+class ToolChoiceFunction:
+    """强制模型调用指定工具。
+
+    OpenAI-compatible wire format 需要嵌套 dict；内部只保留工具名，让 agent 不需要
+    知道 provider 原始 schema。
+    """
+
+    name: str
+
+
+ToolChoice = ToolChoiceMode | ToolChoiceFunction
+
+
 @dataclass(slots=True)
 class ChatRequest:
     """发送给 provider 的统一请求结构。"""
 
     messages: list[ChatMessage]
     tools: list[ToolDefinition] = field(default_factory=list)
-    tool_choice: str | dict[str, Any] | None = "auto"
+    tool_choice: ToolChoice | None = "auto"
     temperature: float | None = None
     max_tokens: int | None = None
     extra_body: dict[str, Any] = field(default_factory=dict)

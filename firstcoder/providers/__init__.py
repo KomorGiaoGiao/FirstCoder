@@ -12,6 +12,7 @@ from firstcoder.providers.types import (
     ProviderCapabilities,
     ProviderDiagnostics,
     TokenUsage,
+    ToolChoiceFunction,
     ToolCall,
     ToolDefinition,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "ProviderConfigError",
     "ProviderDiagnostics",
     "TokenUsage",
+    "ToolChoiceFunction",
     "ToolCall",
     "ToolDefinition",
     "create_provider",

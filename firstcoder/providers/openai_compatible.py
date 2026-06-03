@@ -16,6 +16,8 @@ from firstcoder.providers.types import (
     ProviderCapabilities,
     ProviderDiagnostics,
     TokenUsage,
+    ToolChoice,
+    ToolChoiceFunction,
     ToolCall,
 )
 
@@ -112,7 +114,7 @@ class OpenAICompatibleProvider(ChatProvider):
 
         if request.tools:
             params["tools"] = [to_openai_tool(tool) for tool in request.tools]
-            params["tool_choice"] = request.tool_choice
+            params["tool_choice"] = _to_openai_tool_choice(request.tool_choice)
             if self._capabilities.supports_parallel_tool_calls:
                 params["parallel_tool_calls"] = True
         if request.temperature is not None:
@@ -134,7 +136,7 @@ class OpenAICompatibleProvider(ChatProvider):
         raw_finish_reason = _read_field(choice, "finish_reason")
         finish_reason = _normalize_finish_reason(raw_finish_reason)
         diagnostics = ProviderDiagnostics(raw_finish_reason=raw_finish_reason)
-        tool_calls = self._parse_tool_calls(_read_field(message, "tool_calls", []) or [])
+        tool_calls = self._parse_tool_calls(_read_field(message, "tool_calls", []) or [], diagnostics=diagnostics)
         if finish_reason == "length" and tool_calls:
             diagnostics.warnings.append("finish_reason=length，丢弃可能不完整的 tool_calls，避免执行半截工具调用。")
             tool_calls = []
@@ -181,19 +183,27 @@ class OpenAICompatibleProvider(ChatProvider):
         return data
 
     @staticmethod
-    def _parse_tool_calls(tool_calls: list[Any]) -> list[ToolCall]:
+    def _parse_tool_calls(tool_calls: list[Any], *, diagnostics: ProviderDiagnostics) -> list[ToolCall]:
         """解析 OpenAI-compatible 返回的 tool_calls。"""
 
         parsed: list[ToolCall] = []
         for call in tool_calls:
             function = _read_field(call, "function", {})
             raw_arguments = _read_field(function, "arguments", "")
+            arguments = loads_json_object(raw_arguments)
+            if not isinstance(arguments, dict):
+                call_id = _read_field(call, "id", "")
+                name = _read_field(function, "name", "")
+                diagnostics.warnings.append(
+                    f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}"
+                )
+                return []
 
             parsed.append(
                 ToolCall(
                     id=_read_field(call, "id", ""),
                     name=_read_field(function, "name", ""),
-                    arguments=loads_json_object(raw_arguments),
+                    arguments=arguments,
                 )
             )
         return parsed
@@ -224,3 +234,18 @@ def _parse_usage(usage: Any) -> TokenUsage | None:
         output_tokens=output_tokens,
         total_tokens=total_tokens,
     )
+
+
+def _to_openai_tool_choice(tool_choice: ToolChoice | None) -> str | dict[str, Any] | None:
+    """把内部 tool_choice 转成 OpenAI function calling wire format。"""
+
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, ToolChoiceFunction):
+        return {
+            "type": "function",
+            "function": {"name": tool_choice.name},
+        }
+    if isinstance(tool_choice, str) and tool_choice in {"auto", "none", "required"}:
+        return tool_choice
+    raise ProviderError(ProviderErrorKind.CONFIG_ERROR, f"不支持的 tool_choice：{tool_choice!r}")

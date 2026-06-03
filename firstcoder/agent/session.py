@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from firstcoder.agent.prompt_inputs import (
@@ -178,6 +178,8 @@ class AgentSession:
                 "provider": response.provider,
                 "model": response.model,
                 "finish_reason": response.finish_reason,
+                "usage": asdict(response.usage) if response.usage is not None else None,
+                "diagnostics": asdict(response.diagnostics),
             },
         )
         self.known_message_ids.add(assistant_message_id)

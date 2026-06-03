@@ -7,7 +7,14 @@ import pytest
 from firstcoder.providers.anthropic_provider import AnthropicProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
-from firstcoder.providers.types import ChatMessage, ChatRequest, ProviderCapabilities, ToolCall, ToolDefinition
+from firstcoder.providers.types import (
+    ChatMessage,
+    ChatRequest,
+    ProviderCapabilities,
+    ToolCall,
+    ToolChoiceFunction,
+    ToolDefinition,
+)
 
 
 class _Object:
@@ -78,6 +85,62 @@ class _FakeOpenAILengthClient:
     def __init__(self):
         self.completions = _FakeOpenAILengthCompletions()
         self.chat = _Object(completions=self.completions)
+
+
+class _FakeOpenAIInvalidArgumentsCompletions:
+    def create(self, **params):
+        return _Object(
+            model=params["model"],
+            choices=[
+                _Object(
+                    finish_reason="tool_calls",
+                    message=_Object(
+                        content="",
+                        tool_calls=[
+                            _Object(
+                                id="call_bad_json",
+                                function=_Object(name="read_file", arguments='{"path": "README.md"'),
+                            )
+                        ],
+                    ),
+                )
+            ],
+        )
+
+
+class _FakeOpenAIInvalidArgumentsClient:
+    def __init__(self):
+        self.chat = _Object(completions=_FakeOpenAIInvalidArgumentsCompletions())
+
+
+class _FakeOpenAIMixedArgumentsCompletions:
+    def create(self, **params):
+        return _Object(
+            model=params["model"],
+            choices=[
+                _Object(
+                    finish_reason="tool_calls",
+                    message=_Object(
+                        content="",
+                        tool_calls=[
+                            _Object(
+                                id="call_good",
+                                function=_Object(name="grep", arguments='{"pattern": "TODO"}'),
+                            ),
+                            _Object(
+                                id="call_bad",
+                                function=_Object(name="read_file", arguments='{"path": "README.md"'),
+                            ),
+                        ],
+                    ),
+                )
+            ],
+        )
+
+
+class _FakeOpenAIMixedArgumentsClient:
+    def __init__(self):
+        self.chat = _Object(completions=_FakeOpenAIMixedArgumentsCompletions())
 
 
 class _FakeAnthropicMessages:
@@ -186,6 +249,49 @@ def test_openai_compatible_provider_uses_capability_token_param_and_extra_body()
     assert client.completions.last_params["extra_body"] == {"preset": True, "request": True}
 
 
+def test_openai_compatible_provider_converts_forced_tool_choice():
+    client = _FakeOpenAIClient()
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=client,
+    )
+
+    provider.complete(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="读取 README")],
+            tools=[ToolDefinition(name="read_file", description="读取文件")],
+            tool_choice=ToolChoiceFunction(name="read_file"),
+        )
+    )
+
+    assert client.completions.last_params["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "read_file"},
+    }
+
+
+def test_openai_compatible_provider_rejects_raw_dict_tool_choice_with_provider_error():
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=_FakeOpenAIClient(),
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.complete(
+            ChatRequest(
+                messages=[ChatMessage(role="user", content="读取 README")],
+                tools=[ToolDefinition(name="read_file", description="读取文件")],
+                tool_choice={"type": "function", "function": {"name": "read_file"}},  # type: ignore[arg-type]
+            )
+        )
+
+    assert exc_info.value.kind == ProviderErrorKind.CONFIG_ERROR
+
+
 def test_openai_compatible_provider_rejects_tools_when_capability_disabled():
     provider = OpenAICompatibleProvider(
         name="no-tools",
@@ -222,6 +328,36 @@ def test_openai_compatible_provider_drops_tool_calls_when_response_is_truncated(
     assert response.diagnostics.warnings
 
 
+def test_openai_compatible_provider_drops_tool_calls_with_invalid_json_arguments():
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=_FakeOpenAIInvalidArgumentsClient(),
+    )
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
+
+    assert response.finish_reason == "tool_calls"
+    assert response.tool_calls == []
+    assert response.diagnostics.warnings
+
+
+def test_openai_compatible_provider_drops_all_tool_calls_when_any_arguments_are_invalid():
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=_FakeOpenAIMixedArgumentsClient(),
+    )
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="查找 TODO")]))
+
+    assert response.finish_reason == "tool_calls"
+    assert response.tool_calls == []
+    assert response.diagnostics.warnings
+
+
 def test_anthropic_provider_parses_text_and_tool_calls():
     client = _FakeAnthropicClient()
     provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
@@ -248,6 +384,21 @@ def test_anthropic_provider_parses_text_and_tool_calls():
     assert response.tool_calls[0].arguments == {"path": "README.md"}
     assert response.finish_reason == "tool_calls"
     assert response.diagnostics.raw_finish_reason == "tool_use"
+
+
+def test_anthropic_provider_rejects_non_auto_tool_choice():
+    provider = AnthropicProvider(model="claude-test", api_key="test-key", client=_FakeAnthropicClient())
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.complete(
+            ChatRequest(
+                messages=[ChatMessage(role="user", content="读取 README")],
+                tools=[ToolDefinition(name="read_file", description="读取文件")],
+                tool_choice=ToolChoiceFunction(name="read_file"),
+            )
+        )
+
+    assert exc_info.value.kind == ProviderErrorKind.CONFIG_ERROR
 
 
 def test_anthropic_provider_serializes_assistant_tool_calls():

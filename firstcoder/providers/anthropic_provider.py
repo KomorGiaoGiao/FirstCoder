@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from firstcoder.providers.base import ChatProvider
+from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.tool_adapters import to_anthropic_tool
 from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, FinishReason, ProviderDiagnostics, ToolCall
 
@@ -63,8 +64,11 @@ class AnthropicProvider(ChatProvider):
             params["system"] = system_prompt
         if request.tools:
             params["tools"] = [to_anthropic_tool(tool) for tool in request.tools]
-            if request.tool_choice and request.tool_choice != "auto":
-                params["tool_choice"] = request.tool_choice
+            if request.tool_choice is not None and request.tool_choice != "auto":
+                raise ProviderError(
+                    ProviderErrorKind.CONFIG_ERROR,
+                    "AnthropicProvider 仍是实验性实现，当前只支持 tool_choice=None 或 auto",
+                )
         if request.temperature is not None:
             params["temperature"] = request.temperature
 

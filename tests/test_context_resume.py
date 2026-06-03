@@ -3,6 +3,7 @@ from firstcoder.context.context_builder import ContextBuilder, InvalidCheckpoint
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.tool_sequence import InvalidToolCallSequenceError
 
 
 def _text_message(message_id: str, content: str) -> AgentMessage:
@@ -279,6 +280,45 @@ def test_checkpoint_tail_cannot_start_with_orphan_tool_result() -> None:
         assert "orphan tool result" in str(error)
     else:
         raise AssertionError("expected InvalidCheckpointBoundaryError")
+
+
+def test_checkpoint_tail_cannot_cut_off_tool_result_after_assistant_call() -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _text_message("msg_old", "旧消息"),
+            AgentMessage(
+                id="msg_assistant",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_call",
+                        message_id="msg_assistant",
+                        kind="tool_call",
+                        content="",
+                        metadata={"tool_name": "shell", "tool_call_id": "call_1", "arguments": {}},
+                    )
+                ],
+            ),
+        ],
+    )
+    checkpoint = Checkpoint(
+        id="ckpt_1",
+        session_id="sess_test",
+        summary="摘要",
+        tail_start_message_id="msg_assistant",
+        covered_until_message_id="msg_old",
+        source_fingerprint="source_1",
+        created_at="2026-06-01T00:00:00Z",
+    )
+
+    try:
+        ContextBuilder().build_provider_messages(view, checkpoint=checkpoint)
+    except InvalidToolCallSequenceError as error:
+        assert "assistant tool_call missing matching tool result" in str(error)
+    else:
+        raise AssertionError("expected invalid checkpoint tail")
 
 
 def test_checkpoint_tail_start_must_exist_in_view() -> None:

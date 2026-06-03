@@ -9,7 +9,7 @@ from firstcoder.context.manager import ContextCompactResult, ContextWindowTrigge
 from firstcoder.context.runtime_replay import replay_runtime_state
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall, ToolDefinition
+from firstcoder.providers.types import ChatRequest, ChatResponse, ProviderDiagnostics, ToolCall, ToolDefinition
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.types import Tool, ToolResult
 
@@ -116,6 +116,31 @@ def _echo_tool() -> Tool:
         ),
         executor=execute,
     )
+
+
+def test_agent_loop_persists_provider_diagnostics_metadata(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_test")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                finish_reason="tool_calls",
+                diagnostics=ProviderDiagnostics(
+                    raw_finish_reason="tool_calls",
+                    warnings=["tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用"],
+                ),
+            )
+        ]
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+
+    assistant = [message for message in store.rebuild_session_view("sess_test").messages if message.role == "assistant"][0]
+    assert assistant.metadata["diagnostics"]["raw_finish_reason"] == "tool_calls"
+    assert assistant.metadata["diagnostics"]["warnings"]
 
 
 def _extract_basis_message_id(request: ChatRequest) -> str:
