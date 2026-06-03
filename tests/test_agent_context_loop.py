@@ -3,13 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 
+import pytest
+
 from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.manager import ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.runtime_replay import replay_runtime_state
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse, ProviderDiagnostics, ToolCall, ToolDefinition
+from firstcoder.providers.errors import ProviderError, ProviderErrorKind
+from firstcoder.providers.types import (
+    ChatRequest,
+    ChatResponse,
+    ChatStreamEvent,
+    ProviderDiagnostics,
+    ToolCall,
+    ToolDefinition,
+)
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.types import Tool, ToolResult
 
@@ -98,6 +108,90 @@ class RecordingContextManager:
             before_tokens=0,
             after_tokens=0,
         )
+
+
+@dataclass
+class StreamingProvider(ChatProvider):
+    responses: list[ChatResponse]
+    requests: list[ChatRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return "fake-stream"
+
+    @property
+    def model(self) -> str:
+        return "fake-stream-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        raise AssertionError("streaming test should not call complete")
+
+    async def astream(self, request: ChatRequest):
+        self.requests.append(request)
+        response = self.responses.pop(0)
+        yield ChatStreamEvent(kind="message_started")
+        if response.content:
+            for text in response.content:
+                yield ChatStreamEvent(kind="text_delta", text=text)
+        for tool_call in response.tool_calls:
+            yield ChatStreamEvent(kind="tool_call_started", tool_call_id=tool_call.id, tool_name=tool_call.name)
+            yield ChatStreamEvent(kind="tool_call_delta", tool_call_id=tool_call.id, tool_name=tool_call.name)
+            yield ChatStreamEvent(kind="tool_call_completed", tool_call=tool_call)
+        yield ChatStreamEvent(kind="message_completed", response=response)
+
+
+@dataclass
+class ObservingStreamingProvider(ChatProvider):
+    response: ChatResponse
+    session: AgentSession
+    tool_results_before_message_completed: int | None = None
+    calls: int = 0
+
+    @property
+    def name(self) -> str:
+        return "observing-stream"
+
+    @property
+    def model(self) -> str:
+        return "observing-stream-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        raise AssertionError("streaming test should not call complete")
+
+    async def astream(self, request: ChatRequest):
+        self.calls += 1
+        if self.calls > 1:
+            final_response = ChatResponse(provider=self.name, model=self.model, content="完成")
+            yield ChatStreamEvent(kind="message_started")
+            yield ChatStreamEvent(kind="message_completed", response=final_response)
+            return
+
+        yield ChatStreamEvent(kind="message_started")
+        tool_call = self.response.tool_calls[0]
+        yield ChatStreamEvent(kind="tool_call_started", tool_call_id=tool_call.id, tool_name=tool_call.name)
+        yield ChatStreamEvent(kind="tool_call_completed", tool_call=tool_call)
+        self.tool_results_before_message_completed = len(
+            [message for message in self.session.rebuild_view().messages if message.role == "tool"]
+        )
+        yield ChatStreamEvent(kind="message_completed", response=self.response)
+
+
+@dataclass
+class IncompleteStreamingProvider(ChatProvider):
+    @property
+    def name(self) -> str:
+        return "incomplete-stream"
+
+    @property
+    def model(self) -> str:
+        return "incomplete-stream-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        raise AssertionError("streaming test should not call complete")
+
+    async def astream(self, request: ChatRequest):
+        yield ChatStreamEvent(kind="message_started")
+        yield ChatStreamEvent(kind="text_delta", text="partial")
 
 
 def _echo_tool() -> Tool:
@@ -247,6 +341,86 @@ def test_agent_loop_executes_tool_call_and_appends_tool_result(tmp_path) -> None
     assert view.messages[0].parts[0].metadata["created_turn"] == 1
     assert view.messages[1].parts[0].metadata["created_turn"] == 1
     assert view.messages[2].parts[0].metadata["created_turn"] == 1
+
+
+def test_agent_loop_streaming_text_persists_final_assistant_message(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream", agents_md="")
+    provider = StreamingProvider([ChatResponse(provider="fake-stream", model="fake-stream-model", content="你好")])
+    loop = AgentLoop(session=session, provider=provider)
+
+    result = loop.run_user_turn_streaming_sync("你好")
+
+    assert result.content == "你好"
+    assert [event.kind for event in loop.last_stream_events] == [
+        "message_started",
+        "text_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    view = store.rebuild_session_view("sess_stream")
+    assert [message.role for message in view.messages] == ["user", "assistant"]
+    assert view.messages[1].parts[0].content == "你好"
+
+
+def test_agent_loop_streaming_tool_call_executes_after_message_completed(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_tool", agents_md="")
+    provider = StreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "abc"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="完成"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider, tools=[_echo_tool()])
+
+    result = loop.run_user_turn_streaming_sync("调用工具")
+
+    assert result.content == "完成"
+    assert len(provider.requests) == 2
+    assert provider.requests[1].messages[-2].role == "assistant"
+    assert provider.requests[1].messages[-1].role == "tool"
+    view = store.rebuild_session_view("sess_stream_tool")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "assistant"]
+    assert view.messages[1].parts[0].metadata["tool_call_id"] == "call_1"
+    assert view.messages[2].parts[0].metadata["tool_call_id"] == "call_1"
+
+
+def test_agent_loop_streaming_does_not_execute_tool_before_message_completed(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_atomic", agents_md="")
+    response = ChatResponse(
+        provider="observing-stream",
+        model="observing-stream-model",
+        content="",
+        tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "abc"})],
+        finish_reason="tool_calls",
+    )
+    provider = ObservingStreamingProvider(response=response, session=session)
+
+    AgentLoop(session=session, provider=provider, tools=[_echo_tool()]).run_user_turn_streaming_sync("调用工具")
+
+    assert provider.tool_results_before_message_completed == 0
+    view = store.rebuild_session_view("sess_stream_atomic")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "assistant"]
+
+
+def test_agent_loop_streaming_incomplete_message_does_not_persist_assistant(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_incomplete", agents_md="")
+
+    with pytest.raises(ProviderError) as exc_info:
+        AgentLoop(session=session, provider=IncompleteStreamingProvider()).run_user_turn_streaming_sync("你好")
+
+    assert exc_info.value.kind == ProviderErrorKind.API_ERROR
+    view = store.rebuild_session_view("sess_stream_incomplete")
+    assert [message.role for message in view.messages] == ["user"]
 
 
 def test_agent_loop_injects_stateful_task_boundary_tool(tmp_path) -> None:

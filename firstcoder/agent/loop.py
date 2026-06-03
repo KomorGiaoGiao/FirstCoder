@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall
+from firstcoder.providers.errors import ProviderError, ProviderErrorKind
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
 from firstcoder.tools.types import Tool
 
 
@@ -40,6 +42,7 @@ class AgentLoop:
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
         self.max_tool_rounds = max_tool_rounds
+        self.last_stream_events: list[ChatStreamEvent] = []
         if tools:
             for tool in tools:
                 if tool.name not in self.session.tool_registry.names():
@@ -72,6 +75,49 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return response
 
+    async def run_user_turn_streaming(self, content: str) -> ChatResponse:
+        """使用 provider 内部 stream event 协议执行一轮会话。
+
+        文本 delta 可以被上层即时展示，但工具调用仍保持原子语义：只有 stream 完成并
+        返回完整 `ChatResponse.tool_calls` 后，才写入 assistant message 并执行工具。
+        """
+
+        self.last_stream_events = []
+        self.session.append_user_message(content)
+        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
+        response = await self._stream_once()
+        tool_rounds = 0
+        while response.tool_calls:
+            if tool_rounds >= self.max_tool_rounds:
+                response = self._tool_round_limit_response(response)
+                break
+
+            self.session.append_assistant_response(response)
+            task_hash_changed = self._execute_tool_calls(response.tool_calls)
+            if task_hash_changed:
+                self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
+            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
+            tool_rounds += 1
+            if tool_rounds >= self.max_tool_rounds:
+                response = self._tool_round_limit_response(response)
+                break
+            response = await self._stream_once()
+
+        self.session.append_assistant_response(response)
+        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        return response
+
+    def run_user_turn_streaming_sync(self, content: str) -> ChatResponse:
+        """同步入口，仅用于测试或没有运行中 event loop 的 CLI 场景。
+
+        Textual 这类已经运行 asyncio event loop 的 UI 后续应该直接 await
+        `run_user_turn_streaming()` 或放到 worker 中执行，不能调用这个包装方法。
+        """
+
+        return asyncio.run(self.run_user_turn_streaming(content))
+
     def _complete_once(self) -> ChatResponse:
         definitions = self.session.tool_registry.definitions()
         system_prefix = self.session.build_system_prefix(
@@ -84,6 +130,29 @@ class AgentLoop:
             system_prefix=system_prefix,
         )
         return self.provider.complete(ChatRequest(messages=messages, tools=definitions))
+
+    async def _stream_once(self) -> ChatResponse:
+        definitions = self.session.tool_registry.definitions()
+        system_prefix = self.session.build_system_prefix(
+            provider_name=self.provider.name,
+            provider_model=self.provider.model,
+            tools=definitions,
+        )
+        messages = self.context_builder.build_provider_messages(
+            self.session.rebuild_view(),
+            system_prefix=system_prefix,
+        )
+        final_response: ChatResponse | None = None
+        async for event in self.provider.astream(ChatRequest(messages=messages, tools=definitions)):
+            self.last_stream_events.append(event)
+            if event.kind == "message_completed":
+                final_response = event.response
+        if final_response is None:
+            raise ProviderError(
+                ProviderErrorKind.API_ERROR,
+                "provider stream ended without message_completed event",
+            )
+        return final_response
 
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> bool:
         task_hash_changed = False
