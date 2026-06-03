@@ -6,7 +6,7 @@ from typing import Any
 
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.tool_adapters import to_anthropic_tool
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ToolCall
+from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, FinishReason, ProviderDiagnostics, ToolCall
 
 
 def _read_field(value: Any, name: str, default: Any = None) -> Any:
@@ -18,10 +18,10 @@ def _read_field(value: Any, name: str, default: Any = None) -> Any:
 
 
 class AnthropicProvider(ChatProvider):
-    """Anthropic Messages API provider。
+    """实验性的 Anthropic Messages API provider。
 
-    Anthropic 的 tool use 格式和 OpenAI 不同，因此单独实现适配层。
-    agent 主循环仍然只看到统一的 `ChatRequest` 和 `ChatResponse`。
+    当前项目主线只保证 OpenAI-compatible provider。这个实现保留为协议学习和
+    后续扩展占位，不承诺支持 Anthropic 原生 streaming、thinking 或 cache_control。
     """
 
     def __init__(
@@ -70,13 +70,15 @@ class AnthropicProvider(ChatProvider):
 
         response = self._client.messages.create(**params)
         content_blocks = _read_field(response, "content", []) or []
+        raw_finish_reason = _read_field(response, "stop_reason")
 
         return ChatResponse(
             provider=self.name,
             model=_read_field(response, "model", self._model),
             content=self._collect_text(content_blocks),
             tool_calls=self._parse_tool_calls(content_blocks),
-            finish_reason=_read_field(response, "stop_reason"),
+            finish_reason=_normalize_stop_reason(raw_finish_reason),
+            diagnostics=ProviderDiagnostics(raw_finish_reason=raw_finish_reason),
             raw=response,
         )
 
@@ -152,3 +154,21 @@ class AnthropicProvider(ChatProvider):
                 )
             )
         return parsed
+
+
+def _normalize_stop_reason(reason: Any) -> FinishReason:
+    """把 Anthropic stop_reason 收敛成内部 finish_reason。
+
+    AnthropicProvider 仍是实验性实现，但只要返回 `ChatResponse`，就必须遵守
+    provider 层统一响应契约；原始 stop_reason 放到 diagnostics 里。
+    """
+
+    if reason == "end_turn" or reason == "stop_sequence":
+        return "stop"
+    if reason == "tool_use":
+        return "tool_calls"
+    if reason == "max_tokens":
+        return "length"
+    if reason is None:
+        return "unknown"
+    return "unknown"

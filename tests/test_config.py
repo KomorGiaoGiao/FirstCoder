@@ -7,6 +7,7 @@ import pytest
 from firstcoder.config import AppConfig, load_config
 from firstcoder.providers.factory import ProviderConfigError, create_provider_from_config
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
+from firstcoder.providers.presets import PROVIDER_PRESETS
 
 
 def test_load_config_defaults_to_openai(monkeypatch):
@@ -38,6 +39,8 @@ def test_create_provider_from_config_uses_preset_values():
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.name == "deepseek"
     assert provider.model == "deepseek-chat"
+    assert provider.base_url == "https://api.deepseek.com"
+    assert provider.capabilities.supports_tools is True
 
 
 def test_create_provider_from_config_reports_missing_api_key():
@@ -63,3 +66,39 @@ def test_create_provider_from_config_supports_custom_openai_compatible():
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.name == "example"
     assert provider.model == "custom-model"
+
+
+def test_openai_compatible_presets_have_constructable_metadata():
+    expected = {
+        "openai",
+        "deepseek",
+        "qwen",
+        "moonshot",
+        "zhipu",
+        "openrouter",
+        "ollama",
+    }
+
+    for name in expected:
+        preset = PROVIDER_PRESETS[name]
+        assert preset.kind == "openai-compatible"
+        assert preset.name == name
+        assert preset.api_key_env
+        assert preset.model_env
+        assert preset.default_model
+        assert preset.capabilities.supports_tools is True
+
+
+def test_create_provider_from_config_passes_openrouter_headers():
+    config = AppConfig(
+        provider_name="openrouter",
+        env={
+            "OPENROUTER_API_KEY": "test-key",
+        },
+    )
+
+    provider = create_provider_from_config(config)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.base_url == "https://openrouter.ai/api/v1"
+    assert provider.extra_headers["X-Title"] == "FirstCoder"

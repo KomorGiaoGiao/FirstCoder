@@ -11,4 +11,5 @@ def test_classify_provider_error_from_known_messages() -> None:
 def test_provider_error_exposes_retry_policy_flags() -> None:
     assert ProviderError(ProviderErrorKind.PROMPT_TOO_LONG, "too long").retryable is True
     assert ProviderError(ProviderErrorKind.AUTH_ERROR, "bad key").retryable is False
+    assert ProviderError(ProviderErrorKind.CONFIG_ERROR, "bad config").retryable is False
     assert ProviderError(ProviderErrorKind.USER_ABORT, "cancelled").retryable is False

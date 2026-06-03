@@ -15,6 +15,7 @@ class ProviderErrorKind(StrEnum):
     TIMEOUT = "timeout"
     RATE_LIMIT = "rate_limit"
     AUTH_ERROR = "auth_error"
+    CONFIG_ERROR = "config_error"
     API_ERROR = "api_error"
     USER_ABORT = "user_abort"
     NETWORK_ERROR = "network_error"

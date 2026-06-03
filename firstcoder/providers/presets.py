@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+from firstcoder.providers.types import ProviderCapabilities
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +19,9 @@ class ProviderPreset:
     default_model: str
     base_url_env: str | None = None
     default_base_url: str | None = None
+    capabilities: ProviderCapabilities = ProviderCapabilities()
+    extra_headers: dict[str, str] | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 # 这里优先覆盖对 coding agent 学习项目最常见的几类接入方式。
@@ -72,6 +78,10 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         default_model="openai/gpt-4.1-mini",
         base_url_env="OPENROUTER_BASE_URL",
         default_base_url="https://openrouter.ai/api/v1",
+        extra_headers={
+            "HTTP-Referer": "https://github.com/Komor-Code/FirstCoder",
+            "X-Title": "FirstCoder",
+        },
     ),
     "ollama": ProviderPreset(
         name="ollama",
@@ -90,4 +100,3 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         default_model="claude-sonnet-4-5",
     ),
 }
-

@@ -7,6 +7,54 @@ from typing import Any, Literal
 
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
+FinishReason = Literal[
+    "stop",
+    "tool_calls",
+    "length",
+    "content_filter",
+    "error",
+    "unknown",
+    "tool_round_limit",
+]
+TokenParam = Literal["max_tokens", "max_completion_tokens"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """provider 静态能力和 OpenAI-compatible 方言开关。
+
+    这些字段描述“请求应该怎么发”和“上层可以期待什么能力”，避免 agent loop
+    为不同厂商写分支。真实 capability discovery 还没做之前，先由 preset 提供。
+    """
+
+    supports_tools: bool = True
+    supports_streaming: bool = False
+    supports_parallel_tool_calls: bool = False
+    supports_json_mode: bool = False
+    supports_vision: bool = False
+    supports_reasoning: bool = False
+    token_param: TokenParam = "max_tokens"
+
+
+@dataclass(slots=True)
+class TokenUsage:
+    """provider 返回的 token 用量。
+
+    不同 OpenAI-compatible 厂商返回字段可能不完整，所以这里允许局部为空。
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(slots=True)
+class ProviderDiagnostics:
+    """不会进入模型可见正文的 provider 诊断信息。"""
+
+    reasoning: str | None = None
+    raw_finish_reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -66,5 +114,7 @@ class ChatResponse:
     model: str
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
-    finish_reason: str | None = None
+    finish_reason: FinishReason | None = None
+    usage: TokenUsage | None = None
+    diagnostics: ProviderDiagnostics = field(default_factory=ProviderDiagnostics)
     raw: Any | None = None

@@ -5,7 +5,16 @@ from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import ProviderConfigError, create_provider, create_provider_from_config
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.tool_adapters import to_anthropic_tool, to_openai_tool
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ToolCall, ToolDefinition
+from firstcoder.providers.types import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ProviderCapabilities,
+    ProviderDiagnostics,
+    TokenUsage,
+    ToolCall,
+    ToolDefinition,
+)
 
 __all__ = [
     "AnthropicProvider",
@@ -14,7 +23,10 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "OpenAICompatibleProvider",
+    "ProviderCapabilities",
     "ProviderConfigError",
+    "ProviderDiagnostics",
+    "TokenUsage",
     "ToolCall",
     "ToolDefinition",
     "create_provider",
