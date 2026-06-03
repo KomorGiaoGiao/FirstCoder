@@ -59,7 +59,7 @@ FirstCoder 的上下文压缩计划采用分层策略，而不是只做简单截
 当前已经实现 provider 抽象层，agent 后续只需要依赖统一的 `ChatProvider` 接口。
 当前主线优先保证 OpenAI Chat Completions-compatible 协议；Anthropic provider 保留为实验性学习实现，不承诺原生 thinking、cache 或 streaming 完整行为。
 
-已预留的 OpenAI-compatible 接入方式：
+OpenAI-compatible 主线接入方式：
 
 - `openai`：OpenAI 官方接口。
 - `deepseek`：DeepSeek OpenAI-compatible 接口。
@@ -68,15 +68,22 @@ FirstCoder 的上下文压缩计划采用分层策略，而不是只做简单截
 - `zhipu`：智谱 OpenAI-compatible 接口。
 - `openrouter`：OpenRouter OpenAI-compatible 接口。
 - `ollama`：本地 Ollama OpenAI-compatible 接口。
+
+实验性 provider：
+
 - `anthropic`：实验性的 Anthropic Messages API 占位实现。
 
 provider 层当前已提供：
 
 - 非流式文本和 function tool calling 的统一响应结构。
+- OpenAI-compatible 流式文本输出和 function tool call delta 拼装。
+- AgentLoop/TUI runtime 可以消费内部 `ChatStreamEvent`；UI 不直接解析 OpenAI 原始 chunk。
+- `PROMPT_TOO_LONG` provider 错误可以触发一次上下文压缩恢复；压缩成功后才会重试请求。
 - `finish_reason`、`usage`、`diagnostics` 等内部元数据。
 - provider capability / quirks，用于收敛 `max_tokens`、额外 headers/body 和 tools 支持等厂商差异。
-- 内部流式事件接口 `ChatStreamEvent`，后续 OpenAI-compatible streaming 会基于它实现，agent/UI 不直接消费 OpenAI 原始 chunk。
 - provider 错误分类，用于区分鉴权、限流、超时、网络、服务端错误、不支持能力和上下文过长等情况。
+
+当前暂不支持 Anthropic 原生 thinking/cache/streaming、OpenAI Responses API、reasoning 内容保存展示和多模态输入输出。
 
 默认通过环境变量 `FIRSTCODER_PROVIDER` 选择 provider。如果不设置，则默认使用 `openai`。
 
