@@ -44,6 +44,34 @@ class FakeDisplayChatRunner(FakeChatRunner):
         return ChatResponse(provider="fake", model="fake", content="done")
 
 
+class FakeAsyncChatRunner(FakeChatRunner):
+    async def arun_user_turn(self, content: str) -> ChatResponse:
+        self.inputs.append(content)
+        self.last_display_lines = ["async reply"]
+        return ChatResponse(provider="fake", model="fake", content="async reply")
+
+
+class FailingAsyncChatRunner(FakeChatRunner):
+    async def arun_user_turn(self, content: str) -> ChatResponse:
+        self.inputs.append(content)
+        raise RuntimeError("provider down")
+
+
+class BlockingAsyncChatRunner(FakeChatRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        import anyio
+
+        self.started = anyio.Event()
+        self.release = anyio.Event()
+
+    async def arun_user_turn(self, content: str) -> ChatResponse:
+        self.inputs.append(content)
+        self.started.set()
+        await self.release.wait()
+        return ChatResponse(provider="fake", model="fake", content="done")
+
+
 class UnhandledCommandHandler:
     def handle(self, text: str) -> CommandResult:
         return CommandResult(handled=False)
@@ -103,3 +131,51 @@ async def test_firstcoder_app_displays_session_id_and_runner_display_lines() -> 
         await pilot.press("enter")
 
     assert runner.inputs == ["hello"]
+
+
+@pytest.mark.anyio
+async def test_firstcoder_app_awaits_async_chat_runner_when_available() -> None:
+    runner = FakeAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+
+    assert runner.inputs == ["hello"]
+    assert runner.last_display_lines == ["async reply"]
+
+
+@pytest.mark.anyio
+async def test_firstcoder_app_displays_chat_errors_from_worker() -> None:
+    runner = FailingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runner.inputs == ["hello"]
+
+
+@pytest.mark.anyio
+async def test_firstcoder_app_rejects_chat_input_while_turn_is_running() -> None:
+    runner = BlockingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"first")
+        await pilot.press("enter")
+        await runner.started.wait()
+        await pilot.click("#input")
+        await pilot.press(*"second")
+        await pilot.press("enter")
+        await pilot.pause()
+        runner.release.set()
+        await pilot.pause()
+
+    assert runner.inputs == ["first"]

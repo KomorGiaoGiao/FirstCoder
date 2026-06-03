@@ -6,6 +6,7 @@ Textual widget 只负责显示和输入；这里把“当前 session 可被 resu
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,7 +18,7 @@ from firstcoder.context.manager import ContextCompactRequest
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatResponse
+from firstcoder.providers.types import ChatResponse, ChatStreamEvent
 from firstcoder.tools.types import Tool
 
 
@@ -61,8 +62,10 @@ class AgentChatRunner:
     context_builder: ContextBuilder | None = None
     context_manager: Any | None = None
     max_tool_rounds: int = 4
+    use_streaming: bool = False
     loops: list[AgentLoop] = field(default_factory=list)
     last_display_lines: list[str] = field(default_factory=list)
+    last_stream_events: list[ChatStreamEvent] = field(default_factory=list)
 
     def run_user_turn(self, content: str) -> ChatResponse:
         before_count = len(self.current_session.rebuild_view().messages)
@@ -76,9 +79,38 @@ class AgentChatRunner:
         )
         self.loops.append(loop)
         response = loop.run_user_turn(content)
+        self.last_stream_events = []
         after_view = self.current_session.rebuild_view()
         self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
         return response
+
+    async def arun_user_turn(self, content: str) -> ChatResponse:
+        """异步聊天入口。
+
+        Textual 已经运行在 asyncio event loop 中，所以 UI 需要 await 这个入口；只有这里
+        才会在 `use_streaming=True` 时消费 provider 的内部 stream event。
+        """
+
+        if self.use_streaming:
+            before_count = len(self.current_session.rebuild_view().messages)
+            loop = AgentLoop(
+                session=self.current_session.session,
+                provider=self.provider,
+                tools=self.tools,
+                context_builder=self.context_builder,
+                context_manager=self.context_manager,
+                max_tool_rounds=self.max_tool_rounds,
+            )
+            self.loops.append(loop)
+            self.last_display_lines = []
+            self.last_stream_events = []
+            response = await loop.run_user_turn_streaming(content)
+            self.last_stream_events = list(loop.last_stream_events)
+            after_view = self.current_session.rebuild_view()
+            self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+            return response
+
+        return await asyncio.to_thread(self.run_user_turn, content)
 
 
 def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:

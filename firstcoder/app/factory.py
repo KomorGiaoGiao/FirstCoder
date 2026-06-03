@@ -72,6 +72,7 @@ def create_firstcoder_app(
         provider=resolved_provider,
         tools=resolved_tools,
         context_manager=context_manager,
+        use_streaming=bool(getattr(getattr(resolved_provider, "capabilities", None), "supports_streaming", False)),
     )
     return FirstCoderApp(
         command_handler=command_handler,

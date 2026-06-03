@@ -53,6 +53,7 @@ class FirstCoderApp(App[None]):
         self.chat_runner = chat_runner
         self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
+        self._chat_busy = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -70,7 +71,7 @@ class FirstCoderApp(App[None]):
             "/context, /compact status, /compact"
         )
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
         if not text:
@@ -96,7 +97,28 @@ class FirstCoderApp(App[None]):
             output.write("普通聊天入口尚未接入 AgentLoop。")
             return
 
-        response = self.chat_runner.run_user_turn(text)
+        if self._chat_busy:
+            output.write("Chat is still running. Please wait for the current turn to finish.")
+            return
+
+        self._chat_busy = True
+        self.run_worker(self._run_chat_turn(text))
+
+    async def _run_chat_turn(self, text: str) -> None:
+        output = self.query_one("#output", RichLog)
+        try:
+            async_runner = getattr(self.chat_runner, "arun_user_turn", None) if self.chat_runner else None
+            if async_runner is not None:
+                response = await async_runner(text)
+            else:
+                response = self.chat_runner.run_user_turn(text)
+        except Exception as exc:
+            output.write(f"Chat error: {exc}")
+            self._refresh_session_subtitle()
+            return
+        finally:
+            self._chat_busy = False
+
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
         if display_lines:
             for line in display_lines:
