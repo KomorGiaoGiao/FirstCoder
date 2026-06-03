@@ -26,6 +26,10 @@ class ChatRunnerLike(Protocol):
         ...
 
 
+class CurrentSessionLike(Protocol):
+    session_id: str
+
+
 @dataclass(slots=True)
 class FirstCoderTuiConfig:
     title: str = "FirstCoder"
@@ -41,11 +45,13 @@ class FirstCoderApp(App[None]):
         *,
         command_handler: CommandHandlerLike | None = None,
         chat_runner: ChatRunnerLike | None = None,
+        current_session: CurrentSessionLike | None = None,
         config: FirstCoderTuiConfig | None = None,
     ) -> None:
         super().__init__()
         self.command_handler = command_handler
         self.chat_runner = chat_runner
+        self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
 
     def compose(self) -> ComposeResult:
@@ -57,6 +63,7 @@ class FirstCoderApp(App[None]):
 
     def on_mount(self) -> None:
         self.title = self.config.title
+        self._refresh_session_subtitle()
         output = self.query_one("#output", RichLog)
         output.write(
             "FirstCoder ready. Commands: /sessions, /session, /resume, /share, /rename, "
@@ -80,6 +87,7 @@ class FirstCoderApp(App[None]):
             result = self.command_handler.handle(text)
             if result.handled:
                 output.write(result.output)
+                self._refresh_session_subtitle()
                 return
             output.write(f"Unknown command: {text}")
             return
@@ -89,5 +97,16 @@ class FirstCoderApp(App[None]):
             return
 
         response = self.chat_runner.run_user_turn(text)
-        content = getattr(response, "content", "")
-        output.write(content or "[assistant response has no text content]")
+        display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
+        if display_lines:
+            for line in display_lines:
+                output.write(line)
+        else:
+            content = getattr(response, "content", "")
+            output.write(content or "[assistant response has no text content]")
+        self._refresh_session_subtitle()
+
+    def _refresh_session_subtitle(self) -> None:
+        if self.current_session is None:
+            return
+        self.sub_title = f"Session: {self.current_session.session_id}"

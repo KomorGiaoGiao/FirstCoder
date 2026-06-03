@@ -6,6 +6,7 @@ Textual widget 只负责显示和输入；这里把“当前 session 可被 resu
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,7 +14,7 @@ from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest
-from firstcoder.context.models import SessionView
+from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatResponse
@@ -61,8 +62,10 @@ class AgentChatRunner:
     context_manager: Any | None = None
     max_tool_rounds: int = 4
     loops: list[AgentLoop] = field(default_factory=list)
+    last_display_lines: list[str] = field(default_factory=list)
 
     def run_user_turn(self, content: str) -> ChatResponse:
+        before_count = len(self.current_session.rebuild_view().messages)
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
@@ -72,4 +75,58 @@ class AgentChatRunner:
             max_tool_rounds=self.max_tool_rounds,
         )
         self.loops.append(loop)
-        return loop.run_user_turn(content)
+        response = loop.run_user_turn(content)
+        after_view = self.current_session.rebuild_view()
+        self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+        return response
+
+
+def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:
+    """把一轮新增事实压成 TUI 可读的短行。
+
+    这里不重新编排 agent，只读取本轮已经落到 event log 的消息。这样 TUI 可以看到
+    tool call/result 摘要，又不会知道 provider/tool 协议细节。
+    """
+
+    lines: list[str] = []
+    for message in messages:
+        if message.role == "assistant":
+            lines.extend(_assistant_lines(message.parts))
+        elif message.role == "tool":
+            lines.extend(_tool_lines(message.parts))
+    return lines
+
+
+def _assistant_lines(parts: list[MessagePart]) -> list[str]:
+    lines: list[str] = []
+    for part in parts:
+        if part.kind == "text" and part.content:
+            lines.append(part.content)
+        elif part.kind == "tool_call":
+            metadata = part.metadata
+            name = str(metadata.get("tool_name") or "tool")
+            arguments = json.dumps(metadata.get("arguments") or {}, ensure_ascii=False, sort_keys=True)
+            lines.append(f"Tool call: {name} {_truncate(arguments, 400)}")
+    return lines
+
+
+def _tool_lines(parts: list[MessagePart]) -> list[str]:
+    lines: list[str] = []
+    for part in parts:
+        if part.kind != "tool_result":
+            continue
+        metadata = part.metadata
+        name = str(metadata.get("tool_name") or "tool")
+        status = "success" if metadata.get("ok", True) else "failed"
+        content = _truncate(part.content, 400)
+        lines.append(f"Tool result: {name} {status}: {content}")
+    return lines
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 3:
+        return "." * max_chars
+    return normalized[: max_chars - 3] + "..."

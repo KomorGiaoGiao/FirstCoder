@@ -4,7 +4,8 @@ from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse
+from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall
+from firstcoder.tools.types import make_text_result, Tool
 
 
 @dataclass
@@ -65,3 +66,55 @@ def test_agent_chat_runner_uses_current_session_and_can_follow_resume(tmp_path) 
         "第二轮",
         "second reply",
     ]
+
+
+def test_agent_chat_runner_records_tool_call_and_result_display_lines(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_tools",
+        agents_md="",
+        tools=[
+            Tool(
+                definition=ToolCallEchoDefinition(),
+                executor=lambda path: make_text_result("echo_path", f"read {path}"),
+            )
+        ],
+    )
+    state = CurrentSessionState(session)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="echo_path", arguments={"path": "README.md"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="done"),
+        ]
+    )
+    runner = AgentChatRunner(current_session=state, provider=provider)
+
+    response = runner.run_user_turn("读一下")
+
+    assert response.content == "done"
+    assert runner.last_display_lines == [
+        'Tool call: echo_path {"path": "README.md"}',
+        "Tool result: echo_path success: read README.md",
+        "done",
+    ]
+
+
+def ToolCallEchoDefinition():
+    from firstcoder.providers.types import ToolDefinition
+
+    return ToolDefinition(
+        name="echo_path",
+        description="回显路径。",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    )

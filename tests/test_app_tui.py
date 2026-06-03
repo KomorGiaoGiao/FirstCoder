@@ -30,10 +30,18 @@ def test_firstcoder_app_can_be_created_with_command_handler() -> None:
 class FakeChatRunner:
     def __init__(self) -> None:
         self.inputs = []
+        self.last_display_lines = []
 
     def run_user_turn(self, content: str) -> ChatResponse:
         self.inputs.append(content)
         return ChatResponse(provider="fake", model="fake", content=f"reply:{content}")
+
+
+class FakeDisplayChatRunner(FakeChatRunner):
+    def run_user_turn(self, content: str) -> ChatResponse:
+        self.inputs.append(content)
+        self.last_display_lines = ["Tool call: echo {}", "Tool result: echo success: ok", "done"]
+        return ChatResponse(provider="fake", model="fake", content="done")
 
 
 class UnhandledCommandHandler:
@@ -81,3 +89,17 @@ async def test_firstcoder_app_does_not_send_unhandled_slash_command_to_chat_runn
         await pilot.press("enter")
 
     assert runner.inputs == []
+
+
+@pytest.mark.anyio
+async def test_firstcoder_app_displays_session_id_and_runner_display_lines() -> None:
+    runner = FakeDisplayChatRunner()
+    app = FirstCoderApp(chat_runner=runner, current_session=FakeSession())
+
+    async with app.run_test() as pilot:
+        assert app.sub_title == "Session: sess_test"
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+
+    assert runner.inputs == ["hello"]

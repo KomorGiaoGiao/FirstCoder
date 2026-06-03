@@ -76,5 +76,6 @@ def create_firstcoder_app(
     return FirstCoderApp(
         command_handler=command_handler,
         chat_runner=chat_runner,
+        current_session=current,
         config=config or FirstCoderTuiConfig(),
     )
