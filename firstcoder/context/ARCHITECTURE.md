@@ -602,7 +602,9 @@ if trigger == "prompt_too_long" and blocking_target_tokens is not None:
     return blocking_target_tokens
 ```
 
-当前代码里这个触发源已经在 manager/config 中预留，但主 agent loop 的 provider 错误恢复还没有完整接入。
+当前代码里同步和 streaming agent loop 都已经接入该恢复路径：只有
+`ProviderErrorKind.PROMPT_TOO_LONG` 会触发 `PROMPT_TOO_LONG` compact，且压缩成功后只重试一次
+provider 请求。
 
 ## L1-L5 分层策略
 
@@ -617,7 +619,8 @@ README 里的上下文压缩计划是：
 当前代码里：
 
 - L1-L3 在 `CompactionPipeline`。
-- L4 在 `LlmCompactService`。
+- L4 在 `LlmCompactService`。真实 TUI 默认路径通过 `ProviderLlmCompactSummarizer`
+  接入当前 provider 来生成摘要；测试或特殊场景仍可以注入自定义 summarizer。
 - L5 表现为 `ContextWindowTrigger.MANUAL` 和 TUI `/compact` 命令入口。
 
 ### L1 Micro Compact
@@ -1042,7 +1045,7 @@ tool_result 留在 tail 开头
 
 - `context` 当前包含底层 session store，但用户可见的 session catalog/share 已经放在 `firstcoder/session`。
 - token 估算仍是近似值，后续可以按 provider 接入真实 tokenizer。
-- L4 summarizer 还是窄协议，真实 provider adapter 还可以继续补。
+- L4 summarizer 已有默认 provider adapter，但摘要 prompt、边界选择策略和结构化摘要格式仍可以继续增强。
 - share 已经从 event log 派生只读 transcript，不导出可继续运行的 session snapshot。
 - 压缩后的 archive 清理、过期策略、磁盘预算还没有设计。
 

@@ -53,6 +53,7 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         response = self._complete_once_with_recovery()
+        response = self._drop_unsupported_tool_calls(response)
         tool_rounds = 0
         while response.tool_calls:
             if tool_rounds >= self.max_tool_rounds:
@@ -69,7 +70,7 @@ class AgentLoop:
             if tool_rounds >= self.max_tool_rounds:
                 response = self._tool_round_limit_response(response)
                 break
-            response = self._complete_once_with_recovery()
+            response = self._drop_unsupported_tool_calls(self._complete_once_with_recovery())
 
         self.session.append_assistant_response(response)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
@@ -87,6 +88,7 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         response = await self._stream_once_with_recovery()
+        response = self._drop_unsupported_tool_calls(response)
         tool_rounds = 0
         while response.tool_calls:
             if tool_rounds >= self.max_tool_rounds:
@@ -103,7 +105,7 @@ class AgentLoop:
             if tool_rounds >= self.max_tool_rounds:
                 response = self._tool_round_limit_response(response)
                 break
-            response = await self._stream_once_with_recovery()
+            response = self._drop_unsupported_tool_calls(await self._stream_once_with_recovery())
 
         self.session.append_assistant_response(response)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
@@ -119,10 +121,11 @@ class AgentLoop:
         return asyncio.run(self.run_user_turn_streaming(content))
 
     def _complete_once(self) -> ChatResponse:
-        definitions = self.session.tool_registry.definitions()
+        definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
             provider_model=self.provider.model,
+            provider_capabilities=getattr(self.provider, "capabilities", None),
             tools=definitions,
         )
         messages = self.context_builder.build_provider_messages(
@@ -143,10 +146,11 @@ class AgentLoop:
             return self._complete_once()
 
     async def _stream_once(self) -> ChatResponse:
-        definitions = self.session.tool_registry.definitions()
+        definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
             provider_model=self.provider.model,
+            provider_capabilities=getattr(self.provider, "capabilities", None),
             tools=definitions,
         )
         messages = self.context_builder.build_provider_messages(
@@ -204,6 +208,40 @@ class AgentLoop:
                 current_turn=self.session.current_turn,
             )
         )
+
+    def _provider_tool_definitions(self):
+        capabilities = getattr(self.provider, "capabilities", None)
+        if capabilities is not None and not capabilities.supports_tools:
+            return []
+        return self.session.tool_registry.definitions()
+
+    def _drop_unsupported_tool_calls(self, response: ChatResponse) -> ChatResponse:
+        capabilities = getattr(self.provider, "capabilities", None)
+        if capabilities is None or capabilities.supports_tools or not response.tool_calls:
+            return response
+        self._drop_unsupported_tool_call_stream_events()
+        response.diagnostics.warnings.append(
+            "provider returned tool_calls even though supports_tools is false; tool calls were ignored"
+        )
+        return ChatResponse(
+            provider=response.provider,
+            model=response.model,
+            content=response.content or "当前 provider 不支持 tool calling，已忽略模型返回的工具调用。",
+            tool_calls=[],
+            finish_reason="error",
+            usage=response.usage,
+            diagnostics=response.diagnostics,
+            raw=response.raw,
+        )
+
+    def _drop_unsupported_tool_call_stream_events(self) -> None:
+        if not self.last_stream_events:
+            return
+        self.last_stream_events = [
+            event
+            for event in self.last_stream_events
+            if event.kind not in {"tool_call_started", "tool_call_delta", "tool_call_completed"}
+        ]
 
     def _tool_round_limit_response(self, response: ChatResponse) -> ChatResponse:
         """工具轮次上限命中后，只保存纯文本说明，避免写入未执行的 tool_call。"""

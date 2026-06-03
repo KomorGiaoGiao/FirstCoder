@@ -154,6 +154,17 @@ class ContextWindowManager:
             )
 
         if self.l4_service is None:
+            l4_event = LlmCompactEvent(
+                status="failed",
+                source_fingerprint=programmatic.event.input_fingerprint,
+                failure_reason="l4_service_missing",
+            )
+            self._record_l4_event(
+                session_id=request.view.session_id,
+                trigger=trigger,
+                target_tokens=target_tokens,
+                event=l4_event,
+            )
             self._record_auto_failure_if_needed(
                 request=request,
                 mode=mode,
@@ -167,6 +178,7 @@ class ContextWindowManager:
                 before_tokens=before_tokens,
                 after_tokens=after_tokens,
                 programmatic_event=programmatic.event,
+                l4_event=l4_event,
                 final_failure_reason="l4_service_missing",
             )
 

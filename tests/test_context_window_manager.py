@@ -225,6 +225,42 @@ def test_manager_runs_l4_only_after_l1_l3_fail_target(tmp_path: Path) -> None:
     ]
 
 
+def test_manager_persists_l4_missing_failure_for_replay(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    view = _view(_message("msg_1", "long" * 400))
+    pipeline = FakePipeline(
+        _programmatic_result(
+            view,
+            before_tokens=1000,
+            after_tokens=900,
+            stopped_at="not_reached",
+        )
+    )
+    manager = ContextWindowManager(
+        store=store,
+        pipeline=pipeline,
+        l4_service=None,
+        auto_compact_threshold=10,
+        target_tokens=200,
+    )
+    runtime_state = SessionRuntimeState(session_id="sess_test")
+
+    result = manager.compact_if_needed(
+        ContextCompactRequest(
+            view=view,
+            runtime_state=runtime_state,
+            trigger=ContextWindowTrigger.AUTO,
+        )
+    )
+
+    events = store.list_events("sess_test")
+    assert result.status == "failed"
+    assert result.reason == "l4_service_missing"
+    assert [event.type for event in events] == ["compaction_completed", "llm_compaction_completed"]
+    assert events[-1].payload["status"] == "failed"
+    assert events[-1].payload["reason"] == "l4_service_missing"
+
+
 def test_manager_uses_effective_tokens_after_programmatic_compaction(tmp_path: Path) -> None:
     store = JsonlSessionStore(tmp_path)
     view = SessionView(

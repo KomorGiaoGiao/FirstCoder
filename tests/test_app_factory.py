@@ -5,6 +5,7 @@ from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import AgentChatRunner
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ProviderCapabilities
 
@@ -104,3 +105,15 @@ def test_create_firstcoder_app_can_use_default_builtin_tools(tmp_path: Path) -> 
     )
 
     assert app.chat_runner.tools
+
+
+def test_create_firstcoder_app_wires_l4_service_for_default_context_manager(tmp_path: Path) -> None:
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        provider=FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")]),
+        session_id="sess_test",
+        tools=[],
+    )
+
+    assert isinstance(app.chat_runner.context_manager.l4_service, LlmCompactService)

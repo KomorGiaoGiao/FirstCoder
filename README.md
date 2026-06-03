@@ -81,6 +81,7 @@ provider 层当前已提供：
 - `PROMPT_TOO_LONG` provider 错误可以触发一次上下文压缩恢复；压缩成功后才会重试请求。
 - `finish_reason`、`usage`、`diagnostics` 等内部元数据。
 - provider capability / quirks，用于收敛 `max_tokens`、额外 headers/body 和 tools 支持等厂商差异。
+- AgentLoop 会根据 provider capability 决定是否向模型暴露 tools，避免不支持 tool calling 的 provider 收到工具 schema。
 - provider 错误分类，用于区分鉴权、限流、超时、网络、服务端错误、不支持能力和上下文过长等情况。
 
 当前暂不支持 Anthropic 原生 thinking/cache/streaming、OpenAI Responses API、reasoning 内容保存展示和多模态输入输出。

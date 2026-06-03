@@ -17,6 +17,7 @@ from firstcoder.providers.types import (
     ChatResponse,
     ChatStreamEvent,
     ProviderDiagnostics,
+    ProviderCapabilities,
     ToolCall,
     ToolDefinition,
 )
@@ -27,6 +28,7 @@ from firstcoder.tools.types import Tool, ToolResult
 @dataclass
 class FakeProvider(ChatProvider):
     responses: list[ChatResponse]
+    capabilities: ProviderCapabilities = field(default_factory=ProviderCapabilities)
     requests: list[ChatRequest] = field(default_factory=list)
 
     @property
@@ -133,6 +135,7 @@ class PromptTooLongSuccessContextManager(RecordingContextManager):
 @dataclass
 class StreamingProvider(ChatProvider):
     responses: list[ChatResponse | ProviderError]
+    capabilities: ProviderCapabilities = field(default_factory=ProviderCapabilities)
     requests: list[ChatRequest] = field(default_factory=list)
 
     @property
@@ -561,6 +564,36 @@ def test_agent_loop_streaming_prompt_too_long_retry_discards_failed_attempt_even
     assert [event.text for event in loop.last_stream_events if event.kind == "text_delta"] == ["ok"]
 
 
+def test_agent_loop_streaming_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_no_tool_exec", agents_md="")
+    provider = StreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="think", arguments={"thought": "x"})],
+                finish_reason="tool_calls",
+            )
+        ],
+        capabilities=ProviderCapabilities(supports_tools=False),
+    )
+
+    loop = AgentLoop(session=session, provider=provider)
+    response = loop.run_user_turn_streaming_sync("问题")
+
+    assert provider.requests[0].tools == []
+    assert response.tool_calls == []
+    assert response.finish_reason == "error"
+    assert "tool calls were ignored" in response.diagnostics.warnings[0]
+    assert [event.kind for event in loop.last_stream_events] == ["message_started", "message_completed"]
+    assert [message.role for message in store.rebuild_session_view("sess_stream_no_tool_exec").messages] == [
+        "user",
+        "assistant",
+    ]
+
+
 def test_agent_loop_streaming_second_prompt_too_long_discards_retry_attempt_events(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_stream_retry_events_fail", agents_md="")
@@ -612,6 +645,49 @@ def test_agent_loop_injects_stateful_task_boundary_tool(tmp_path) -> None:
     )
     assert result.ok
     assert result.data["candidate_hash"].startswith("task_")
+
+
+def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_no_tools", agents_md="")
+    provider = FakeProvider(
+        [ChatResponse(provider="fake", model="fake-model", content="ok")],
+        capabilities=ProviderCapabilities(supports_tools=False),
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("问题")
+
+    assert provider.requests[0].tools == []
+    system_message = provider.requests[0].messages[0].content
+    assert '"tool_calling": false' in system_message
+    assert "可用工具:\n无" in system_message
+
+
+def test_agent_loop_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_no_tool_exec", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="think", arguments={"thought": "x"})],
+                finish_reason="tool_calls",
+            )
+        ],
+        capabilities=ProviderCapabilities(supports_tools=False),
+    )
+
+    response = AgentLoop(session=session, provider=provider).run_user_turn("问题")
+
+    assert response.tool_calls == []
+    assert response.finish_reason == "error"
+    assert "tool calls were ignored" in response.diagnostics.warnings[0]
+    assert [message.role for message in store.rebuild_session_view("sess_no_tool_exec").messages] == [
+        "user",
+        "assistant",
+    ]
 
 
 def test_agent_loop_persists_task_boundary_observation_for_replay(tmp_path) -> None:

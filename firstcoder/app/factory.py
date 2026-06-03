@@ -11,7 +11,9 @@ from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.context.identity import new_session_id
+from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.context.manager import ContextWindowManager
+from firstcoder.context.provider_summarizer import ProviderLlmCompactSummarizer
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import create_provider
@@ -41,6 +43,7 @@ def create_firstcoder_app(
     resolved_data_root = Path(data_root) if data_root is not None else project_path / ".firstcoder"
     store = JsonlSessionStore(resolved_data_root)
     resolved_tools = tools if tools is not None else create_builtin_registry(project_path).tools()
+    resolved_provider = provider or create_provider()
     session = AgentSession.from_project(
         store=store,
         session_id=session_id or new_session_id(),
@@ -48,9 +51,14 @@ def create_firstcoder_app(
         tools=resolved_tools,
     )
     current = CurrentSessionState(session)
-    context_manager = ContextWindowManager(store=store)
+    context_manager = ContextWindowManager(
+        store=store,
+        l4_service=LlmCompactService(
+            store=store,
+            summarizer=ProviderLlmCompactSummarizer(resolved_provider),
+        ),
+    )
     catalog = SessionCatalog(resolved_data_root)
-    resolved_provider = provider or create_provider()
     resume_service = ResumeService(
         store=store,
         project_root=project_path,

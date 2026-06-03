@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from firstcoder.context.system_prompt import SystemPromptInputs
-from firstcoder.providers.types import ToolDefinition
+from firstcoder.providers.types import ProviderCapabilities, ToolDefinition
 
 
 DEFAULT_PERMISSION_POLICY: dict[str, Any] = {
@@ -69,6 +69,31 @@ def provider_capabilities_for(provider_name: str, *, provider_model: str = "") -
     return base
 
 
+def provider_capabilities_from_instance(
+    capabilities: ProviderCapabilities | None,
+    *,
+    provider_name: str,
+    provider_model: str = "",
+) -> dict[str, Any]:
+    """把 provider 实例能力转换成 system prompt 使用的稳定描述。"""
+
+    base = provider_capabilities_for(provider_name, provider_model=provider_model)
+    if capabilities is None:
+        return base
+    base.update(
+        {
+            "tool_calling": capabilities.supports_tools,
+            "parallel_tool_calls": capabilities.supports_parallel_tool_calls,
+            "streaming": capabilities.supports_streaming,
+            "json_mode": capabilities.supports_json_mode,
+            "vision": capabilities.supports_vision,
+            "reasoning": capabilities.supports_reasoning,
+            "token_param": capabilities.token_param,
+        }
+    )
+    return base
+
+
 def build_system_prompt_inputs(
     *,
     base_rules: str,
@@ -76,13 +101,18 @@ def build_system_prompt_inputs(
     tools: list[ToolDefinition],
     provider_name: str,
     provider_model: str = "",
+    provider_capabilities: ProviderCapabilities | None = None,
     provider_capability_overrides: dict[str, Any] | None = None,
     permission_policy: dict[str, Any] | None = None,
     mode: str = "default",
 ) -> SystemPromptInputs:
     """组装 `SystemPromptInputs`，保证调用侧不用手写分散字段。"""
 
-    capabilities = provider_capabilities_for(provider_name, provider_model=provider_model)
+    capabilities = provider_capabilities_from_instance(
+        provider_capabilities,
+        provider_name=provider_name,
+        provider_model=provider_model,
+    )
     capabilities.update(provider_capability_overrides or {})
 
     resolved_permission_policy = dict(DEFAULT_PERMISSION_POLICY)

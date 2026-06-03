@@ -22,7 +22,7 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.system_prompt import PromptPrefixCache, SystemPromptBuilder
 from firstcoder.context.task_boundary import observation_from_tool_result_data
 from firstcoder.context.writer import SessionEventWriter
-from firstcoder.providers.types import ChatResponse, ToolCall, ToolDefinition
+from firstcoder.providers.types import ChatResponse, ProviderCapabilities, ToolCall, ToolDefinition
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.session_registry import create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult
@@ -142,6 +142,7 @@ class AgentSession:
         *,
         provider_name: str,
         provider_model: str = "",
+        provider_capabilities: ProviderCapabilities | None = None,
         tools: list[ToolDefinition],
     ) -> list:
         inputs = build_system_prompt_inputs(
@@ -150,6 +151,7 @@ class AgentSession:
             tools=tools,
             provider_name=provider_name,
             provider_model=provider_model,
+            provider_capabilities=provider_capabilities,
             provider_capability_overrides=self.provider_capability_overrides,
             permission_policy=self.permission_policy,
             mode=self.mode,
