@@ -40,6 +40,11 @@ class ToolRegistry:
 
         return list(self._tools.keys())
 
+    def tools(self) -> list[Tool]:
+        """返回当前已注册工具对象。"""
+
+        return list(self._tools.values())
+
     def execute(self, name: str, arguments: dict[str, Any] | str | None = None) -> ToolResult:
         """执行指定工具。
 
@@ -64,4 +69,3 @@ class ToolRegistry:
         except Exception as exc:  # noqa: BLE001
             # 工具失败不应该直接打断整个 agent loop，而是作为失败结果返回给模型。
             return make_error_result(name, f"工具执行失败：{exc}", arguments=arguments)
-

@@ -1,18 +1,29 @@
 """FirstCoder 最小 Textual TUI。
 
 这一版只提供命令入口外壳：输出区展示状态文本，输入框接收普通文本或 slash command。
-普通聊天暂时不在这里直接接 provider；后续可以把 `AgentLoop.run_user_turn()` 注入进来。
+普通聊天通过注入的 chat runner 处理，避免 Textual widget 直接依赖 provider/agent 细节。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Footer, Header, Input, RichLog
 
-from firstcoder.app.commands import ContextCommandHandler
+from firstcoder.app.commands import CommandResult
+
+
+class CommandHandlerLike(Protocol):
+    def handle(self, text: str) -> CommandResult:
+        ...
+
+
+class ChatRunnerLike(Protocol):
+    def run_user_turn(self, content: str):
+        ...
 
 
 @dataclass(slots=True)
@@ -28,11 +39,13 @@ class FirstCoderApp(App[None]):
     def __init__(
         self,
         *,
-        command_handler: ContextCommandHandler | None = None,
+        command_handler: CommandHandlerLike | None = None,
+        chat_runner: ChatRunnerLike | None = None,
         config: FirstCoderTuiConfig | None = None,
     ) -> None:
         super().__init__()
         self.command_handler = command_handler
+        self.chat_runner = chat_runner
         self.config = config or FirstCoderTuiConfig()
 
     def compose(self) -> ComposeResult:
@@ -45,7 +58,10 @@ class FirstCoderApp(App[None]):
     def on_mount(self) -> None:
         self.title = self.config.title
         output = self.query_one("#output", RichLog)
-        output.write("FirstCoder ready. Commands: /context, /compact status, /compact")
+        output.write(
+            "FirstCoder ready. Commands: /sessions, /session, /resume, /share, /rename, "
+            "/context, /compact status, /compact"
+        )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -56,13 +72,22 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output", RichLog)
         output.write(f"> {text}")
 
-        if self.command_handler is None:
-            output.write("Command handler is not configured.")
+        if text.startswith("/"):
+            if self.command_handler is None:
+                output.write("Command handler is not configured.")
+                return
+
+            result = self.command_handler.handle(text)
+            if result.handled:
+                output.write(result.output)
+                return
+            output.write(f"Unknown command: {text}")
             return
 
-        result = self.command_handler.handle(text)
-        if result.handled:
-            output.write(result.output)
+        if self.chat_runner is None:
+            output.write("普通聊天入口尚未接入 AgentLoop。")
             return
 
-        output.write("普通聊天入口尚未接入 AgentLoop。")
+        response = self.chat_runner.run_user_turn(text)
+        content = getattr(response, "content", "")
+        output.write(content or "[assistant response has no text content]")

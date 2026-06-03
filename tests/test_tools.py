@@ -36,6 +36,7 @@ def test_builtin_registry_contains_read_only_tools(tmp_path):
         "diagnostics", "think", "read_multi", "ask_user", "todo",
     ]
     assert [definition.name for definition in registry.definitions()] == registry.names()
+    assert [tool.name for tool in registry.tools()] == registry.names()
 
 
 def test_each_tool_has_its_own_module():
