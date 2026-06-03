@@ -6,8 +6,10 @@ from firstcoder.session import (
     SessionInvalidIdError,
     SessionNotFoundError,
     SessionRecord,
+    SessionShareService,
     ShareOptions,
     Transcript,
+    TranscriptBuilder,
     TranscriptEntry,
 )
 from firstcoder.session.catalog import SessionCatalog
@@ -27,6 +29,8 @@ def test_session_package_exports_core_models_and_errors() -> None:
     assert issubclass(SessionInvalidIdError, SessionError)
     assert issubclass(SessionEmptyError, SessionError)
     assert issubclass(SessionCorruptError, SessionError)
+    assert TranscriptBuilder
+    assert SessionShareService
 
 
 def test_session_catalog_boundary_exists_without_textual_dependency(tmp_path) -> None:

@@ -18,6 +18,8 @@ from firstcoder.session.models import (
     Transcript,
     TranscriptEntry,
 )
+from firstcoder.session.share import SessionShareService
+from firstcoder.session.transcript import TranscriptBuilder
 
 __all__ = [
     "RedactionOptions",
@@ -27,7 +29,9 @@ __all__ = [
     "SessionInvalidIdError",
     "SessionNotFoundError",
     "SessionRecord",
+    "SessionShareService",
     "ShareOptions",
     "Transcript",
+    "TranscriptBuilder",
     "TranscriptEntry",
 ]
