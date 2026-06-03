@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from firstcoder.providers.anthropic_provider import AnthropicProvider
+from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.types import (
@@ -143,6 +146,38 @@ class _FakeOpenAIMixedArgumentsClient:
         self.chat = _Object(completions=_FakeOpenAIMixedArgumentsCompletions())
 
 
+class _StatusError(Exception):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _FakeOpenAIErrorCompletions:
+    def create(self, **params):
+        raise _StatusError("upstream unavailable", 503)
+
+
+class _FakeOpenAIErrorClient:
+    def __init__(self):
+        self.chat = _Object(completions=_FakeOpenAIErrorCompletions())
+
+
+class _ResponseStatusError(Exception):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.response = _Object(status_code=status_code)
+
+
+class _FakeOpenAIResponseErrorCompletions:
+    def create(self, **params):
+        raise _ResponseStatusError("too many requests", 429)
+
+
+class _FakeOpenAIResponseErrorClient:
+    def __init__(self):
+        self.chat = _Object(completions=_FakeOpenAIResponseErrorCompletions())
+
+
 class _FakeAnthropicMessages:
     def __init__(self):
         self.last_params = None
@@ -162,6 +197,19 @@ class _FakeAnthropicMessages:
 class _FakeAnthropicClient:
     def __init__(self):
         self.messages = _FakeAnthropicMessages()
+
+
+class _NoStreamProvider(ChatProvider):
+    @property
+    def name(self) -> str:
+        return "no-stream"
+
+    @property
+    def model(self) -> str:
+        return "test-model"
+
+    def complete(self, request: ChatRequest):
+        raise AssertionError("not used")
 
 
 def test_openai_compatible_provider_parses_tool_calls():
@@ -356,6 +404,47 @@ def test_openai_compatible_provider_drops_all_tool_calls_when_any_arguments_are_
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls == []
     assert response.diagnostics.warnings
+
+
+def test_openai_compatible_provider_wraps_status_error_kind():
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=_FakeOpenAIErrorClient(),
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert exc_info.value.kind == ProviderErrorKind.SERVER_ERROR
+    assert exc_info.value.retryable is True
+
+
+def test_openai_compatible_provider_wraps_response_status_error_kind():
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=_FakeOpenAIResponseErrorClient(),
+    )
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert exc_info.value.kind == ProviderErrorKind.RATE_LIMIT
+    assert exc_info.value.retryable is True
+
+
+def test_chat_provider_default_astream_reports_unsupported():
+    async def collect_stream_error() -> None:
+        events = _NoStreamProvider().astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        with pytest.raises(ProviderError) as exc_info:
+            async for _event in events:
+                pass
+        assert exc_info.value.kind == ProviderErrorKind.UNSUPPORTED
+
+    asyncio.run(collect_stream_error())
 
 
 def test_anthropic_provider_parses_text_and_tool_calls():

@@ -6,7 +6,7 @@ from typing import Any
 
 from firstcoder.utils.json_utils import dumps_json, loads_json_object
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.errors import ProviderError, ProviderErrorKind, classify_provider_error
+from firstcoder.providers.errors import ProviderError, ProviderErrorKind, classify_provider_exception
 from firstcoder.providers.tool_adapters import to_openai_tool
 from firstcoder.providers.types import (
     ChatMessage,
@@ -130,7 +130,7 @@ class OpenAICompatibleProvider(ChatProvider):
             response = self._client.chat.completions.create(**params)
         except Exception as exc:
             message = str(exc)
-            raise ProviderError(classify_provider_error(message), message) from exc
+            raise ProviderError(classify_provider_exception(exc), message) from exc
         choice = _read_field(response, "choices", [])[0]
         message = _read_field(choice, "message")
         raw_finish_reason = _read_field(choice, "finish_reason")

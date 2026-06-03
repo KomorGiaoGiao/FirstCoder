@@ -18,6 +18,15 @@ FinishReason = Literal[
 ]
 TokenParam = Literal["max_tokens", "max_completion_tokens"]
 ToolChoiceMode = Literal["auto", "none", "required"]
+StreamEventKind = Literal[
+    "message_started",
+    "text_delta",
+    "tool_call_started",
+    "tool_call_delta",
+    "tool_call_completed",
+    "message_completed",
+    "error",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,3 +142,22 @@ class ChatResponse:
     usage: TokenUsage | None = None
     diagnostics: ProviderDiagnostics = field(default_factory=ProviderDiagnostics)
     raw: Any | None = None
+
+
+@dataclass(slots=True)
+class ChatStreamEvent:
+    """provider 流式输出的内部事件。
+
+    OpenAI-compatible 的原始 chunk 只能停留在 provider 层；agent 和 UI 后续只消费
+    这个受控事件结构。`response` 只在 `message_completed` 时携带最终完整结果。
+    """
+
+    kind: StreamEventKind
+    text: str = ""
+    tool_call: ToolCall | None = None
+    tool_call_index: int | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    arguments_delta: str = ""
+    response: ChatResponse | None = None
+    diagnostics: ProviderDiagnostics = field(default_factory=ProviderDiagnostics)
