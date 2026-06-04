@@ -99,6 +99,44 @@ class AgentChatRunner:
             self.last_display_lines.append(response.content)
         return response
 
+    def resume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
+        """恢复等待中的权限确认。
+
+        普通 `ask_user` 后续仍走新的用户消息；权限确认必须先补齐原 tool_call 的
+        tool_result，所以 UI 通过这个入口把用户选择交回 agent loop。
+        """
+
+        before_count = len(self.current_session.rebuild_view().messages)
+        self.last_pending_input = None
+        loop = AgentLoop(
+            session=self.current_session.session,
+            provider=self.provider,
+            tools=self.tools,
+            context_builder=self.context_builder,
+            context_manager=self.context_manager,
+            max_tool_rounds=self.max_tool_rounds,
+        )
+        self.loops.append(loop)
+        result = loop.resume_with_user_input(request_id, answer)
+        self.last_stream_events = []
+        self.last_pending_input = result.pending_input
+        after_view = self.current_session.rebuild_view()
+        self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+        if result.response is not None:
+            if result.response.content and not self.last_display_lines:
+                self.last_display_lines.append(result.response.content)
+            return result.response
+        response = ChatResponse(
+            provider=self.provider.name,
+            model=self.provider.model,
+            content=result.pending_input.question if result.pending_input else "等待用户输入。",
+            finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
+            raw={"pending_input": result.pending_input},
+        )
+        if response.content:
+            self.last_display_lines.append(response.content)
+        return response
+
     async def arun_user_turn(self, content: str) -> ChatResponse:
         """异步聊天入口。
 

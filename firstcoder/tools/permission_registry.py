@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from firstcoder.permissions.manager import PermissionManager
-from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
+from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.types import ToolDefinition
 from firstcoder.tools.permission_results import make_permission_confirmation_result, make_permission_denied_result
 from firstcoder.tools.registry import ToolRegistry
@@ -44,24 +44,11 @@ class PermissionAwareToolRegistry:
         return self.registry.get(name)
 
     def execute(self, name: str, arguments: dict[str, Any] | str | None = None) -> ToolResult:
-        tool = self.registry.get(name)
-        if tool is None:
+        preflight = self.preflight(name, arguments)
+        if preflight is None:
             return self.registry.execute(name, arguments)
 
-        if arguments is None:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            return self.registry.execute(name, arguments)
-
-        if tool.permission is None:
-            return self.registry.execute(name, arguments)
-
-        try:
-            request = permission_request_for_tool(tool, arguments)
-        except ValueError as exc:
-            return make_error_result(name, str(exc), arguments=arguments)
-        request = self.permission_manager.normalize_request(request)
-        decision = self.permission_manager.preflight(request)
+        tool, arguments, request, decision = preflight
         if decision.kind == PermissionDecisionKind.DENY:
             return make_permission_denied_result(tool_name=name, request=request, decision=decision)
         if decision.kind == PermissionDecisionKind.ASK:
@@ -71,6 +58,55 @@ class PermissionAwareToolRegistry:
                 request=request,
                 confirmation=confirmation,
             )
+        return self.registry.execute(name, arguments)
+
+    def preflight(
+        self,
+        name: str,
+        arguments: dict[str, Any] | str | None = None,
+    ) -> tuple[Tool, dict[str, Any], PermissionRequest, PermissionDecision] | None:
+        """只做权限预检，不执行工具。
+
+        agent loop 需要在 `ASK` 时先暂停，而不是把“权限确认”伪装成 provider
+        tool_result 写入历史；因此这里把预检能力暴露出来，方便上层保存 pending
+        tool_call，等用户选择后再写入唯一的最终 tool_result。
+        """
+
+        tool = self.registry.get(name)
+        if tool is None:
+            return None
+
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return None
+
+        if tool.permission is None:
+            return None
+
+        try:
+            request = permission_request_for_tool(tool, arguments)
+        except ValueError as exc:
+            request = PermissionRequest(
+                id=f"perm_{name}_invalid",
+                action=tool.permission.action,
+                target="",
+                reason=str(exc),
+                metadata={"tool_name": name, "arguments": dict(arguments)},
+            )
+            decision = PermissionDecision(kind=PermissionDecisionKind.DENY, reason=str(exc))
+            return tool, arguments, request, decision
+        request = self.permission_manager.normalize_request(request)
+        decision = self.permission_manager.preflight(request)
+        return tool, arguments, request, decision
+
+    def execute_without_permission_check(
+        self,
+        name: str,
+        arguments: dict[str, Any] | str | None = None,
+    ) -> ToolResult:
+        """执行已确认的 pending tool，不再次触发 ASK。"""
+
         return self.registry.execute(name, arguments)
 
 

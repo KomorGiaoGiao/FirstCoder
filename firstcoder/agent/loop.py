@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Protocol
 
-from firstcoder.agent.session import AgentSession
+from firstcoder.agent.session import AgentSession, PendingPermissionExecution
 from firstcoder.agent.user_input import (
     AgentTurnResult,
     AgentTurnStatus,
@@ -14,9 +14,11 @@ from firstcoder.agent.user_input import (
 )
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
+from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.tools.permission_results import make_permission_denied_result
 from firstcoder.tools.types import Tool, make_error_result
 
 
@@ -75,9 +77,62 @@ class AgentLoop:
         继续工作。需要权限确认或 `ask_user` 暂停语义的上层应使用这个入口。
         """
 
+        if self.session.pending_permission_execution is not None:
+            pending = self.session.pending_permission_execution
+            return AgentTurnResult(
+                status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
+                pending_input=self._permission_input_request_from_pending(pending),
+            )
+
         self.session.append_user_message(content)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
+        return self._run_tool_loop_interactive(self._complete_once_with_recovery)
+
+    def resume_with_user_input(self, request_id: str, answer: str) -> AgentTurnResult:
+        """用用户回答恢复一个暂停中的权限确认。
+
+        普通 `ask_user` 第一版仍通过“下一条用户消息”继续；权限确认不能这样做，
+        因为模型原始 tool_call 已经在历史里等待一个匹配的 tool_result。这里必须先
+        用本地 pending 状态补齐最终 tool_result，再继续下一次 provider 调用。
+        """
+
+        pending = self.session.pending_permission_execution
+        if pending is None or pending.request_id != request_id:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="没有找到可恢复的权限确认请求。",
+                    finish_reason="error",
+                ),
+            )
+        if self.session.permission_manager is None:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="当前会话没有权限管理器，无法恢复权限确认。",
+                    finish_reason="error",
+                ),
+            )
+
+        decision = self.session.permission_manager.resolve_confirmation(pending.permission_request, answer)
+        if decision.kind == PermissionDecisionKind.DENY:
+            result = make_permission_denied_result(
+                tool_name=pending.tool_call.name,
+                request=pending.permission_request,
+                decision=decision,
+            )
+        else:
+            result = self.session.execute_tool_call_after_permission_confirmation(pending.tool_call)
+
+        self.session.pending_permission_execution = None
+        self.session.append_tool_result(tool_call=pending.tool_call, result=result)
+        self._append_skipped_tool_results(pending.skipped_tool_calls)
+        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
     async def run_user_turn_streaming(self, content: str) -> ChatResponse:
@@ -88,6 +143,17 @@ class AgentLoop:
         """
 
         self.last_stream_events = []
+        if self.session.pending_permission_execution is not None:
+            pending = self.session.pending_permission_execution
+            pending_input = self._permission_input_request_from_pending(pending)
+            return ChatResponse(
+                provider=self.provider.name,
+                model=self.provider.model,
+                content=pending_input.question,
+                finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
+                raw={"pending_input": pending_input},
+            )
+
         self.session.append_user_message(content)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
@@ -245,6 +311,27 @@ class AgentLoop:
     def _execute_tool_calls_interactive(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
         task_hash_changed = False
         for index, tool_call in enumerate(tool_calls):
+            preflight = self.session.preflight_tool_call_permission(tool_call)
+            if preflight is not None:
+                if preflight.decision.kind == PermissionDecisionKind.DENY:
+                    result = make_permission_denied_result(
+                        tool_name=tool_call.name,
+                        request=preflight.request,
+                        decision=preflight.decision,
+                    )
+                    self.session.append_tool_result(tool_call=tool_call, result=result)
+                    continue
+                if preflight.decision.kind == PermissionDecisionKind.ASK:
+                    pending_input = self._store_pending_permission_request(
+                        tool_call=tool_call,
+                        request=preflight.request,
+                        skipped_tool_calls=tool_calls[index + 1 :],
+                    )
+                    return _ToolExecutionState(
+                        task_hash_changed=task_hash_changed,
+                        pending_input=pending_input,
+                    )
+
             result = self.session.execute_tool_call(tool_call)
             self.session.append_tool_result(tool_call=tool_call, result=result)
             pending_input = user_input_request_from_tool_result(
@@ -261,6 +348,42 @@ class AgentLoop:
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
                 task_hash_changed = True
         return _ToolExecutionState(task_hash_changed=task_hash_changed)
+
+    def _store_pending_permission_request(
+        self,
+        *,
+        tool_call: ToolCall,
+        request: PermissionRequest,
+        skipped_tool_calls: list[ToolCall],
+    ) -> UserInputRequest:
+        if self.session.permission_manager is None:
+            raise RuntimeError("permission confirmation requires a permission manager")
+
+        confirmation = self.session.permission_manager.build_confirmation(request)
+        confirmation.payload["pending_tool_call"] = {
+            "id": tool_call.id,
+            "name": tool_call.name,
+            "arguments": tool_call.arguments,
+        }
+        self.session.pending_permission_execution = PendingPermissionExecution(
+            request_id=request.id,
+            tool_call=tool_call,
+            permission_request=request,
+            skipped_tool_calls=list(skipped_tool_calls),
+        )
+        return confirmation
+
+    def _permission_input_request_from_pending(self, pending: PendingPermissionExecution) -> UserInputRequest:
+        if self.session.permission_manager is None:
+            raise RuntimeError("permission confirmation requires a permission manager")
+
+        confirmation = self.session.permission_manager.build_confirmation(pending.permission_request)
+        confirmation.payload["pending_tool_call"] = {
+            "id": pending.tool_call.id,
+            "name": pending.tool_call.name,
+            "arguments": pending.tool_call.arguments,
+        }
+        return confirmation
 
     def _append_skipped_tool_results(self, tool_calls: list[ToolCall]) -> None:
         """为等待用户输入后未执行的并行工具调用补齐结果。

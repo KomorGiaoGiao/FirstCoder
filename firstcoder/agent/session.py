@@ -25,12 +25,36 @@ from firstcoder.context.writer import SessionEventWriter
 from firstcoder.permissions.manager import PermissionManager
 from firstcoder.permissions.policy import DefaultPermissionPolicy
 from firstcoder.providers.types import ChatResponse, ProviderCapabilities, ToolCall, ToolDefinition
+from firstcoder.permissions.types import PermissionDecision, PermissionRequest
+from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.session_registry import ToolRegistryLike, create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult
 from firstcoder.context.models import AgentMessage, MessagePart
 
 
 DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
+
+
+@dataclass(slots=True)
+class PendingPermissionExecution:
+    """等待用户确认后才能继续的工具调用。
+
+    这类状态不能相信 UI 回传的 payload。agent 只接受 request id 和用户选择，
+    原始 tool_call 与规范化后的 permission request 都保存在本地运行时对象里。
+    """
+
+    request_id: str
+    tool_call: ToolCall
+    permission_request: PermissionRequest
+    skipped_tool_calls: list[ToolCall] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ToolPermissionPreflight:
+    """工具权限预检结果。"""
+
+    request: PermissionRequest
+    decision: PermissionDecision
 
 
 @dataclass(slots=True)
@@ -56,6 +80,7 @@ class AgentSession:
     known_message_ids: set[str] = field(default_factory=set)
     turn_counter: int = 0
     mode: str = "default"
+    pending_permission_execution: PendingPermissionExecution | None = None
 
     @classmethod
     def create(
@@ -204,6 +229,30 @@ class AgentSession:
 
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         return self.tool_registry.execute(tool_call.name, tool_call.arguments)
+
+    def preflight_tool_call_permission(self, tool_call: ToolCall) -> ToolPermissionPreflight | None:
+        """对工具调用做权限预检，但不执行工具。
+
+        只有权限 wrapper 支持这个能力；无权限声明的工具返回 `None`，由旧执行路径
+        直接处理。这样权限系统接入不会污染普通工具的执行模型。
+        """
+
+        registry = self.tool_registry
+        if not isinstance(registry, PermissionAwareToolRegistry):
+            return None
+        preflight = registry.preflight(tool_call.name, tool_call.arguments)
+        if preflight is None:
+            return None
+        _, _, request, decision = preflight
+        return ToolPermissionPreflight(request=request, decision=decision)
+
+    def execute_tool_call_after_permission_confirmation(self, tool_call: ToolCall) -> ToolResult:
+        """执行已经通过用户确认的 pending tool_call。"""
+
+        registry = self.tool_registry
+        if isinstance(registry, PermissionAwareToolRegistry):
+            return registry.execute_without_permission_check(tool_call.name, tool_call.arguments)
+        return registry.execute(tool_call.name, tool_call.arguments)
 
     def append_tool_result(self, *, tool_call: ToolCall, result: ToolResult) -> str:
         message_id = new_message_id()

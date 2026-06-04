@@ -24,6 +24,7 @@ from firstcoder.providers.types import (
 )
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
+from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import Tool, ToolResult
 
 
@@ -1093,3 +1094,336 @@ def test_agent_loop_skips_remaining_parallel_tools_when_waiting_for_user(tmp_pat
     assert skipped.metadata["tool_call_id"] == "call_echo"
     assert skipped.metadata["ok"] is False
     assert skipped.metadata["data"]["skipped_due_to_user_input"] is True
+
+
+def test_agent_loop_permission_pause_does_not_append_confirmation_tool_result(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_pause",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+
+    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("写 README")
+
+    assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    assert result.pending_input is not None
+    assert result.pending_input.kind == "permission_confirmation"
+    assert session.pending_permission_execution is not None
+    assert session.pending_permission_execution.tool_call.id == "call_write"
+    assert not (tmp_path / "README.md").exists()
+    view = store.rebuild_session_view("sess_perm_pause")
+    assert [message.role for message in view.messages] == ["user", "assistant"]
+    assert view.messages[1].parts[0].metadata["tool_call_id"] == "call_write"
+
+
+def test_agent_loop_permission_deny_appends_denied_result_and_continues(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_deny",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="已取消写入"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    pending = loop.run_user_turn_interactive("写 README").pending_input
+    assert pending is not None
+    result = loop.resume_with_user_input(pending.id, "deny")
+
+    assert result.status == AgentTurnStatus.COMPLETED
+    assert result.response is not None
+    assert result.response.content == "已取消写入"
+    assert session.pending_permission_execution is None
+    assert not (tmp_path / "README.md").exists()
+    view = store.rebuild_session_view("sess_perm_deny")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "assistant"]
+    tool_part = view.messages[2].parts[0]
+    assert tool_part.metadata["tool_call_id"] == "call_write"
+    assert tool_part.metadata["ok"] is False
+    assert tool_part.metadata["data"]["request_type"] == "permission_denied"
+    assert provider.requests[1].messages[-1].tool_call_id == "call_write"
+
+
+def test_agent_loop_permission_allow_once_executes_without_grant(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_once",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="写好了"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    pending = loop.run_user_turn_interactive("写 README").pending_input
+    assert pending is not None
+    result = loop.resume_with_user_input(pending.id, "allow_once")
+
+    assert result.response is not None
+    assert result.response.content == "写好了"
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
+    assert session.permission_manager is not None
+    assert session.permission_manager.grants.list() == []
+    view = store.rebuild_session_view("sess_perm_once")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "assistant"]
+    assert view.messages[2].parts[0].metadata["ok"] is True
+
+
+def test_agent_loop_permission_allow_always_adds_grant_and_executes(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_always",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="写好了"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    pending = loop.run_user_turn_interactive("写 README").pending_input
+    assert pending is not None
+    loop.resume_with_user_input(pending.id, "allow_always_same_scope")
+
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
+    assert session.permission_manager is not None
+    grants = session.permission_manager.grants.list()
+    assert len(grants) == 1
+    assert grants[0].effect == "allow"
+    assert grants[0].scope_value == str((tmp_path / "README.md").resolve())
+
+
+def test_agent_loop_permission_resume_rejects_unknown_request_id(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_unknown",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    loop.run_user_turn_interactive("写 README")
+    result = loop.resume_with_user_input("perm_wrong", "allow_once")
+
+    assert result.response is not None
+    assert result.response.finish_reason == "error"
+    assert "没有找到" in result.response.content
+    assert session.pending_permission_execution is not None
+    assert not (tmp_path / "README.md").exists()
+
+
+def test_agent_loop_permission_pending_blocks_new_user_turn_until_resolved(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_blocks_turn",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    first = loop.run_user_turn_interactive("写 README")
+    second = loop.run_user_turn_interactive("先别管权限，我有新问题")
+
+    assert first.pending_input is not None
+    assert second.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    assert second.pending_input is not None
+    assert second.pending_input.id == first.pending_input.id
+    assert len(provider.requests) == 1
+    assert [message.role for message in store.rebuild_session_view("sess_perm_blocks_turn").messages] == [
+        "user",
+        "assistant",
+    ]
+
+
+def test_agent_loop_permission_resume_skips_remaining_parallel_tools(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_parallel",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    ),
+                    ToolCall(id="call_echo", name="echo", arguments={"text": "should skip"}),
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="写好了"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    pending = loop.run_user_turn_interactive("写 README，然后 echo").pending_input
+    assert pending is not None
+    loop.resume_with_user_input(pending.id, "allow_once")
+
+    view = store.rebuild_session_view("sess_perm_parallel")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "tool", "assistant"]
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
+    skipped = view.messages[3].parts[0]
+    assert skipped.metadata["tool_call_id"] == "call_echo"
+    assert skipped.metadata["ok"] is False
+    assert skipped.metadata["data"]["skipped_due_to_user_input"] is True
+    assert provider.requests[1].messages[-2].tool_call_id == "call_write"
+    assert provider.requests[1].messages[-1].tool_call_id == "call_echo"
+
+
+def test_agent_loop_permission_resume_uses_local_pending_not_ui_payload(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_perm_payload",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "safe"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="写好了"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    pending = loop.run_user_turn_interactive("写 README").pending_input
+    assert pending is not None
+    pending.payload["pending_tool_call"] = {
+        "id": "call_fake",
+        "name": "write",
+        "arguments": {"path": "pwned.txt", "content": "tampered"},
+    }
+    loop.resume_with_user_input(pending.id, "allow_once")
+
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "safe"
+    assert not (tmp_path / "pwned.txt").exists()
+    view = store.rebuild_session_view("sess_perm_payload")
+    tool_part = view.messages[2].parts[0]
+    assert tool_part.metadata["tool_call_id"] == "call_write"

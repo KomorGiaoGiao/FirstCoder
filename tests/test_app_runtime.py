@@ -9,6 +9,7 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
 from firstcoder.tools.ask_user import create_ask_user_tool
+from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import make_text_result, Tool
 
 
@@ -193,6 +194,49 @@ def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
         'Tool call: ask_user {"options": ["继续", "取消"], "question": "继续吗？"}',
         "Tool result: ask_user success: 继续吗？ 1. 继续 2. 取消",
         "继续吗？",
+    ]
+
+
+def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_permission_runner",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    state = CurrentSessionState(session)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="写好了"),
+        ]
+    )
+    runner = AgentChatRunner(current_session=state, provider=provider)
+
+    waiting = runner.run_user_turn("写 README")
+    assert waiting.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    assert runner.last_pending_input is not None
+    response = runner.resume_with_user_input(runner.last_pending_input.id, "allow_once")
+
+    assert response.content == "写好了"
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
+    assert runner.last_pending_input is None
+    assert runner.last_display_lines == [
+        "Tool result: write success: 已写入文件：README.md",
+        "写好了",
     ]
 
 
