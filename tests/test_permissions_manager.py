@@ -173,6 +173,28 @@ def test_manager_resolves_allow_always_and_adds_same_scope_grant(tmp_path) -> No
     assert manager.grants.list() == [decision.grant]
 
 
+def test_manager_omits_allow_always_when_request_disables_persistence(tmp_path) -> None:
+    manager = PermissionManager(policy=DefaultPermissionPolicy(tmp_path))
+    request = PermissionRequest(
+        id="perm_python",
+        action=PermissionAction.EXECUTE_SHELL,
+        target="python -c",
+        metadata={"allow_always": False},
+    )
+
+    confirmation = manager.build_confirmation(request)
+    decision = manager.resolve_confirmation(request, "allow_always_same_scope")
+
+    assert [option.id for option in confirmation.options] == [
+        PermissionConfirmationChoice.DENY.value,
+        PermissionConfirmationChoice.ALLOW_ONCE.value,
+    ]
+    assert confirmation.payload["allow_always"] is False
+    assert decision.kind == PermissionDecisionKind.DENY
+    assert decision.grant is None
+    assert manager.grants.list() == []
+
+
 def test_manager_shell_allow_always_does_not_expand_interpreter_scope(tmp_path) -> None:
     manager = PermissionManager(policy=DefaultPermissionPolicy(tmp_path))
     request = PermissionRequest(

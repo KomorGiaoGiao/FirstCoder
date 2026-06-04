@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from urllib import error, parse, request
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.json_utils import dumps_json, loads_json
 
@@ -89,12 +90,18 @@ def create_web_search_tool() -> Tool:
             result,
             provider="exa",
             query=query,
-            url=url,
+            url=_redact_url(url),
             status=status,
             headers=headers,
         )
 
-    return tool_from_function(web_search)
+    tool = tool_from_function(web_search)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.NETWORK_REQUEST,
+        target_value=EXA_MCP_URL,
+        reason="网页搜索需要网络请求权限。",
+    )
+    return tool
 
 
 def _exa_mcp_url() -> str:
@@ -108,6 +115,15 @@ def _exa_mcp_url() -> str:
     if not api_key:
         return EXA_MCP_URL
     return f"{EXA_MCP_URL}?exaApiKey={parse.quote(api_key, safe='')}"
+
+
+def _redact_url(url: str) -> str:
+    """避免把 API key 写入 tool result metadata / session JSONL。"""
+
+    parsed = parse.urlparse(url)
+    query = parse.parse_qsl(parsed.query, keep_blank_values=True)
+    redacted = [(key, "***" if key.lower() in {"exaapikey", "apikey", "api_key", "key"} else value) for key, value in query]
+    return parse.urlunparse(parsed._replace(query=parse.urlencode(redacted)))
 
 
 def parse_mcp_search_response(body: str) -> str | None:

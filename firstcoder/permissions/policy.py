@@ -63,6 +63,8 @@ class DefaultPermissionPolicy:
                 return self._ask("写入项目根目录外路径需要用户确认。")
             if sensitive:
                 return self._ask("写入敏感路径需要用户确认。")
+            if not bool(request.metadata.get("allow_auto", True)):
+                return self._ask("该写入操作需要用户确认。")
             if mode == PermissionMode.AGGRESSIVE:
                 return self._allow("激进模式允许写入项目根目录内普通路径。")
             return self._ask("写入文件需要用户确认。")

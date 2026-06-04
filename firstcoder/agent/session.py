@@ -22,9 +22,10 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.system_prompt import PromptPrefixCache, SystemPromptBuilder
 from firstcoder.context.task_boundary import observation_from_tool_result_data
 from firstcoder.context.writer import SessionEventWriter
+from firstcoder.permissions.manager import PermissionManager
+from firstcoder.permissions.policy import DefaultPermissionPolicy
 from firstcoder.providers.types import ChatResponse, ProviderCapabilities, ToolCall, ToolDefinition
-from firstcoder.tools.registry import ToolRegistry
-from firstcoder.tools.session_registry import create_session_tool_registry
+from firstcoder.tools.session_registry import ToolRegistryLike, create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult
 from firstcoder.context.models import AgentMessage, MessagePart
 
@@ -43,13 +44,14 @@ class AgentSession:
     session_id: str
     store: JsonlSessionStore
     runtime_state: SessionRuntimeState
-    tool_registry: ToolRegistry
+    tool_registry: ToolRegistryLike
     writer: SessionEventWriter
     agents_md: str = ""
     base_rules: str = DEFAULT_BASE_RULES
     prompt_cache: PromptPrefixCache = field(default_factory=PromptPrefixCache)
     prompt_builder: SystemPromptBuilder = field(default_factory=SystemPromptBuilder)
     provider_capability_overrides: dict[str, object] = field(default_factory=dict)
+    permission_manager: PermissionManager | None = None
     permission_policy: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_PERMISSION_POLICY))
     known_message_ids: set[str] = field(default_factory=set)
     turn_counter: int = 0
@@ -63,6 +65,7 @@ class AgentSession:
         session_id: str,
         agents_md: str = "",
         tools: list[Tool] | None = None,
+        permission_manager: PermissionManager | None = None,
     ) -> "AgentSession":
         runtime_state = SessionRuntimeState(session_id=session_id)
         known_message_ids: set[str] = set()
@@ -71,6 +74,7 @@ class AgentSession:
             runtime_state=runtime_state,
             tools=tools,
             known_message_ids=known_message_ids,
+            permission_manager=permission_manager,
         )
         session = cls(
             session_id=session_id,
@@ -80,6 +84,7 @@ class AgentSession:
             writer=SessionEventWriter(store=store, session_id=session_id),
             agents_md=agents_md,
             known_message_ids=known_message_ids,
+            permission_manager=permission_manager,
             turn_counter=0,
         )
         session.append_session_created()
@@ -95,7 +100,14 @@ class AgentSession:
         tools: list[Tool] | None = None,
     ) -> "AgentSession":
         agents_md = read_agents_md(project_root)
-        return cls.create(store=store, session_id=session_id, agents_md=agents_md, tools=tools)
+        permission_manager = PermissionManager(policy=DefaultPermissionPolicy(project_root))
+        return cls.create(
+            store=store,
+            session_id=session_id,
+            agents_md=agents_md,
+            tools=tools,
+            permission_manager=permission_manager,
+        )
 
     @classmethod
     def resume(
@@ -105,6 +117,7 @@ class AgentSession:
         session_id: str,
         agents_md: str = "",
         tools: list[Tool] | None = None,
+        permission_manager: PermissionManager | None = None,
     ) -> "AgentSession":
         """从 JSONL 会话日志恢复运行期 session。
 
@@ -122,6 +135,7 @@ class AgentSession:
             runtime_state=runtime_state,
             tools=tools,
             known_message_ids=known_message_ids,
+            permission_manager=permission_manager,
         )
         return cls(
             session_id=session_id,
@@ -131,6 +145,7 @@ class AgentSession:
             writer=SessionEventWriter(store=store, session_id=session_id, current_turn=turn_counter),
             agents_md=agents_md,
             known_message_ids=known_message_ids,
+            permission_manager=permission_manager,
             turn_counter=turn_counter,
         )
 

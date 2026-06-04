@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.text import safe_read_text
@@ -65,7 +66,15 @@ def create_apply_patch_tool(root: str | Path) -> Tool:
             moved_files=outcome["moved_files"],
         )
 
-    return tool_from_function(apply_patch)
+    tool = tool_from_function(apply_patch)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.WRITE_PATH,
+        target_value=".",
+        reason="应用补丁会修改项目文件，需要用户确认。",
+        allow_always=False,
+        allow_auto=False,
+    )
+    return tool
 
 
 def parse_patch(patch: str) -> PatchPlan:

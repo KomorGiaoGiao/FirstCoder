@@ -90,11 +90,18 @@ def permission_request_for_tool(tool: Tool, arguments: dict[str, Any]) -> Permis
         target=target,
         reason=spec.reason or f"工具 {tool.name} 请求 {spec.action.value} 权限。",
         cwd=cwd,
-        metadata={"tool_name": tool.name, "arguments": dict(arguments)},
+        metadata={
+            "tool_name": tool.name,
+            "arguments": dict(arguments),
+            "allow_always": spec.allow_always,
+            "allow_auto": spec.allow_auto,
+        },
     )
 
 
 def _target_from_arguments(spec: ToolPermissionSpec, arguments: dict[str, Any]) -> str:
+    if spec.target_value is not None:
+        return spec.target_value
     if spec.target_arg is None:
         return ""
     if spec.target_arg not in arguments:

@@ -5,7 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 
@@ -35,4 +36,10 @@ def create_delete_tool(root: str | Path) -> Tool:
         target.unlink()
         return make_text_result("delete", f"已删除文件：{relative}", path=relative, type="file")
 
-    return tool_from_function(delete)
+    tool = tool_from_function(delete)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.DELETE_PATH,
+        target_arg="path",
+        reason="删除路径需要用户确认。",
+    )
+    return tool

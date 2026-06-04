@@ -14,7 +14,10 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.providers.types import ChatResponse, ToolCall
+from firstcoder.tools.apply_patch import create_apply_patch_tool
+from firstcoder.tools.python_exec import create_python_exec_tool
 from firstcoder.tools.session_registry import create_session_tool_registry
+from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import ToolResult
 
 
@@ -81,6 +84,96 @@ def test_unknown_tool_result_is_persisted_as_structured_error(tmp_path) -> None:
     assert part.metadata["tool_name"] == "missing_tool"
     assert part.metadata["ok"] is False
     assert "未知工具" in part.metadata["error"]
+
+
+def test_project_session_permissioned_write_pauses_without_writing(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_permissions",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    tool_call = ToolCall(
+        id="call_write",
+        name="write",
+        arguments={"path": "README.md", "content": "hello"},
+    )
+
+    result = session.execute_tool_call(tool_call)
+
+    assert result.ok is True
+    assert result.data["requires_user_input"] is True
+    assert result.data["request_type"] == "permission_confirmation"
+    assert result.data["permission_request"]["action"] == "write_path"
+    assert result.data["permission_request"]["cwd"] == str(tmp_path.resolve())
+    assert not (tmp_path / "README.md").exists()
+
+
+def test_project_session_permissioned_apply_patch_pauses_without_writing(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_patch_permissions",
+        project_root=tmp_path,
+        tools=[create_apply_patch_tool(tmp_path)],
+    )
+    patch = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: created.txt",
+            "+hello",
+            "*** End Patch",
+        ]
+    )
+
+    result = session.execute_tool_call(
+        ToolCall(
+            id="call_patch",
+            name="apply_patch",
+            arguments={"patch": patch},
+        )
+    )
+
+    assert result.ok is True
+    assert result.data["request_type"] == "permission_confirmation"
+    assert result.data["permission_request"]["action"] == "write_path"
+    assert [option["id"] for option in result.data["options"]] == ["deny", "allow_once"]
+    assert not (tmp_path / "created.txt").exists()
+
+
+def test_project_session_permissioned_python_exec_pauses_without_executing(tmp_path, monkeypatch) -> None:
+    from firstcoder.tools import python_exec as python_exec_module
+
+    called = False
+
+    def fake_run(command, **kwargs):
+        nonlocal called
+        called = True
+        return python_exec_module.subprocess.CompletedProcess(command, 0, "42\n", "")
+
+    monkeypatch.setattr(python_exec_module.subprocess, "run", fake_run)
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_python_permissions",
+        project_root=tmp_path,
+        tools=[create_python_exec_tool(tmp_path)],
+    )
+
+    result = session.execute_tool_call(
+        ToolCall(
+            id="call_python",
+            name="python_exec",
+            arguments={"code": "print(42)"},
+        )
+    )
+
+    assert result.ok is True
+    assert result.data["request_type"] == "permission_confirmation"
+    assert result.data["permission_request"]["action"] == "execute_shell"
+    assert [option["id"] for option in result.data["options"]] == ["deny", "allow_once"]
+    assert called is False
 
 
 def test_session_registry_adds_task_boundary_tool() -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 
@@ -39,4 +40,10 @@ def create_write_tool(root: str | Path) -> Tool:
             created=created,
         )
 
-    return tool_from_function(write)
+    tool = tool_from_function(write)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.WRITE_PATH,
+        target_arg="path",
+        reason="写入文件需要用户确认。",
+    )
+    return tool

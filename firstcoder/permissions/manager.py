@@ -61,10 +61,16 @@ class PermissionManager:
             options=[
                 UserInputOption(id=PermissionConfirmationChoice.DENY.value, label="Deny"),
                 UserInputOption(id=PermissionConfirmationChoice.ALLOW_ONCE.value, label="Allow once"),
-                UserInputOption(
-                    id=PermissionConfirmationChoice.ALLOW_ALWAYS_SAME_SCOPE.value,
-                    label="Allow always",
-                    description=f"{scope.scope_type.value}: {scope.scope_value}",
+                *(
+                    [
+                        UserInputOption(
+                            id=PermissionConfirmationChoice.ALLOW_ALWAYS_SAME_SCOPE.value,
+                            label="Allow always",
+                            description=f"{scope.scope_type.value}: {scope.scope_value}",
+                        )
+                    ]
+                    if _allow_always_enabled(request)
+                    else []
                 ),
             ],
             payload={
@@ -75,6 +81,7 @@ class PermissionManager:
                 "reason": request.reason,
                 "scope_type": scope.scope_type.value,
                 "scope_value": scope.scope_value,
+                "allow_always": _allow_always_enabled(request),
             },
         )
 
@@ -98,6 +105,11 @@ class PermissionManager:
                 reason="用户允许本次执行。",
             )
         if normalized == PermissionConfirmationChoice.ALLOW_ALWAYS_SAME_SCOPE:
+            if not _allow_always_enabled(request):
+                return PermissionDecision(
+                    kind=PermissionDecisionKind.DENY,
+                    reason="该权限请求不支持长期授权。",
+                )
             guard = self._confirmation_guard(request)
             if guard is not None:
                 return guard
@@ -230,6 +242,10 @@ def _host_scope_value(target: str) -> str:
 def _question_for_request(request: PermissionRequest) -> str:
     reason = f"\n原因：{request.reason}" if request.reason else ""
     return f"允许执行权限操作 `{request.action.value}` 吗？\n目标：{request.target}{reason}"
+
+
+def _allow_always_enabled(request: PermissionRequest) -> bool:
+    return bool(request.metadata.get("allow_always", True))
 
 
 def _normalize_choice(choice: str) -> PermissionConfirmationChoice | None:

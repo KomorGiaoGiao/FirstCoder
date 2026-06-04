@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from firstcoder.permissions.types import PermissionAction
 from firstcoder.providers.types import ToolDefinition
+
+if TYPE_CHECKING:
+    from firstcoder.permissions.types import PermissionAction
 
 
 @dataclass(slots=True)
@@ -44,8 +46,11 @@ class ToolPermissionSpec:
 
     action: PermissionAction
     target_arg: str | None = None
+    target_value: str | None = None
     cwd_arg: str | None = None
     reason: str = ""
+    allow_always: bool = True
+    allow_auto: bool = True
 
 
 @dataclass(slots=True)

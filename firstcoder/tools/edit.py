@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.text import safe_read_text
@@ -47,4 +48,10 @@ def create_edit_tool(root: str | Path) -> Tool:
             replacements=replacements,
         )
 
-    return tool_from_function(edit)
+    tool = tool_from_function(edit)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.WRITE_PATH,
+        target_arg="path",
+        reason="编辑文件需要用户确认。",
+    )
+    return tool

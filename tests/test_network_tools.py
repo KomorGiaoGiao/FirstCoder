@@ -89,6 +89,48 @@ def test_web_search_calls_exa_mcp(monkeypatch, tmp_path):
     assert '"numResults":3' in captured["body"]
 
 
+def test_web_search_redacts_exa_api_key_from_result_data(monkeypatch, tmp_path):
+    payload = web_search_module.dumps_json(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": "search results"}]},
+        }
+    )
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return payload.encode("utf-8")
+
+        def getheaders(self):
+            return []
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        return FakeContext()
+
+    monkeypatch.setenv("EXA_API_KEY", "secret-token")
+    monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
+    registry = create_builtin_registry(tmp_path, include_network_tools=True)
+
+    result = registry.execute("web_search", {"query": "FirstCoder"})
+
+    assert "secret-token" in captured["url"]
+    assert result.ok is True
+    assert result.data["url"] == "https://mcp.exa.ai/mcp?exaApiKey=%2A%2A%2A"
+    assert "secret-token" not in result.data["url"]
+
+
 def test_web_search_parses_sse_response():
     payload = web_search_module.dumps_json(
         {

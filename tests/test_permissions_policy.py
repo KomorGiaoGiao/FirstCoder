@@ -68,6 +68,22 @@ def test_aggressive_allows_plain_project_write_but_not_sensitive_path(tmp_path) 
     assert pem_file.kind == PermissionDecisionKind.ASK
 
 
+def test_aggressive_write_respects_disable_auto_allow_metadata(tmp_path) -> None:
+    policy = DefaultPermissionPolicy(tmp_path)
+
+    decision = policy.decide(
+        PermissionRequest(
+            id="req_patch",
+            action=PermissionAction.WRITE_PATH,
+            target=".",
+            metadata={"allow_auto": False},
+        ),
+        mode=PermissionMode.AGGRESSIVE,
+    )
+
+    assert decision.kind == PermissionDecisionKind.ASK
+
+
 def test_aggressive_does_not_auto_allow_delete(tmp_path) -> None:
     policy = DefaultPermissionPolicy(tmp_path)
 

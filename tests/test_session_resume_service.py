@@ -8,6 +8,7 @@ from firstcoder.context.writer import SessionEventWriter
 from firstcoder.providers.types import ToolCall
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError, SessionNotFoundError
 from firstcoder.session.resume import ResumeService
+from firstcoder.tools.write import create_write_tool
 
 
 def test_resume_service_resumes_existing_session_and_reads_agents_md(tmp_path: Path) -> None:
@@ -50,6 +51,35 @@ def test_resume_service_replays_runtime_state_and_known_message_ids(tmp_path: Pa
     assert result.session.runtime_state.active_task_hash == original.runtime_state.active_task_hash
     assert message_id in result.session.known_message_ids
     assert boundary_result.ok is True
+
+
+def test_resume_service_keeps_permission_wrapper_for_project_tools(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    original = AgentSession.from_project(
+        store=store,
+        session_id="sess_permissions",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    original.append_user_message("历史消息")
+
+    result = ResumeService(
+        store=store,
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    ).resume("sess_permissions")
+    tool_result = result.session.execute_tool_call(
+        ToolCall(
+            id="call_write",
+            name="write",
+            arguments={"path": "README.md", "content": "hello"},
+        )
+    )
+
+    assert tool_result.ok is True
+    assert tool_result.data["request_type"] == "permission_confirmation"
+    assert tool_result.data["permission_request"]["action"] == "write_path"
+    assert not (tmp_path / "README.md").exists()
 
 
 def test_resume_service_rejects_missing_session(tmp_path: Path) -> None:

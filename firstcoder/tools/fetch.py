@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from urllib import error, parse, request
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.text import truncate
 
@@ -48,4 +49,10 @@ def create_fetch_tool() -> Tool:
             truncated=truncated,
         )
 
-    return tool_from_function(fetch)
+    tool = tool_from_function(fetch)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.NETWORK_REQUEST,
+        target_arg="url",
+        reason="网络请求需要用户确认。",
+    )
+    return tool

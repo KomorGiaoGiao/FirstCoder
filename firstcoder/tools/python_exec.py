@@ -6,7 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import run_command
@@ -54,4 +55,12 @@ def create_python_exec_tool(root: str | Path) -> Tool:
         content = result.stdout.strip() or result.stderr.strip() or f"Python 退出码：{result.exit_code}"
         return make_text_result("python_exec", content, **data)
 
-    return tool_from_function(python_exec)
+    tool = tool_from_function(python_exec)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.EXECUTE_SHELL,
+        target_value="python -c",
+        cwd_arg="cwd",
+        reason="执行 Python 代码需要用户确认。",
+        allow_always=False,
+    )
+    return tool

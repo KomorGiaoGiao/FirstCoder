@@ -5,7 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
+from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import run_command
@@ -67,4 +68,11 @@ def create_shell_tool(root: str | Path) -> Tool:
         content = result.stdout.strip() or result.stderr.strip() or f"命令退出码：{result.exit_code}"
         return make_text_result("shell", content, **data)
 
-    return tool_from_function(shell)
+    tool = tool_from_function(shell)
+    tool.permission = ToolPermissionSpec(
+        action=PermissionAction.EXECUTE_SHELL,
+        target_arg="command",
+        cwd_arg="cwd",
+        reason="执行 shell 命令需要用户确认。",
+    )
+    return tool

@@ -12,6 +12,8 @@ from pathlib import Path
 from firstcoder.agent.prompt_inputs import read_agents_md
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.permissions.manager import PermissionManager
+from firstcoder.permissions.policy import DefaultPermissionPolicy
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError
 from firstcoder.session.models import ResumeResult
@@ -40,5 +42,6 @@ class ResumeService:
             session_id=session_id,
             agents_md=read_agents_md(self.project_root),
             tools=self.tools,
+            permission_manager=PermissionManager(policy=DefaultPermissionPolicy(self.project_root)),
         )
         return ResumeResult(session=session, record=record)
