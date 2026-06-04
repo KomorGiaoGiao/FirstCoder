@@ -6,6 +6,7 @@ import re
 import pytest
 
 from firstcoder.agent.loop import AgentLoop
+from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.manager import ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.runtime_replay import replay_runtime_state
@@ -22,6 +23,7 @@ from firstcoder.providers.types import (
     ToolDefinition,
 )
 from firstcoder.tools.task_boundary import create_task_boundary_tool
+from firstcoder.tools.ask_user import create_ask_user_tool
 from firstcoder.tools.types import Tool, ToolResult
 
 
@@ -1005,3 +1007,89 @@ def test_agent_loop_runs_auto_compact_after_large_tool_result(tmp_path) -> None:
 
     triggers = [call.trigger for call in context_manager.calls]
     assert ContextWindowTrigger.AUTO in triggers
+
+
+def test_agent_loop_interactive_pauses_on_ask_user(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_ask",
+        agents_md="",
+        tools=[create_ask_user_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_ask",
+                        name="ask_user",
+                        arguments={"question": "请选择环境", "options": ["dev", "prod"]},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="不应继续"),
+        ]
+    )
+
+    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("部署")
+
+    assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    assert result.response is None
+    assert result.pending_input is not None
+    assert result.pending_input.kind == "ask_user"
+    assert result.pending_input.id == "call_ask"
+    assert result.pending_input.question == "请选择环境"
+    assert [(option.id, option.label) for option in result.pending_input.options] == [
+        ("1", "dev"),
+        ("2", "prod"),
+    ]
+    assert len(provider.requests) == 1
+    assert [message.role for message in store.rebuild_session_view("sess_ask").messages] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+
+def test_agent_loop_skips_remaining_parallel_tools_when_waiting_for_user(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_parallel_ask",
+        agents_md="",
+        tools=[create_ask_user_tool(), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_ask",
+                        name="ask_user",
+                        arguments={"question": "确认？"},
+                    ),
+                    ToolCall(id="call_echo", name="echo", arguments={"text": "should skip"}),
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+
+    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("需要确认")
+
+    assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    view = store.rebuild_session_view("sess_parallel_ask")
+    assert [message.role for message in view.messages] == ["user", "assistant", "tool", "tool"]
+    assert view.messages[2].parts[0].metadata["tool_call_id"] == "call_ask"
+    skipped = view.messages[3].parts[0]
+    assert skipped.metadata["tool_call_id"] == "call_echo"
+    assert skipped.metadata["ok"] is False
+    assert skipped.metadata["data"]["skipped_due_to_user_input"] is True

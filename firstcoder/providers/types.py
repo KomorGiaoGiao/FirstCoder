@@ -15,6 +15,7 @@ FinishReason = Literal[
     "error",
     "unknown",
     "tool_round_limit",
+    "waiting_for_user_input",
 ]
 TokenParam = Literal["max_tokens", "max_completion_tokens"]
 ToolChoiceMode = Literal["auto", "none", "required"]

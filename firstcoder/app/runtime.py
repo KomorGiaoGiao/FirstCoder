@@ -13,6 +13,7 @@ from typing import Any
 
 from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.session import AgentSession
+from firstcoder.agent.user_input import AgentTurnStatus, UserInputRequest
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
@@ -66,9 +67,11 @@ class AgentChatRunner:
     loops: list[AgentLoop] = field(default_factory=list)
     last_display_lines: list[str] = field(default_factory=list)
     last_stream_events: list[ChatStreamEvent] = field(default_factory=list)
+    last_pending_input: UserInputRequest | None = None
 
     def run_user_turn(self, content: str) -> ChatResponse:
         before_count = len(self.current_session.rebuild_view().messages)
+        self.last_pending_input = None
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
@@ -78,10 +81,22 @@ class AgentChatRunner:
             max_tool_rounds=self.max_tool_rounds,
         )
         self.loops.append(loop)
-        response = loop.run_user_turn(content)
+        result = loop.run_user_turn_interactive(content)
         self.last_stream_events = []
+        self.last_pending_input = result.pending_input
         after_view = self.current_session.rebuild_view()
         self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+        if result.response is not None:
+            return result.response
+        response = ChatResponse(
+            provider=self.provider.name,
+            model=self.provider.model,
+            content=result.pending_input.question if result.pending_input else "等待用户输入。",
+            finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
+            raw={"pending_input": result.pending_input},
+        )
+        if response.content:
+            self.last_display_lines.append(response.content)
         return response
 
     async def arun_user_turn(self, content: str) -> ChatResponse:
@@ -93,6 +108,7 @@ class AgentChatRunner:
 
         if self.use_streaming:
             before_count = len(self.current_session.rebuild_view().messages)
+            self.last_pending_input = None
             loop = AgentLoop(
                 session=self.current_session.session,
                 provider=self.provider,
@@ -106,8 +122,12 @@ class AgentChatRunner:
             self.last_stream_events = []
             response = await loop.run_user_turn_streaming(content)
             self.last_stream_events = list(loop.last_stream_events)
+            raw_pending = response.raw.get("pending_input") if isinstance(response.raw, dict) else None
+            self.last_pending_input = raw_pending if isinstance(raw_pending, UserInputRequest) else None
             after_view = self.current_session.rebuild_view()
             self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+            if self.last_pending_input is not None and response.content:
+                self.last_display_lines.append(response.content)
             return response
 
         return await asyncio.to_thread(self.run_user_turn, content)

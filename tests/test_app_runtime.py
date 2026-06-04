@@ -4,9 +4,11 @@ import pytest
 
 from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.agent.session import AgentSession
+from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.tools.ask_user import create_ask_user_tool
 from firstcoder.tools.types import make_text_result, Tool
 
 
@@ -151,6 +153,49 @@ def test_agent_chat_runner_records_tool_call_and_result_display_lines(tmp_path) 
     ]
 
 
+def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_pending",
+        agents_md="",
+        tools=[create_ask_user_tool()],
+    )
+    state = CurrentSessionState(session)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_ask",
+                        name="ask_user",
+                        arguments={"question": "继续吗？", "options": ["继续", "取消"]},
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    runner = AgentChatRunner(current_session=state, provider=provider)
+
+    response = runner.run_user_turn("先问我")
+
+    assert response.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    assert response.content == "继续吗？"
+    assert runner.last_pending_input is not None
+    assert runner.last_pending_input.kind == "ask_user"
+    assert runner.last_pending_input.question == "继续吗？"
+    assert [option.label for option in runner.last_pending_input.options] == ["继续", "取消"]
+    assert runner.last_display_lines == [
+        'Tool call: ask_user {"options": ["继续", "取消"], "question": "继续吗？"}',
+        "Tool result: ask_user success: 继续吗？ 1. 继续 2. 取消",
+        "继续吗？",
+    ]
+
+
 @pytest.mark.anyio
 async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
@@ -171,6 +216,53 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     ]
     assert runner.last_display_lines == ["streamed"]
     assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_chat_runner_streaming_exposes_pending_user_input(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_stream_pending",
+        agents_md="",
+        tools=[create_ask_user_tool()],
+    )
+    state = CurrentSessionState(session)
+    provider = FakeStreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_stream_ask",
+                        name="ask_user",
+                        arguments={"question": "流式继续吗？", "options": ["继续", "暂停"]},
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    runner = AgentChatRunner(current_session=state, provider=provider, use_streaming=True)
+
+    response = await runner.arun_user_turn("先流式问我")
+
+    assert response.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    assert response.content == "流式继续吗？"
+    assert runner.last_pending_input is not None
+    assert runner.last_pending_input.id == "call_stream_ask"
+    assert [option.label for option in runner.last_pending_input.options] == ["继续", "暂停"]
+    assert [event.kind for event in runner.last_stream_events] == [
+        "message_started",
+        "message_completed",
+    ]
+    assert runner.last_display_lines == [
+        'Tool call: ask_user {"options": ["继续", "暂停"], "question": "流式继续吗？"}',
+        "Tool result: ask_user success: 流式继续吗？ 1. 继续 2. 暂停",
+        "流式继续吗？",
+    ]
 
 
 @pytest.mark.anyio
