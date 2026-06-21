@@ -94,6 +94,12 @@ class AgentSession:
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
     ) -> "AgentSession":
+        """创建全新 session，并初始化 session-scoped 工具。
+
+        这里会立即写入 `session_created` 事件。后续所有可恢复事实都追加到同一个
+        JSONL 日志中；运行时对象只是方便当前进程快速访问这些事实。
+        """
+
         runtime_state = SessionRuntimeState(session_id=session_id)
         known_message_ids: set[str] = set()
         registry = create_session_tool_registry(
@@ -128,6 +134,12 @@ class AgentSession:
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
     ) -> "AgentSession":
+        """从项目根目录创建 session。
+
+        这一层负责读取项目级 `AGENTS.md`，并创建默认权限管理器。这样 app/UI 不需要知道
+        AGENTS.md、permission grant 文件放在哪里，也不会把这些初始化细节散落到 widget。
+        """
+
         agents_md = read_agents_md(project_root)
         permission_manager = permission_manager or create_project_permission_manager(
             project_root,
@@ -219,6 +231,12 @@ class AgentSession:
         provider_capabilities: ProviderCapabilities | None = None,
         tools: list[ToolDefinition],
     ) -> list:
+        """构造 provider 请求前面的稳定 system prefix。
+
+        system prompt 不写入普通会话消息，因为它不是用户/模型之间发生过的事实；它是每次
+        请求根据 AGENTS.md、工具 schema、provider 能力和权限策略动态生成的高优先级前缀。
+        """
+
         inputs = build_system_prompt_inputs(
             base_rules=self.base_rules,
             agents_md=self.agents_md,
@@ -235,6 +253,8 @@ class AgentSession:
         return entry.messages
 
     def append_user_message(self, content: str) -> str:
+        """把用户输入写成可恢复的 user_message 事件。"""
+
         message_id = self.writer.append_user_message(
             content,
             part_metadata=self._current_context_metadata(),
@@ -244,6 +264,12 @@ class AgentSession:
         return message_id
 
     def append_assistant_response(self, response: ChatResponse) -> str:
+        """把 provider 返回的 assistant response 写入事件日志。
+
+        assistant response 可能同时包含可见文本和 tool_calls。这里统一转成 MessagePart，
+        确保后续 ContextBuilder 能重新投影出合法的 provider assistant message。
+        """
+
         message_id = new_message_id()
         parts = assistant_response_to_parts(message_id=message_id, response=response)
         self._attach_current_context_metadata(parts)
@@ -262,6 +288,8 @@ class AgentSession:
         return assistant_message_id
 
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
+        """通过当前 session 的工具注册表执行一次模型请求的工具调用。"""
+
         return self.tool_registry.execute(tool_call.name, tool_call.arguments)
 
     def preflight_tool_call_permission(self, tool_call: ToolCall) -> ToolPermissionPreflight | None:
@@ -298,6 +326,12 @@ class AgentSession:
         return resolved
 
     def append_tool_result(self, *, tool_call: ToolCall, result: ToolResult) -> str:
+        """把工具执行结果写成 role=tool 事实。
+
+        这一步是 tool calling 闭环的关键：模型下一次调用时会看到这个 tool_result，并基于
+        工具输出生成后续回答。工具结果不直接替代 assistant 回复。
+        """
+
         message_id = new_message_id()
         part = tool_result_to_part(message_id=message_id, tool_call=tool_call, result=result)
         self._attach_current_context_metadata([part])
@@ -314,6 +348,8 @@ class AgentSession:
         return self.writer.current_turn
 
     def rebuild_view(self):
+        """从 append-only JSONL 重建当前 SessionView。"""
+
         return self.store.rebuild_session_view(self.session_id)
 
     def _append_task_boundary_observation_if_present(self, *, tool_call: ToolCall, result: ToolResult) -> None:
@@ -330,6 +366,8 @@ class AgentSession:
         return metadata
 
     def _attach_current_context_metadata(self, parts: list[MessagePart]) -> None:
+        """给本轮新写入的 parts 附加当前任务上下文元数据。"""
+
         metadata = self._current_context_metadata()
         for part in parts:
             part.metadata.update(metadata)

@@ -33,6 +33,8 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDefinition]:
         """返回所有模型可见的工具 schema。"""
 
+        # 注意这里返回的是“给模型看的声明”，不是 executor 本身。provider 会把这些
+        # ToolDefinition 转成 OpenAI/Anthropic 等具体协议里的 tool schema。
         return [tool.definition for tool in self._tools.values()]
 
     def names(self) -> list[str]:
@@ -59,11 +61,14 @@ class ToolRegistry:
 
         tool = self._tools.get(name)
         if tool is None:
+            # 未知工具也写成 ToolResult，而不是抛异常打断 loop。模型下一轮能看到错误并
+            # 选择换一个工具或给用户解释。
             return make_error_result(name, f"未知工具：{name}")
 
         if arguments is None:
             arguments = {}
         if not isinstance(arguments, dict):
+            # executor 全部以关键字参数调用，所以参数必须是 object/dict。
             return make_error_result(name, "工具参数不是合法对象", raw_arguments=arguments)
 
         try:

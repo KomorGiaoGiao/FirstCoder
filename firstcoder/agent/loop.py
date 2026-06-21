@@ -30,9 +30,16 @@ class ContextManagerLike(Protocol):
 class AgentLoop:
     """把用户输入、上下文投影、provider 调用和工具执行串成一轮会话。
 
-    当前只实现上下文闭环需要的最小同步流程：用户消息落库、构造 system prefix、投影
-    provider messages、处理一轮或多轮 tool calls。自动压缩和 provider 错误恢复留给后续
-    `ContextWindowManager` 阶段接入。
+    可以把这一层理解成 FirstCoder 的“单轮事务”：
+
+    1. 先把用户输入写入 append-only session log。
+    2. 从 session log 重建当前视图，投影成 provider messages。
+    3. 调用模型。如果模型返回普通文本，就写入 assistant 消息并结束。
+    4. 如果模型返回 tool_calls，就先写入 assistant tool_call，再执行工具。
+    5. 工具结果写成 role=tool 消息后，再次调用模型，让模型基于工具结果继续回答。
+
+    这里故意不把具体工具、OpenAI SDK chunk、Textual widget 混进来。AgentLoop 只协调
+    “模型想做什么”和“会话事实应该怎样落库”，具体协议转换交给 provider/context 层。
     """
 
     def __init__(
@@ -51,12 +58,21 @@ class AgentLoop:
         self.context_manager = context_manager
         self.max_tool_rounds = max_tool_rounds
         self.last_stream_events: list[ChatStreamEvent] = []
+        # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
+        # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
             for tool in tools:
                 if tool.name not in self.session.tool_registry.names():
                     self.session.tool_registry.register(tool)
 
     def run_user_turn(self, content: str) -> ChatResponse:
+        """非交互兼容入口。
+
+        旧调用方只认识 `ChatResponse`。如果底层因为权限确认或 ask_user 暂停，这里会把
+        “等待用户输入”包装成一条响应文本；真正需要恢复暂停的 UI 应使用
+        `run_user_turn_interactive()` 和 `resume_with_user_input()`。
+        """
+
         result = self.run_user_turn_interactive(content)
         if result.response is not None:
             return result.response
@@ -78,6 +94,8 @@ class AgentLoop:
         """
 
         if self.session.pending_permission_execution is not None:
+            # 上一轮已经把 assistant tool_call 写进历史，但还缺一个匹配的 tool_result。
+            # 这种情况下不能追加新的用户消息，否则 provider 会看到非法消息序列。
             pending = self.session.pending_permission_execution
             return AgentTurnResult(
                 status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
@@ -85,6 +103,8 @@ class AgentLoop:
             )
 
         self.session.append_user_message(content)
+        # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
+        # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
@@ -179,12 +199,16 @@ class AgentLoop:
 
         decision = self.session.permission_manager.resolve_confirmation(pending.permission_request, answer)
         if decision.kind == PermissionDecisionKind.DENY:
+            # 拒绝也必须写成 tool_result。provider 协议要求每个 assistant tool_call 都有
+            # 对应的 role=tool 消息，否则下一次请求会因为消息序列不合法而失败。
             result = make_permission_denied_result(
                 tool_name=pending.tool_call.name,
                 request=pending.permission_request,
                 decision=decision,
             )
         else:
+            # 用户同意后执行原始 pending tool_call。这里绕过再次权限检查，避免同一个
+            # 确认请求被重复拦截；授权是否长期有效由 PermissionManager/GrantStore 决定。
             result = self.session.execute_tool_call_after_permission_confirmation(pending.tool_call)
 
         self.session.pending_permission_execution = None
@@ -194,6 +218,12 @@ class AgentLoop:
         return None
 
     def _complete_once(self) -> ChatResponse:
+        """构造一次 provider 请求并获得模型响应。
+
+        这一步只负责“问模型一次”，不处理工具循环。拆开后，同步调用、streaming 调用、
+        prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
+        """
+
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
@@ -208,6 +238,12 @@ class AgentLoop:
         return self.provider.complete(ChatRequest(messages=messages, tools=definitions))
 
     def _complete_once_with_recovery(self) -> ChatResponse:
+        """同步模式下一次 provider 调用，并处理 prompt-too-long 的单次恢复。
+
+        provider 如果拒绝请求，说明 assistant 回复还没有产生，也就没有新消息要落库。
+        这时可以先触发 blocking compact，再重建 provider messages 重试一次。
+        """
+
         try:
             return self._complete_once()
         except ProviderError as exc:
@@ -219,6 +255,12 @@ class AgentLoop:
             return self._complete_once()
 
     async def _stream_once(self) -> ChatResponse:
+        """消费一次 provider stream，最终仍返回完整 ChatResponse。
+
+        UI 可以读取 `last_stream_events` 展示 text_delta；但工具调用必须等 stream 完成后
+        才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
+        """
+
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
@@ -258,10 +300,20 @@ class AgentLoop:
         try:
             return await self._stream_once()
         except ProviderError:
+            # streaming 尝试失败时，不能把已经收到的局部 delta 当成真实回答留给 UI。
+            # 真正成功的重试会重新产生完整事件。
             del self.last_stream_events[start_event_count:]
             raise
 
     def _run_tool_loop_interactive(self, complete_once) -> AgentTurnResult:
+        """核心工具循环：问模型，执行工具，再把工具结果回喂给模型。
+
+        退出条件只有三类：
+        - 模型返回的 response 没有 tool_calls：说明它已经给出最终回答。
+        - 命中 max_tool_rounds：防止模型无限调用工具。
+        - 某个工具需要用户输入或权限确认：暂停并把 pending_input 交给 UI。
+        """
+
         response = self._drop_unsupported_tool_calls(complete_once())
         tool_rounds = 0
         while response.tool_calls:
@@ -269,6 +321,8 @@ class AgentLoop:
                 response = self._tool_round_limit_response(response)
                 break
 
+            # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
+            # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
             self.session.append_assistant_response(response)
             execution = self._execute_tool_calls_interactive(response.tool_calls)
             if execution.pending_input is not None:
@@ -284,13 +338,19 @@ class AgentLoop:
             if tool_rounds >= self.max_tool_rounds:
                 response = self._tool_round_limit_response(response)
                 break
+            # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
+            # 重新投影完整历史，让模型读取刚才的工具输出。
             response = self._drop_unsupported_tool_calls(complete_once())
 
+        # 没有工具调用时，这条 response 就是最终 assistant 回复。命中轮次上限时也会写入
+        # 一条纯文本说明，避免保存未执行的 tool_call。
         self.session.append_assistant_response(response)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
     async def _run_tool_loop_interactive_async(self, complete_once) -> AgentTurnResult:
+        """streaming 版本的工具循环，语义与同步版本一致。"""
+
         response = self._drop_unsupported_tool_calls(await complete_once())
         tool_rounds = 0
         while response.tool_calls:
@@ -325,6 +385,9 @@ class AgentLoop:
     def _execute_tool_calls_interactive(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
         task_hash_changed = False
         for index, tool_call in enumerate(tool_calls):
+            # 权限检查放在工具执行前，但具体“这个路径能不能写 / 这个命令能不能跑”
+            # 的判断由 permissions 和 permission-aware tool wrapper 完成。AgentLoop 只关心
+            # allow / deny / ask 三种结果该如何写回会话。
             preflight = self.session.preflight_tool_call_permission(tool_call)
             if preflight is not None:
                 if preflight.decision.kind == PermissionDecisionKind.DENY:
@@ -336,6 +399,8 @@ class AgentLoop:
                     self.session.append_tool_result(tool_call=tool_call, result=result)
                     continue
                 if preflight.decision.kind == PermissionDecisionKind.ASK:
+                    # 需要用户确认时不能继续执行同批次后续工具。否则用户还没批准第一个
+                    # 高风险操作，后面的工具却已经产生副作用了。
                     pending_input = self._store_pending_permission_request(
                         tool_call=tool_call,
                         request=preflight.request,
@@ -348,6 +413,8 @@ class AgentLoop:
 
             result = self.session.execute_tool_call(tool_call)
             self.session.append_tool_result(tool_call=tool_call, result=result)
+            # ask_user 这类工具本身不会继续执行副作用，而是把“需要问用户什么”包装在
+            # ToolResult.data 中。这里把它转换成 AgentTurnResult 的 pending_input。
             pending_input = user_input_request_from_tool_result(
                 result,
                 tool_call_id=tool_call.id,
@@ -360,6 +427,8 @@ class AgentLoop:
                     pending_input=pending_input,
                 )
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
+                # task_boundary 是一种“语义触发”：即使上下文还没超 token 阈值，确认任务切换
+                # 后也应该整理旧任务上下文，降低旧任务信息污染新任务的概率。
                 task_hash_changed = True
         return _ToolExecutionState(task_hash_changed=task_hash_changed)
 
@@ -374,6 +443,8 @@ class AgentLoop:
             raise RuntimeError("permission confirmation requires a permission manager")
 
         confirmation = self.session.permission_manager.build_confirmation(request)
+        # UI 会看到 confirmation.payload，但恢复时不信任 UI 回传的 tool_call。真实 tool_call
+        # 保存在 session.pending_permission_execution 中，避免前端篡改参数后执行。
         confirmation.payload["pending_tool_call"] = {
             "id": tool_call.id,
             "name": tool_call.name,
@@ -416,6 +487,12 @@ class AgentLoop:
             self.session.append_tool_result(tool_call=tool_call, result=result)
 
     def _compact_if_needed(self, *, trigger: ContextWindowTrigger):
+        """把压缩触发交给 context manager。
+
+        AgentLoop 不判断 token 细节，也不决定 L1/L2/L3/L4 怎么做；它只在关键时机告诉
+        context 层：“现在可能需要整理上下文了”。
+        """
+
         if self.context_manager is None:
             return None
         return self.context_manager.compact_if_needed(
@@ -428,12 +505,20 @@ class AgentLoop:
         )
 
     def _provider_tool_definitions(self):
+        """根据 provider 能力决定是否向模型暴露工具 schema。"""
+
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is not None and not capabilities.supports_tools:
             return []
         return self.session.tool_registry.definitions()
 
     def _drop_unsupported_tool_calls(self, response: ChatResponse) -> ChatResponse:
+        """兜底保护：不支持工具的 provider 理论上不该返回 tool_calls。
+
+        如果兼容站行为异常仍返回了 tool_calls，这里把它们丢弃并记录 diagnostics，避免
+        agent 执行一个 provider 能力声明之外的工具链。
+        """
+
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is None or capabilities.supports_tools or not response.tool_calls:
             return response

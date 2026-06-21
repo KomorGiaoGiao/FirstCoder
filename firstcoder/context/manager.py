@@ -100,6 +100,16 @@ class ContextWindowManager:
             )
 
     def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
+        """根据触发源决定是否 compact，并把压缩事实写回事件日志。
+
+        这个入口既服务自动触发，也服务强制触发：
+
+        - AUTO：先看 token/工具输出/尾部消息数量是否超过阈值。
+        - TASK_HASH_CHANGED：任务切换后强制整理旧任务上下文。
+        - PROMPT_TOO_LONG：provider 已经拒绝请求，必须尝试 blocking compact。
+        - MANUAL：用户主动要求观察压缩效果。
+        """
+
         trigger = ContextWindowTrigger(request.trigger)
         mode = ContextCompactMode(request.mode)
         trigger_decision = evaluate_context_triggers(request.view, self.config)
@@ -107,6 +117,8 @@ class ContextWindowManager:
         auto_failure_count_before = request.runtime_state.auto_compact_failure_count
 
         if not self._should_compact(trigger=trigger, decision=trigger_decision):
+            # AUTO 场景下多数调用都会走到这里。返回 skipped 是有意义的状态，方便
+            # `/compact status` 和测试知道“检查过，但还没到阈值”。
             return ContextCompactResult(
                 status="skipped",
                 reason=trigger_decision.reason,
@@ -116,6 +128,8 @@ class ContextWindowManager:
             )
 
         if mode == ContextCompactMode.AUTO and auto_compact_circuit_is_open(request.runtime_state):
+            # 连续失败后自动压缩会短暂熔断，避免每一轮对话都重复触发昂贵且失败的 L4。
+            # 手动 compact 不受这个限制，方便用户主动排查。
             return ContextCompactResult(
                 status="skipped",
                 reason="circuit_open",
@@ -125,6 +139,8 @@ class ContextWindowManager:
             )
 
         target_tokens = request.target_tokens or self.config.target_for_trigger(trigger.value)
+        # 先跑确定性的 L1-L3。它们不依赖模型，成本低、结果可重放；只有仍然超预算时
+        # 才进入 L4 LLM 摘要。
         programmatic = self.pipeline.compact(
             CompactionRequest(
                 view=request.view,
@@ -143,6 +159,8 @@ class ContextWindowManager:
         after_tokens = after_programmatic.estimated_tokens
 
         if after_tokens <= target_tokens:
+            # L1-L3 已经足够时，不需要调用 LLM。这里仍然写入 compaction_completed，
+            # 这样 resume/debug 能看到本次压缩发生过什么。
             self._record_auto_success_if_needed(request=request, mode=mode)
             return ContextCompactResult(
                 status="success",
@@ -154,6 +172,8 @@ class ContextWindowManager:
             )
 
         if self.l4_service is None:
+            # manager 可以在没有 L4 service 的测试/最小配置中运行。失败也写成
+            # llm_compaction_completed，方便 runtime replay 恢复失败计数和状态。
             l4_event = LlmCompactEvent(
                 status="failed",
                 source_fingerprint=programmatic.event.input_fingerprint,
@@ -191,6 +211,8 @@ class ContextWindowManager:
         )
         fallback_steps: list[dict[str, object]] = []
         if l4_result.event.status != "success":
+            # L4 失败后不在 LlmCompactService 内部做复杂编排，而是在 manager 层统一应用
+            # fallback policy。这样 L4 service 保持“生成 checkpoint”这个窄职责。
             fallback = self._run_fallback(
                 request=request,
                 trigger=trigger,
@@ -250,6 +272,8 @@ class ContextWindowManager:
             event=l4_result.event,
         )
         rebuilt_view = self.store.rebuild_session_view(request.view.session_id)
+        # checkpoint 写入后必须重新 rebuild，因为当前内存里的 programmatic.view 还不知道
+        # 新 checkpoint 事件。后续 token 估算和 provider 投影都应基于重放后的视图。
         after_l4 = evaluate_context_triggers(rebuilt_view, self.config)
         self._record_auto_success_if_needed(request=request, mode=mode)
 
@@ -470,6 +494,8 @@ class ContextWindowManager:
             request.runtime_state.record_auto_compact_success()
 
     def _should_compact(self, *, trigger: ContextWindowTrigger, decision) -> bool:
+        """区分“阈值触发”和“语义/错误强制触发”。"""
+
         if trigger in {
             ContextWindowTrigger.MANUAL,
             ContextWindowTrigger.TASK_HASH_CHANGED,

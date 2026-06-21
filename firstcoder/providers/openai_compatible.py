@@ -125,6 +125,8 @@ class OpenAICompatibleProvider(ChatProvider):
         diagnostics = ProviderDiagnostics(raw_finish_reason=raw_finish_reason)
         tool_calls = self._parse_tool_calls(_read_field(message, "tool_calls", []) or [], diagnostics=diagnostics)
         if finish_reason == "length" and tool_calls:
+            # length 表示模型输出被截断。此时即使 SDK 对象里出现了 tool_calls，也可能只是
+            # 半截 JSON 参数；为了避免执行危险的半截工具调用，整组丢弃并写 diagnostics。
             diagnostics.warnings.append("finish_reason=length，丢弃可能不完整的 tool_calls，避免执行半截工具调用。")
             tool_calls = []
 
@@ -168,6 +170,8 @@ class OpenAICompatibleProvider(ChatProvider):
 
         yield ChatStreamEvent(kind="message_started")
 
+        # OpenAI Python SDK 的 stream iterator 是同步对象；Agent/UI 这边是 async 消费。
+        # 用后台线程顺序读取 chunk，再通过 Queue 桥接到 async loop，避免阻塞 Textual。
         stream_queue, stop_stream = _start_stream_worker(stream)
         try:
             while True:
@@ -201,6 +205,8 @@ class OpenAICompatibleProvider(ChatProvider):
                     content_parts.append(text)
                     yield ChatStreamEvent(kind="text_delta", text=text)
 
+                # tool_calls 在 streaming 中不是一次性完整返回，而是按 index 分片到达。
+                # 这里只累计和展示 delta，不解析执行；真正执行要等 finish_reason=tool_calls。
                 for event in _accumulate_stream_tool_call_deltas(
                     _read_field(delta, "tool_calls", []) or [],
                     accumulators=tool_accumulators,
@@ -216,6 +222,8 @@ class OpenAICompatibleProvider(ChatProvider):
 
         tool_calls: list[ToolCall] = []
         if tool_accumulators and finish_reason != "tool_calls":
+            # 如果 stream 结束原因不是 tool_calls，说明这些工具片段没有完整结束语义。
+            # 保守做法是不给 agent 任何可执行 tool_call。
             diagnostics.warnings.append(
                 f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。"
             )
@@ -246,6 +254,8 @@ class OpenAICompatibleProvider(ChatProvider):
         """构造 OpenAI-compatible Chat Completions 请求参数。"""
 
         if request.tools and not self._capabilities.supports_tools:
+            # 这里显式报错，而不是静默忽略 tools。否则 agent 以为模型看到了工具 schema，
+            # 实际请求却没有工具能力，后续行为会很难排查。
             raise ProviderError(
                 ProviderErrorKind.CONFIG_ERROR,
                 f"provider {self._name} 不支持 tool calling，不能发送 tools",
@@ -260,6 +270,8 @@ class OpenAICompatibleProvider(ChatProvider):
             params["tools"] = [to_openai_tool(tool) for tool in request.tools]
             params["tool_choice"] = _to_openai_tool_choice(request.tool_choice)
             if self._capabilities.supports_parallel_tool_calls:
+                # 只有 preset 明确声明支持时才发送 parallel_tool_calls，兼容一些中转站
+                # 对 OpenAI 新字段支持不完整的情况。
                 params["parallel_tool_calls"] = True
         if request.temperature is not None:
             params["temperature"] = request.temperature
@@ -268,6 +280,8 @@ class OpenAICompatibleProvider(ChatProvider):
 
         extra_body = {**self._extra_body, **request.extra_body}
         if extra_body:
+            # 不同 OpenAI-compatible 厂商常把私有参数放到 extra_body。provider 层统一透传，
+            # agent loop 不需要为每个厂商写分支。
             params["extra_body"] = extra_body
         return params
 
@@ -311,6 +325,8 @@ class OpenAICompatibleProvider(ChatProvider):
             raw_arguments = _read_field(function, "arguments", "")
             arguments = loads_json_object(raw_arguments)
             if not isinstance(arguments, dict):
+                # OpenAI function calling 约定 arguments 是 JSON object 字符串。参数坏了时不尝试
+                # “修复”或执行其中一部分，因为工具调用一旦有副作用就不能靠猜。
                 call_id = _read_field(call, "id", "")
                 name = _read_field(function, "name", "")
                 diagnostics.warnings.append(
@@ -444,6 +460,8 @@ def _accumulate_stream_tool_call_deltas(
 
         is_new = index not in accumulators
         accumulator = accumulators.setdefault(index, _StreamToolCallAccumulator(index=index))
+        # 同一个 tool_call 的 id/name/arguments 可能分散在多个 chunk。按 index 聚合能支持
+        # 一个 assistant message 中同时出现多个并行工具调用。
         call_id = _read_field(delta, "id")
         if call_id:
             accumulator.id = call_id
@@ -487,6 +505,8 @@ def _complete_stream_tool_calls(
     for index in sorted(accumulators):
         accumulator = accumulators[index]
         if not accumulator.id or not accumulator.name or not accumulator.saw_arguments:
+            # 缺任一关键字段都不能执行。返回空列表表示整组 streaming tool_calls 作废，
+            # 避免只执行部分工具造成模型上下文和真实副作用不一致。
             diagnostics.warnings.append(
                 f"streaming tool_call 缺少 id、name 或 arguments，已丢弃整组不可执行调用：index={index}"
             )

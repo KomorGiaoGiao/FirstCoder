@@ -13,7 +13,16 @@ class InvalidCheckpointBoundaryError(ValueError):
 
 
 class ContextBuilder:
-    """只负责投影，不负责压缩、总结、落盘或任务边界判断。"""
+    """只负责投影，不负责压缩、总结、落盘或任务边界判断。
+
+    `SessionView` 是 FirstCoder 自己的事实账本，不等于 provider 请求格式。ContextBuilder
+    的职责就是在每次调用模型前，把当前可见历史转换成 `ChatMessage` 列表：
+
+    - system prefix 由 AgentSession 传入。
+    - 如果有 checkpoint，先插入一条“旧历史摘要”。
+    - 再保留 checkpoint tail 之后的真实消息。
+    - 最后校验 tool_call/tool_result 序列，避免 provider 拒绝请求。
+    """
 
     def build_provider_messages(
         self,
@@ -25,9 +34,13 @@ class ContextBuilder:
         active_checkpoint = checkpoint or CheckpointIndex(view.checkpoints).latest()
         messages = list(system_prefix or [])
         if active_checkpoint is not None:
+            # checkpoint 不删除原始历史，只改变本次 provider 请求看到的上下文：旧历史用摘要
+            # 表示，tail 部分保留原文，便于模型继续当前任务。
             messages.append(ChatMessage(role="user", content=checkpoint_summary_content(active_checkpoint)))
 
         tail_messages = self._tail_messages(view, checkpoint=active_checkpoint)
+        # provider 对 tool calling 序列很严格：assistant tool_call 后必须紧跟对应 tool result。
+        # 压缩/checkpoint 不能把这个配对切断。
         validate_tool_call_sequence(tail_messages)
         for message in tail_messages:
             projected = self._project_message(message)
@@ -46,6 +59,8 @@ class ContextBuilder:
         for index, message in enumerate(view.messages):
             if message.id == checkpoint.tail_start_message_id:
                 tail = view.messages[index:]
+                # tail 不能从 tool message 开始，否则 provider 会看到一个没有前置 assistant
+                # tool_call 的孤立 tool_result。
                 _validate_tail_boundary(tail)
                 return tail
         raise InvalidCheckpointBoundaryError(
@@ -54,9 +69,12 @@ class ContextBuilder:
 
     def _project_message(self, message: AgentMessage) -> list[ChatMessage]:
         if message.role == "system_meta":
+            # system_meta 是内部状态，不应该作为普通对话消息发给 provider。
             return []
 
         if message.role == "tool":
+            # tool message 可能包含普通工具结果，也可能是 archive placeholder。二者都要用
+            # role=tool 回给模型，并带上原始 tool_call_id。
             return [
                 _project_tool_part(part)
                 for part in message.parts
@@ -68,12 +86,16 @@ class ContextBuilder:
 
         if message.role == "user":
             content = _join_visible_text(message.parts)
+            # basis_message_id 是给 task_boundary 工具用的锚点。模型只能引用真实存在的
+            # message id，程序侧再据此生成稳定 task hash。
             return [ChatMessage(role="user", content=_with_basis_message_id(message.id, content))] if content else []
 
         return []
 
 
 def _project_assistant_message(message: AgentMessage) -> ChatMessage:
+    """把内部 assistant parts 合并成 provider assistant message。"""
+
     text_parts = [part.content for part in message.parts if part.kind == "text" and part.content]
     tool_calls = [
         ToolCall(
@@ -88,6 +110,8 @@ def _project_assistant_message(message: AgentMessage) -> ChatMessage:
 
 
 def _project_tool_part(part: MessagePart) -> ChatMessage:
+    """把内部工具结果投影成 provider 需要的 role=tool 消息。"""
+
     return ChatMessage(
         role="tool",
         content=part.content,
