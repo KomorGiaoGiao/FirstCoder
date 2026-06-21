@@ -24,6 +24,20 @@ class FakeLoop:
         )
 
 
+class FileWritingLoop:
+    def __init__(self, repo: Path):
+        self.repo = repo
+
+    def run_user_turn(self, content: str) -> ChatResponse:
+        (self.repo / "new_module.py").write_text("NEW_VALUE = 3\n", encoding="utf-8")
+        return ChatResponse(
+            provider="fake",
+            model="fake-model",
+            content="done",
+            finish_reason="stop",
+        )
+
+
 class FakeProvider(ChatProvider):
     @property
     def name(self) -> str:
@@ -185,3 +199,23 @@ def test_default_loop_factory_sanitizes_internal_session_id(tmp_path: Path):
     assert loop.session.store._session_path(loop.session.session_id) == (
         tmp_path / "sessions" / "__sympy_sympy-20590" / "sessions" / "__sympy_sympy-20590.jsonl"
     )
+
+
+def test_adapter_patch_includes_untracked_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        loop_factory=lambda task, session_root: FileWritingLoop(repo),
+    )
+    task = CodingTask(
+        instance_id="sympy__sympy-20590",
+        repo_path=repo,
+        problem_statement="Fix the issue.",
+    )
+
+    result = adapter.run_task(task)
+
+    assert "diff --git a/new_module.py b/new_module.py" in result.model_patch
+    assert "+NEW_VALUE = 3" in result.model_patch

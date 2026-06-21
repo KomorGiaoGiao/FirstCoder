@@ -56,7 +56,7 @@ class FirstCoderCodingAgentAdapter:
         return CodingTaskResult(
             instance_id=task.instance_id,
             model_name_or_path=self.model_name_or_path,
-            model_patch=collect_git_diff(task.repo_path),
+            model_patch=collect_git_diff(task.repo_path, include_untracked=True),
             transcript_path=session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl",
             raw_response=response.content,
         )
