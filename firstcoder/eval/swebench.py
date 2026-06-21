@@ -52,6 +52,28 @@ def write_predictions_jsonl(path: str | Path, results: Iterable[CodingTaskResult
             file.write("\n")
 
 
+def build_harness_command(
+    *,
+    predictions_path: str | Path,
+    run_id: str,
+    max_workers: int = 1,
+    dataset_name: str = "princeton-nlp/SWE-bench_Lite",
+) -> list[str]:
+    return [
+        "python",
+        "-m",
+        "swebench.harness.run_evaluation",
+        "--dataset_name",
+        dataset_name,
+        "--predictions_path",
+        str(predictions_path),
+        "--max_workers",
+        str(max_workers),
+        "--run_id",
+        run_id,
+    ]
+
+
 def run_instances(
     *,
     instances: list[SwebenchInstance],
@@ -91,6 +113,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-name", default="firstcoder", help="Value for model_name_or_path.")
     parser.add_argument("--session-root", default=".firstcoder-eval", help="Directory for benchmark session logs.")
     parser.add_argument("--max-instances", type=_positive_int, default=1, help="Maximum instances to run.")
+    parser.add_argument(
+        "--print-harness-command",
+        action="store_true",
+        help="Print the official SWE-bench evaluation command after writing predictions.",
+    )
+    parser.add_argument("--run-id", default="firstcoder-swe-lite", help="Run id for the official SWE-bench harness command.")
+    parser.add_argument("--max-workers", type=_positive_int, default=1, help="Worker count for the official SWE-bench harness command.")
     return parser
 
 
@@ -108,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         max_instances=args.max_instances,
     )
     write_predictions_jsonl(args.out, results)
+    if args.print_harness_command:
+        print(" ".join(build_harness_command(predictions_path=args.out, run_id=args.run_id, max_workers=args.max_workers)))
     return 0
 
 
