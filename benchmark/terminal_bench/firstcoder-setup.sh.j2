@@ -18,7 +18,7 @@ if ! python3 -m pip --version >/dev/null 2>&1; then
   missing_packages+=("python3-pip")
 fi
 
-if [[ "$PACKAGE_SPEC" == git+* ]] && ! command -v git >/dev/null 2>&1; then
+if ! command -v git >/dev/null 2>&1; then
   missing_packages+=("git")
 fi
 

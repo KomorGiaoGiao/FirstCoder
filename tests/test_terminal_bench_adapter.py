@@ -73,3 +73,15 @@ def test_terminal_bench_factory_can_load_firstcoder_agent() -> None:
         "--data-root /tmp/firstcoder-terminal-bench --session-id terminal-bench "
         "--max-tool-rounds 5 --message hello"
     )
+
+
+def test_terminal_bench_setup_script_installs_git_when_missing() -> None:
+    agent = FirstCoderTerminalBenchAgent(
+        package="https://github.com/KomorGiaoGiao/FirstCoder/archive/refs/heads/main.zip"
+    )
+
+    script = agent._install_agent_script_path.read_text()
+
+    assert "command -v git" in script
+    assert 'missing_packages+=("git")' in script
+    assert "pip install --upgrade pip" not in script
