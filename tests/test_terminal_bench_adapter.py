@@ -54,7 +54,8 @@ def test_terminal_bench_agent_can_select_openai_compatible_provider() -> None:
     env = agent._env
 
     assert env["FIRSTCODER_PROVIDER"] == "openai-compatible"
-    assert env["FIRSTCODER_MODEL"] == "yurenapi/gpt-5.5"
+    assert env["FIRSTCODER_PROVIDER_NAME"] == "yurenapi"
+    assert env["FIRSTCODER_MODEL"] == "gpt-5.5"
 
 
 def test_terminal_bench_factory_can_load_firstcoder_agent() -> None:

@@ -25,6 +25,7 @@ _PROVIDER_ENV_KEYS = (
     "FIRSTCODER_API_KEY",
     "FIRSTCODER_BASE_URL",
     "FIRSTCODER_MODEL",
+    "FIRSTCODER_PROVIDER_NAME",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_MODEL",
@@ -71,8 +72,11 @@ class FirstCoderTerminalBenchAgent(AbstractInstalledAgent):
     def _env(self) -> dict[str, str]:
         env = {key: os.environ[key] for key in _PROVIDER_ENV_KEYS if key in os.environ}
         if self._model_name:
-            env["FIRSTCODER_PROVIDER"] = _provider_from_model_name(self._model_name)
-            env["FIRSTCODER_MODEL"] = self._model_name
+            provider, model = _provider_and_model_from_model_name(self._model_name)
+            env["FIRSTCODER_PROVIDER"] = provider
+            env["FIRSTCODER_MODEL"] = model
+            if provider == "openai-compatible" and "/" in self._model_name:
+                env["FIRSTCODER_PROVIDER_NAME"] = self._model_name.split("/", 1)[0]
         else:
             env.setdefault("FIRSTCODER_PROVIDER", "openai")
         return env
@@ -109,10 +113,10 @@ class FirstCoderTerminalBenchAgent(AbstractInstalledAgent):
         ]
 
 
-def _provider_from_model_name(model_name: str | None) -> str:
+def _provider_and_model_from_model_name(model_name: str | None) -> tuple[str, str]:
     if not model_name or "/" not in model_name:
-        return "openai"
+        return "openai", model_name or ""
     provider, _ = model_name.split("/", 1)
     if provider in {"yurenapi", "openai-compatible"}:
-        return "openai-compatible"
-    return provider
+        return "openai-compatible", model_name.split("/", 1)[1]
+    return provider, model_name
