@@ -24,7 +24,7 @@
   <a href="#why-firstcoder">Why</a>
   · <a href="#quickstart">Quickstart</a>
   · <a href="#tui">TUI</a>
-  · <a href="#task-aware-compaction">Compaction</a>
+  · <a href="#core-experiment">Innovation</a>
   · <a href="#commands">Commands</a>
   · <a href="#architecture">Architecture</a>
 </p>
@@ -172,7 +172,9 @@ Permission requests pause the agent until the user decides:
 
 The activity line is intentionally visible. When the model is thinking, streaming, running a tool, waiting for permission, or reading tool results, the UI should make that state obvious.
 
-## Task-Aware Compaction
+## Core Experiment
+
+The most original part of FirstCoder is its **task-boundary-triggered compaction layer**.
 
 Many agents summarize or truncate history when token pressure gets high. FirstCoder also handles token pressure, but its more interesting path is semantic:
 
@@ -205,6 +207,8 @@ Why this matters:
 - **Resume-friendly**: task-boundary observations are stored as events, so the active task can be replayed.
 
 This is the part of FirstCoder that is most worth studying if you already understand basic tool calling.
+
+In short, FirstCoder treats compaction as a task lifecycle problem, not only a context-window emergency. The current implementation is still young, but the design goal is clear: make long coding sessions easier to resume, inspect, and keep on task without blindly carrying every previous detail forward.
 
 ## Core Features
 
@@ -476,3 +480,6 @@ Tests should avoid real API keys and network calls. Provider, tool, context, per
 - Stronger agent-loop guardrails around verification, runtime, and tool rounds.
 - More benchmark coverage for local coding tasks.
 - Continued refinement of task-aware context compaction.
+- Deeper Anthropic protocol support, including native streaming, thinking/cache behavior, and provider-specific message semantics.
+- Long-term memory for stable project knowledge, user preferences, and reusable task context.
+- Multi-agent orchestration for planner/executor/reviewer style workflows and parallel coding tasks.
