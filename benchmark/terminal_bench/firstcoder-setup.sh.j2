@@ -8,6 +8,7 @@ PACKAGE_SPEC="{{ package }}=={{ version }}"
 PACKAGE_SPEC="{{ package }}"
 {% endif %}
 
+AGENT_VENV="/opt/firstcoder-agent/.venv"
 missing_packages=()
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -16,6 +17,10 @@ fi
 
 if ! python3 -m pip --version >/dev/null 2>&1; then
   missing_packages+=("python3-pip")
+fi
+
+if ! python3 -m venv --help >/dev/null 2>&1; then
+  missing_packages+=("python3-venv")
 fi
 
 if ! command -v git >/dev/null 2>&1; then
@@ -27,6 +32,7 @@ if [ "${missing_packages[*]}" != "" ]; then
   apt-get install -y "${missing_packages[@]}"
 fi
 
-python3 -m pip install "$PACKAGE_SPEC"
+python3 -m venv "$AGENT_VENV"
+"$AGENT_VENV/bin/python" -m pip install "$PACKAGE_SPEC"
 
 echo "FIRSTCODER_INSTALL_SUCCESS"

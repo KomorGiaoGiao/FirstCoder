@@ -93,7 +93,7 @@ class FirstCoderTerminalBenchAgent(AbstractInstalledAgent):
     def _run_agent_commands(self, instruction: str) -> list[TerminalCommand]:
         escaped_instruction = shlex.quote(instruction)
         command = (
-            "python3 -m firstcoder "
+            "/opt/firstcoder-agent/.venv/bin/python -m firstcoder "
             "--benchmark "
             "--project . "
             f"--data-root {shlex.quote(self._session_root)} "

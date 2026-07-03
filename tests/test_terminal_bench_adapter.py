@@ -24,7 +24,7 @@ def test_terminal_bench_agent_builds_firstcoder_benchmark_command(monkeypatch) -
 
     assert len(commands) == 1
     command = commands[0].command
-    assert "python3 -m firstcoder" in command
+    assert "/opt/firstcoder-agent/.venv/bin/python -m firstcoder" in command
     assert "--benchmark" in command
     assert "--project ." in command
     assert "--data-root /tmp/fc-sessions" in command
@@ -69,7 +69,8 @@ def test_terminal_bench_factory_can_load_firstcoder_agent() -> None:
 
     assert isinstance(agent, FirstCoderTerminalBenchAgent)
     assert agent._run_agent_commands("hello")[0].command == (
-        "python3 -m firstcoder --benchmark --project . "
+        "/opt/firstcoder-agent/.venv/bin/python -m firstcoder "
+        "--benchmark --project . "
         "--data-root /tmp/firstcoder-terminal-bench --session-id terminal-bench "
         "--max-tool-rounds 5 --message hello"
     )
@@ -84,4 +85,8 @@ def test_terminal_bench_setup_script_installs_git_when_missing() -> None:
 
     assert "command -v git" in script
     assert 'missing_packages+=("git")' in script
+    assert 'AGENT_VENV="/opt/firstcoder-agent/.venv"' in script
+    assert 'missing_packages+=("python3-venv")' in script
+    assert 'python3 -m venv "$AGENT_VENV"' in script
+    assert '"$AGENT_VENV/bin/python" -m pip install "$PACKAGE_SPEC"' in script
     assert "pip install --upgrade pip" not in script
