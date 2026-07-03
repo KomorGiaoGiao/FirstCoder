@@ -37,6 +37,12 @@ FirstCoder is a learning-first coding agent. It is not trying to beat mature too
 
 It is a real runnable agent with a Textual TUI, tool calling, permissions, sessions, OpenAI-compatible providers, and a context compaction layer. The code is intentionally organized so you can read one subsystem at a time and explain it in an interview, a portfolio review, or your own study notes.
 
+| Built for | What you get |
+| --- | --- |
+| Learning agent internals | A readable implementation of provider calls, tools, permissions, session replay, and context projection |
+| Portfolio storytelling | A concrete project that demonstrates more than "I called an LLM API" |
+| Long-session experiments | Task-boundary-triggered compaction, append-only events, and resume-friendly state |
+
 ![FirstCoder TUI](docs/images/tui-chat.png)
 
 > [!NOTE]
@@ -46,7 +52,7 @@ It is a real runnable agent with a Textual TUI, tool calling, permissions, sessi
 
 Most coding-agent demos show the surface: a prompt goes in, code changes come out. FirstCoder focuses on the machinery in between.
 
-| If you want to learn... | Read this part |
+| Question | Where to look |
 | --- | --- |
 | How model responses become tool calls | `firstcoder/agent`, `firstcoder/providers` |
 | How tools touch files, shell, git, and the network | `firstcoder/tools` |
@@ -54,8 +60,6 @@ Most coding-agent demos show the surface: a prompt goes in, code changes come ou
 | How long sessions are stored, compacted, and resumed | `firstcoder/context`, `firstcoder/session` |
 | How a terminal UI streams state without hiding the loop | `firstcoder/app` |
 | How to evaluate a tiny coding-agent workflow locally | `benchmark/local_pytest` |
-
-The standout experiment is **task-aware context compaction**: FirstCoder does not only compact when the context window gets too full. It can detect semantic task boundaries, generate program-owned task hashes, and use those hashes to decide when old task content should be compressed.
 
 ## Quickstart
 
@@ -174,9 +178,9 @@ The activity line is intentionally visible. When the model is thinking, streamin
 
 ## Core Experiment
 
-The most original part of FirstCoder is its **task-boundary-triggered compaction layer**.
+**Task-boundary-triggered compaction** is the most original part of FirstCoder.
 
-Many agents summarize or truncate history when token pressure gets high. FirstCoder also handles token pressure, but its more interesting path is semantic:
+Many agents summarize or truncate history when token pressure gets high. FirstCoder also handles token pressure, but its more interesting path is semantic: when the user moves to a new task, the agent can compact old task context before it pollutes the next one.
 
 ```text
 user message
@@ -188,7 +192,7 @@ user message
   -> session events preserve the transition for resume
 ```
 
-The model never invents the hash. It only submits:
+The model never invents the hash. It only submits a small structured signal:
 
 ```json
 {
@@ -199,16 +203,14 @@ The model never invents the hash. It only submits:
 
 Then the program generates a stable hash from the session id, the basis message id, and the task-boundary strategy version. A stable window prevents one bad model guess from immediately switching tasks.
 
-Why this matters:
+| Design choice | Why it matters |
+| --- | --- |
+| Program-owned task hash | The model cannot invent or drift task identities |
+| Stable-window confirmation | One mistaken `new` signal does not immediately compact history |
+| `TASK_HASH_CHANGED` trigger | Compaction can run because the task changed, not only because tokens are high |
+| Append-only events | Resume can replay task-boundary observations and active task state |
 
-- **Less context pollution**: a new task does not have to carry every raw detail from the previous one.
-- **Better than pure recency**: old content is compressed because it belongs to a previous task, not merely because it is old.
-- **Provider-independent**: task identity lives in runtime state and events, not in one provider's prompt format.
-- **Resume-friendly**: task-boundary observations are stored as events, so the active task can be replayed.
-
-This is the part of FirstCoder that is most worth studying if you already understand basic tool calling.
-
-In short, FirstCoder treats compaction as a task lifecycle problem, not only a context-window emergency. The current implementation is still young, but the design goal is clear: make long coding sessions easier to resume, inspect, and keep on task without blindly carrying every previous detail forward.
+In short, FirstCoder treats compaction as a task lifecycle problem, not only a context-window emergency.
 
 ## Core Features
 
@@ -474,12 +476,17 @@ Tests should avoid real API keys and network calls. Provider, tool, context, per
 
 ## Roadmap
 
+Near-term:
+
 - Better `/help`, `/new`, and picker-style `/resume`.
 - Grant listing and revocation commands.
 - More polished streaming Markdown in the TUI.
 - Stronger agent-loop guardrails around verification, runtime, and tool rounds.
 - More benchmark coverage for local coding tasks.
-- Continued refinement of task-aware context compaction.
-- Deeper Anthropic protocol support, including native streaming, thinking/cache behavior, and provider-specific message semantics.
-- Long-term memory for stable project knowledge, user preferences, and reusable task context.
-- Multi-agent orchestration for planner/executor/reviewer style workflows and parallel coding tasks.
+
+Longer-term:
+
+- Refine task-aware context compaction into a more reliable long-session memory layer.
+- Deepen Anthropic protocol support, including native streaming, thinking/cache behavior, and provider-specific message semantics.
+- Add long-term memory for stable project knowledge, user preferences, and reusable task context.
+- Explore multi-agent orchestration for planner/executor/reviewer workflows and parallel coding tasks.
