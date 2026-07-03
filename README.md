@@ -59,7 +59,19 @@ The standout experiment is **task-aware context compaction**: FirstCoder does no
 
 ## Quickstart
 
-Install from source:
+Recommended install:
+
+```sh
+pipx install firstcoder
+```
+
+If you do not use `pipx`:
+
+```sh
+python -m pip install firstcoder
+```
+
+Install from source for development:
 
 ```sh
 python -m venv .venv
@@ -87,8 +99,7 @@ firstcoder --interactive
 Windows PowerShell:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
+py -m pip install firstcoder
 firstcoder
 ```
 
