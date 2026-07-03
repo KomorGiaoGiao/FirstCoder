@@ -1,6 +1,8 @@
 textual
+prompt_toolkit
 openai
 anthropic
+anyio
 python-dotenv
 pydantic
 pytest

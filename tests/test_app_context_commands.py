@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from firstcoder.context.compaction import CompactionEvent
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.context.manager import ContextCompactResult
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
@@ -116,6 +117,54 @@ def test_manual_compact_command_calls_context_window_manager() -> None:
     assert context_manager.calls[0].trigger == "manual"
     assert context_manager.calls[0].mode == "manual"
     assert context_manager.calls[0].current_turn == 7
+
+
+def test_manual_compact_uses_lower_target_than_current_context() -> None:
+    session = FakeSession()
+    session.view.messages[0].parts[0].content = "token " * 20_000
+    compact_result = ContextCompactResult(
+        status="success",
+        reason="manual",
+        view=session.view,
+        before_tokens=20_000,
+        after_tokens=10_000,
+    )
+    context_manager = FakeContextManager(compact_result)
+    handler = ContextCommandHandler(session=session, context_manager=context_manager)
+
+    result = handler.handle("/compact")
+
+    assert result.handled is True
+    assert context_manager.calls[0].target_tokens == 12_000
+
+
+def test_manual_compact_reports_noop_as_skipped() -> None:
+    session = FakeSession()
+    noop_event = CompactionEvent(
+        input_fingerprint="fp_noop",
+        before_tokens=1000,
+        after_tokens=1000,
+        levels_attempted=[],
+        stopped_at="already_within_budget",
+        changed_parts=0,
+        reason="already_within_budget",
+        noop=True,
+    )
+    compact_result = ContextCompactResult(
+        status="success",
+        reason="manual",
+        view=session.view,
+        before_tokens=1000,
+        after_tokens=1000,
+        programmatic_event=noop_event,
+    )
+    context_manager = FakeContextManager(compact_result)
+    handler = ContextCommandHandler(session=session, context_manager=context_manager)
+
+    result = handler.handle("/compact")
+
+    assert result.handled is True
+    assert result.output == "Manual compact skipped: already_within_budget (1000 -> 1000 tokens)"
 
 
 def test_unknown_slash_command_is_reported() -> None:

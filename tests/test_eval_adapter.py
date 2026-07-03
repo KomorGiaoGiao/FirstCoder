@@ -144,7 +144,7 @@ def test_default_loop_factory_keeps_session_outside_repo(tmp_path: Path):
 
     assert loop.session.store.root == session_root / task.instance_id
     assert repo not in loop.session.store.root.parents
-    assert loop.session.mode == "aggressive"
+    assert loop.session.mode == "bypass"
     assert "write" in loop.session.tool_registry.names()
     assert loop.limits == AgentLoopLimits.swe_lite()
 

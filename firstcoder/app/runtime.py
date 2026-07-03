@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from firstcoder.agent.loop import AgentLoop
+from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.agent.user_input import AgentTurnStatus, UserInputRequest
@@ -26,6 +27,7 @@ from firstcoder.tools.types import Tool
 
 
 _DEFAULT_MAX_TOOL_ROUNDS = object()
+_HIDDEN_DISPLAY_TOOLS = {"task_boundary"}
 
 
 @dataclass(slots=True)
@@ -81,6 +83,8 @@ class AgentChatRunner:
     last_display_lines: list[str] = field(default_factory=list)
     last_stream_events: list[ChatStreamEvent] = field(default_factory=list)
     last_pending_input: UserInputRequest | None = None
+    stream_event_handler: Callable[[ChatStreamEvent], None] | None = None
+    tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None
 
     def run_user_turn(self, content: str) -> ChatResponse:
         before_count = len(self.current_session.rebuild_view().messages)
@@ -92,6 +96,7 @@ class AgentChatRunner:
             context_builder=self.context_builder,
             context_manager=self.context_manager,
             limits=self.limits,
+            tool_event_handler=self.tool_event_handler,
             **self._legacy_max_tool_rounds_kwargs(),
         )
         self.loops.append(loop)
@@ -129,6 +134,7 @@ class AgentChatRunner:
             context_builder=self.context_builder,
             context_manager=self.context_manager,
             limits=self.limits,
+            tool_event_handler=self.tool_event_handler,
             **self._legacy_max_tool_rounds_kwargs(),
         )
         self.loops.append(loop)
@@ -169,6 +175,8 @@ class AgentChatRunner:
                 context_builder=self.context_builder,
                 context_manager=self.context_manager,
                 limits=self.limits,
+                stream_event_handler=self.stream_event_handler,
+                tool_event_handler=self.tool_event_handler,
                 **self._legacy_max_tool_rounds_kwargs(),
             )
             self.loops.append(loop)
@@ -197,6 +205,8 @@ class AgentChatRunner:
                 context_builder=self.context_builder,
                 context_manager=self.context_manager,
                 limits=self.limits,
+                stream_event_handler=self.stream_event_handler,
+                tool_event_handler=self.tool_event_handler,
                 **self._legacy_max_tool_rounds_kwargs(),
             )
             self.loops.append(loop)
@@ -252,6 +262,8 @@ def _assistant_lines(parts: list[MessagePart]) -> list[str]:
         elif part.kind == "tool_call":
             metadata = part.metadata
             name = str(metadata.get("tool_name") or "tool")
+            if name in _HIDDEN_DISPLAY_TOOLS:
+                continue
             arguments = json.dumps(metadata.get("arguments") or {}, ensure_ascii=False, sort_keys=True)
             lines.append(f"Tool call: {name} {_truncate(arguments, 400)}")
     return lines
@@ -264,6 +276,8 @@ def _tool_lines(parts: list[MessagePart]) -> list[str]:
             continue
         metadata = part.metadata
         name = str(metadata.get("tool_name") or "tool")
+        if name in _HIDDEN_DISPLAY_TOOLS:
+            continue
         status = "success" if metadata.get("ok", True) else "failed"
         content = _truncate(part.content, 400)
         lines.append(f"Tool result: {name} {status}: {content}")

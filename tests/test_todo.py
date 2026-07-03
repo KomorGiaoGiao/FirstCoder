@@ -17,6 +17,37 @@ def test_todo_adds_item():
     assert result.data["todos"][0]["status"] == "pending"
 
 
+def test_todo_add_accepts_initial_status():
+    tool = create_todo_tool()
+
+    result = tool.executor(action="add", content="修复登录 bug", status="in_progress")
+
+    assert result.ok is True
+    assert result.data["todos"][0]["status"] == "in_progress"
+    assert "[~]" in result.content
+
+
+def test_todo_set_replaces_full_plan():
+    tool = create_todo_tool()
+    tool.executor(action="add", content="旧任务")
+
+    result = tool.executor(
+        action="set",
+        todos=[
+            {"content": "读代码", "status": "in_progress"},
+            {"content": "跑测试", "status": "pending"},
+        ],
+    )
+
+    assert result.ok is True
+    assert result.data["count"] == 2
+    assert result.data["todos"] == [
+        {"id": "todo_1", "content": "读代码", "status": "in_progress"},
+        {"id": "todo_2", "content": "跑测试", "status": "pending"},
+    ]
+    assert "旧任务" not in result.content
+
+
 def test_todo_lists_items():
     tool = create_todo_tool()
     tool.executor(action="add", content="任务 A")
@@ -82,6 +113,15 @@ def test_todo_update_unknown_id_returns_error():
     assert "不存在" in result.error
 
 
+def test_todo_rejects_unknown_status():
+    tool = create_todo_tool()
+
+    result = tool.executor(action="add", content="任务", status="working")
+
+    assert result.ok is False
+    assert "未知状态" in result.error
+
+
 def test_todo_clear_removes_all():
     tool = create_todo_tool()
     tool.executor(action="add", content="任务 A")
@@ -118,8 +158,8 @@ def test_todo_definition_has_correct_schema():
     tool = create_todo_tool()
 
     assert tool.name == "todo"
-    assert "action" in tool.definition.parameters["properties"]
-    assert "content" in tool.definition.parameters["properties"]
-    assert "todo_id" in tool.definition.parameters["properties"]
-    assert "status" in tool.definition.parameters["properties"]
+    properties = tool.definition.parameters["properties"]
+    assert properties["action"]["enum"] == ["set", "add", "update", "delete", "list", "clear"]
+    assert properties["status"]["enum"] == ["pending", "in_progress", "done"]
+    assert properties["todos"]["type"] == "array"
     assert tool.definition.parameters["required"] == ["action"]

@@ -103,7 +103,7 @@ class BuildOutputRouteCompressor:
 
 
 def _looks_like_build_output(lines: list[str]) -> bool:
-    joined = "\n".join(lines[:200])
+    joined = "\n".join(lines)
     return bool(_ERROR_RE.search(joined) or _WARNING_RE.search(joined) or _SUMMARY_RE.search(joined))
 
 

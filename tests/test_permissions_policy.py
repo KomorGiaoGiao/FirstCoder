@@ -103,12 +103,29 @@ def test_aggressive_does_not_auto_allow_delete(tmp_path) -> None:
 def test_sensitive_env_is_denied_in_every_mode(tmp_path) -> None:
     policy = DefaultPermissionPolicy(tmp_path)
 
-    for mode in PermissionMode:
+    for mode in (PermissionMode.CONSERVATIVE, PermissionMode.STANDARD, PermissionMode.AGGRESSIVE):
         decision = policy.decide(
             _request(PermissionAction.READ_ENV, "OPENAI_API_KEY"),
             mode=mode,
         )
         assert decision.kind == PermissionDecisionKind.DENY
+
+
+def test_bypass_mode_allows_permission_requests_without_prompting(tmp_path) -> None:
+    policy = DefaultPermissionPolicy(tmp_path)
+
+    requests = (
+        _request(PermissionAction.READ_PATH, ".env"),
+        _request(PermissionAction.WRITE_PATH, ".env"),
+        _request(PermissionAction.DELETE_PATH, str(tmp_path.parent / "outside.py")),
+        _request(PermissionAction.EXECUTE_SHELL, "rm -rf firstcoder", cwd=tmp_path),
+        _request(PermissionAction.NETWORK_REQUEST, "https://example.com"),
+        _request(PermissionAction.READ_ENV, "OPENAI_API_KEY"),
+    )
+
+    for request in requests:
+        decision = policy.decide(request, mode=PermissionMode.BYPASS)
+        assert decision.kind == PermissionDecisionKind.ALLOW, request
 
 
 def test_non_sensitive_env_requires_confirmation(tmp_path) -> None:

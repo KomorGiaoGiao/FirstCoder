@@ -7,12 +7,13 @@ from pathlib import Path
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_glob_tool(root: str | Path) -> Tool:
+def create_glob_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建路径匹配工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def glob(pattern: str, path: str = ".", max_results: int = 200) -> ToolResult:
         """按 glob 匹配项目内路径；只返回文件和目录名。"""

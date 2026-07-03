@@ -116,6 +116,26 @@ def test_python_exec_rejects_cwd_outside_root(tmp_path):
     assert "超出项目目录" in result.error
 
 
+def test_python_exec_filters_sensitive_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("FIRSTCODER_VISIBLE_TEST_FLAG", "visible")
+    registry = create_builtin_registry(tmp_path, include_execution_tools=True)
+
+    result = registry.execute(
+        "python_exec",
+        {
+            "code": (
+                "import os; "
+                "print(os.environ.get('OPENAI_API_KEY', '<missing>')); "
+                "print(os.environ.get('FIRSTCODER_VISIBLE_TEST_FLAG', '<missing>'))"
+            ),
+        },
+    )
+
+    assert result.ok is True
+    assert result.data["stdout"] == "<missing>\nvisible\n"
+
+
 def test_diagnostics_runs_pytest(monkeypatch, tmp_path):
     def fake_run(command, **kwargs):
         return diagnostics_module.subprocess.CompletedProcess(command, 0, "ok\n", "")

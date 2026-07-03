@@ -9,12 +9,13 @@ from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_delete_tool(root: str | Path) -> Tool:
+def create_delete_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建删除文件或目录的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def delete(path: str, recursive: bool = False) -> ToolResult:
         """删除项目内文件或目录；目录删除必须 recursive=true。"""

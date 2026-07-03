@@ -60,8 +60,9 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "answer cannot be safely discovered from the workspace or commands."
     ),
     "todo": (
-        "Track progress for multi-step work. Use todo for coding tasks with meaningful "
-        "phases; keep exactly one item in progress while actively working."
+        "Track progress for multi-step work. Prefer action='set' once at the start "
+        "to create the whole plan, then action='update' as work progresses. Keep "
+        "exactly one item in_progress while actively working."
     ),
     "write": (
         "Write a UTF-8 text file in the workspace. Use for new files or full-file "

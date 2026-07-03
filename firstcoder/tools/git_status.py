@@ -9,12 +9,13 @@ from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_er
 from firstcoder.utils import git as git_utils
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_git_status_tool(root: str | Path) -> Tool:
+def create_git_status_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建查看 git 工作区状态的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def git_status() -> ToolResult:
         """查看项目 git 工作区状态；不显示 diff 内容。"""

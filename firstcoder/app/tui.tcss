@@ -1,0 +1,167 @@
+Screen {
+    layout: vertical;
+    background: #0f1014;
+    color: #cfd1d6;
+    overflow: hidden;
+}
+
+* {
+    scrollbar-size-vertical: 0;
+    scrollbar-size-horizontal: 0;
+    scrollbar-color: transparent;
+    scrollbar-background: transparent;
+    scrollbar-color-hover: transparent;
+    scrollbar-background-hover: transparent;
+    scrollbar-color-active: transparent;
+    scrollbar-background-active: transparent;
+    scrollbar-corner-color: transparent;
+}
+
+ScrollBar,
+ScrollBarCorner {
+    display: none;
+}
+
+#main {
+    height: 1fr;
+    background: #0f1014;
+    overflow: hidden;
+}
+
+.topbar {
+    height: 2;
+    padding: 0 2;
+    background: #0f1014;
+    color: #6e6d72;
+    border-bottom: solid #303238;
+    text-style: none;
+}
+
+#output {
+    height: 1fr;
+    padding: 1 3;
+    background: #0f1014;
+}
+
+.composer {
+    height: 4;
+    margin: 0 2 0 2;
+    background: #0f1014;
+    border-top: solid #626263;
+}
+
+#input {
+    height: 3;
+    margin: 0;
+    padding: 0 1;
+    background: #0f1014;
+    background-tint: transparent;
+    color: #808185;
+    border: none;
+}
+
+#input:focus {
+    background: #0f1014;
+    background-tint: transparent;
+    color: #cfd1d6;
+    border: none;
+}
+
+#input > .input--cursor {
+    background: #cfd1d6;
+    color: #0f1014;
+    text-style: none;
+}
+
+#input > .input--selection {
+    background: #0f1014;
+    color: #cfd1d6;
+}
+
+Input > .input--placeholder {
+    color: #808185;
+}
+
+.activity-line {
+    height: 1;
+    margin: 0 3;
+    color: #527c3b;
+}
+
+.todo-panel {
+    height: auto;
+    max-height: 8;
+    margin: 0 3 1 3;
+    padding: 0 1;
+    color: #cfd1d6;
+    background: #0f1014;
+    border-left: solid #7bba55;
+}
+
+.todo-panel.hidden {
+    display: none;
+}
+
+.message {
+    width: 100%;
+    margin: 0 0 1 0;
+    padding: 0 1 0 1;
+    background: #0f1014;
+}
+
+.system-message,
+.command-message,
+.reasoning-message,
+.tool-message {
+    color: #808185;
+    background: #0f1014;
+    border-left: solid #666769;
+}
+
+.tool-running,
+.tool-done,
+.tool-failed,
+.tool-skipped,
+.tool-denied {
+    color: #808185;
+    background: #0f1014;
+    border-left: solid #666769;
+}
+
+.user-message {
+    color: #cfd1d6;
+    background: #0f1014;
+    border-left: solid #50b7c2;
+}
+
+.assistant-message {
+    color: #cfd1d6;
+    background: #0f1014;
+    border-left: solid #7bba55;
+}
+
+.assistant-message MarkdownBlock {
+    margin: 0;
+}
+
+.reasoning-message {
+    color: #527c3b;
+    border-left: solid #7bba55;
+}
+
+.permission-message,
+.permission-requested {
+    color: #b28443;
+    background: #0f1014;
+    border-left: solid #b28443;
+}
+
+.error-message {
+    color: #c85f5f;
+    background: #0f1014;
+    border-left: solid #c85f5f;
+}
+
+.streaming {
+    border-left: solid #7bba55;
+}

@@ -10,13 +10,14 @@ from pathlib import Path
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_read_multi_tool(root: str | Path) -> Tool:
+def create_read_multi_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建批量文件读取工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def read_multi(paths: list[str], max_total_chars: int = 100000) -> ToolResult:
         """批量读取项目内 UTF-8 文本文件；总输出受限。"""

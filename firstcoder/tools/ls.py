@@ -7,12 +7,13 @@ from pathlib import Path
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_ls_tool(root: str | Path) -> Tool:
+def create_ls_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建列出目录内容的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def ls(path: str = ".", recursive: bool = False, max_entries: int = 200) -> ToolResult:
         """列出项目内目录项；只返回名称和文件/目录类型。"""

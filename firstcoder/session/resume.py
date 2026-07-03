@@ -17,6 +17,7 @@ from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError
 from firstcoder.session.models import ResumeResult
 from firstcoder.tools.types import Tool
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 @dataclass(slots=True)
@@ -27,6 +28,7 @@ class ResumeService:
     project_root: str | Path
     data_root: str | Path | None = None
     tools: list[Tool] | None = None
+    sandbox_access: SandboxAccess | None = None
     catalog: SessionCatalog | None = None
 
     def resume(self, session_id: str) -> ResumeResult:
@@ -47,6 +49,7 @@ class ResumeService:
                 self.project_root,
                 grants=FilePermissionGrantStore(data_root / "permissions.json"),
             ),
+            sandbox_access=self.sandbox_access,
         )
         session.restore_pending_permission_execution()
         return ResumeResult(session=session, record=record)

@@ -9,14 +9,14 @@ from pathlib import Path
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
-from firstcoder.utils.sandbox import PathSandbox
-from firstcoder.utils.subprocess import run_command
+from firstcoder.utils.execution_sandbox import ExecutionSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_python_exec_tool(root: str | Path) -> Tool:
+def create_python_exec_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建 Python 代码执行工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = ExecutionSandbox(root, access=access)
 
     def python_exec(code: str, cwd: str = ".", timeout_seconds: int = 30, max_output_chars: int = 20000) -> ToolResult:
         """在项目内执行 Python 代码；高风险，需显式启用。"""
@@ -27,11 +27,11 @@ def create_python_exec_tool(root: str | Path) -> Tool:
             return make_error_result("python_exec", "max_output_chars 必须大于 0")
 
         try:
-            workdir = sandbox.resolve_validated(cwd, expect="dir")
+            workdir = sandbox.resolve_cwd(cwd)
         except ValueError as exc:
             return make_error_result("python_exec", str(exc))
 
-        result = run_command(
+        result = sandbox.run(
             [sys.executable, "-c", code],
             cwd=workdir,
             timeout_seconds=timeout_seconds,

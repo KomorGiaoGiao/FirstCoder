@@ -70,13 +70,18 @@ class PlainTextRouteCompressor:
 
     def compact(self, part: MessagePart, context: RouteContext) -> RouteCompactResult | None:
         preview = part.content[: context.preview_chars]
+        tail_preview = part.content[-context.preview_chars :] if len(part.content) > context.preview_chars else ""
+        preview_tokens = estimate_text_tokens(preview)
+        tail_preview_tokens = estimate_text_tokens(tail_preview) if tail_preview else 0
         content = "\n".join(
             [
                 "[Current task cold content compacted]",
                 f"part_id={part.id}",
                 f"original_tokens={estimate_text_tokens(part.content)}",
-                f"preview_tokens={estimate_text_tokens(preview)}",
+                f"preview_tokens={preview_tokens}",
                 f"preview={preview}",
+                f"tail_preview_tokens={tail_preview_tokens}",
+                f"tail_preview={tail_preview}",
             ]
         )
         return RouteCompactResult(
@@ -85,7 +90,9 @@ class PlainTextRouteCompressor:
             compacted_by="l3_current_task_cold",
             metadata={
                 "preview": preview,
-                "preview_tokens": estimate_text_tokens(preview),
+                "preview_tokens": preview_tokens,
+                "tail_preview": tail_preview,
+                "tail_preview_tokens": tail_preview_tokens,
             },
         )
 

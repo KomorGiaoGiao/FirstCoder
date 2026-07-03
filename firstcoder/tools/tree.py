@@ -7,12 +7,13 @@ from pathlib import Path
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_tree_tool(root: str | Path) -> Tool:
+def create_tree_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建目录树查看工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def tree(path: str = ".", max_depth: int = 3, max_entries: int = 200) -> ToolResult:
         """展示项目内目录树；适合快速了解结构。"""

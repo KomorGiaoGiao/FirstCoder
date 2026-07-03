@@ -7,13 +7,14 @@ from pathlib import Path
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_view_tool(root: str | Path) -> Tool:
+def create_view_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建读取文本文件的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def view(path: str, offset: int = 0, limit: int = 200) -> ToolResult:
         """按行读取项目内 UTF-8 文本文件；支持分页。"""

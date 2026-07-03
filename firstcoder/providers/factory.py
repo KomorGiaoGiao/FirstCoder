@@ -13,7 +13,7 @@ class ProviderConfigError(ValueError):
     """provider 配置缺失或不合法时抛出的异常。"""
 
 
-def create_provider(provider_name: str | None = None) -> ChatProvider:
+def create_provider(provider_name: str | None = None, *, project_root=None) -> ChatProvider:
     """根据应用配置创建 provider。
 
     优先级：
@@ -28,7 +28,7 @@ def create_provider(provider_name: str | None = None) -> ChatProvider:
     - `FIRSTCODER_MODEL`
     """
 
-    config = load_config(provider_name)
+    config = load_config(provider_name, project_root=project_root)
     return create_provider_from_config(config)
 
 
@@ -48,15 +48,19 @@ def create_provider_from_config(config: AppConfig) -> ChatProvider:
         supported = ", ".join(sorted([*PROVIDER_PRESETS.keys(), "openai-compatible", "custom"]))
         raise ProviderConfigError(f"不支持的 provider：{selected}。当前支持：{supported}")
 
-    api_key = config.get_env(preset.api_key_env)
+    api_key = _provider_api_key(config, preset.api_key_env, provider_name=preset.name)
     if not api_key and preset.name == "ollama":
         # OpenAI SDK 要求 api_key 字段存在；Ollama 本地接口通常不会真正校验这个值。
         api_key = "ollama"
     if not api_key:
         raise ProviderConfigError(f"缺少环境变量：{preset.api_key_env}")
 
-    model = config.get_env(preset.model_env) or preset.default_model
-    base_url = config.get_env(preset.base_url_env) if preset.base_url_env else None
+    model = _provider_model(config, preset.model_env, default=preset.default_model, provider_name=preset.name)
+    base_url = (
+        config.get_provider_value("base_url", env=preset.base_url_env, provider_name=preset.name)
+        if preset.base_url_env
+        else config.get_provider_value("base_url", provider_name=preset.name)
+    )
     base_url = base_url or preset.default_base_url
 
     if preset.kind == "openai-compatible":
@@ -77,19 +81,67 @@ def create_provider_from_config(config: AppConfig) -> ChatProvider:
 
 
 def _create_custom_openai_compatible(config: AppConfig) -> ChatProvider:
-    """创建完全由 FIRSTCODER_* 环境变量配置的 OpenAI-compatible provider。"""
+    """创建 OpenAI-compatible provider。
 
-    api_key = config.get_env("FIRSTCODER_API_KEY")
+    兼容旧的 FIRSTCODER_* 环境变量，同时支持配置文件：
+
+    model = "yurenapi/gpt-5.5"
+    [provider]
+    type = "openai-compatible"
+    name = "yurenapi"
+    base_url = "https://example.com/v1"
+    api_key_env = "YURENAPI_API_KEY"
+    """
+
+    provider_display_name = config.get_provider_value(
+        "name",
+        env="FIRSTCODER_PROVIDER_NAME",
+        default="openai-compatible",
+    ) or "openai-compatible"
+    api_key = _provider_api_key(config, "FIRSTCODER_API_KEY", provider_name=provider_display_name)
     if not api_key:
-        raise ProviderConfigError("缺少环境变量：FIRSTCODER_API_KEY")
+        configured_key_env = config.get_provider_value("api_key_env", provider_name=provider_display_name)
+        missing = configured_key_env or "FIRSTCODER_API_KEY"
+        raise ProviderConfigError(f"缺少环境变量：{missing}")
 
-    model = config.get_env("FIRSTCODER_MODEL")
+    model = _provider_model(config, "FIRSTCODER_MODEL", provider_name=provider_display_name)
     if not model:
-        raise ProviderConfigError("缺少环境变量：FIRSTCODER_MODEL")
+        raise ProviderConfigError("缺少模型配置：FIRSTCODER_MODEL 或 config model")
 
     return OpenAICompatibleProvider(
-        name=config.get_env("FIRSTCODER_PROVIDER_NAME", "openai-compatible") or "openai-compatible",
+        name=provider_display_name,
         model=model,
         api_key=api_key,
-        base_url=config.get_env("FIRSTCODER_BASE_URL"),
+        base_url=config.get_provider_value("base_url", env="FIRSTCODER_BASE_URL", provider_name=provider_display_name),
     )
+
+
+def _provider_api_key(config: AppConfig, fallback_env: str, *, provider_name: str) -> str | None:
+    key = config.get_env(fallback_env)
+    if key:
+        return key
+    configured_env = config.get_provider_value("api_key_env", provider_name=provider_name)
+    if configured_env:
+        return config.get_env(configured_env)
+    return config.get_provider_value("api_key", provider_name=provider_name)
+
+
+def _provider_model(
+    config: AppConfig,
+    fallback_env: str,
+    *,
+    provider_name: str,
+    default: str | None = None,
+) -> str | None:
+    env_model = config.get_env(fallback_env)
+    if env_model:
+        return env_model
+    configured = config.get_config_value("model")
+    if configured:
+        if "/" in configured:
+            configured_provider, configured_model = configured.split("/", 1)
+            if configured_provider == provider_name:
+                return configured_model
+        else:
+            return configured
+    return default

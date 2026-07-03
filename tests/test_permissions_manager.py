@@ -84,6 +84,46 @@ def test_manager_deny_grant_still_overrides_aggressive_policy(tmp_path) -> None:
     assert decision.grant.id == "deny_write_tree"
 
 
+def test_manager_bypass_allows_without_default_prompts(tmp_path) -> None:
+    manager = PermissionManager(
+        policy=DefaultPermissionPolicy(tmp_path),
+        mode=PermissionMode.BYPASS,
+    )
+
+    decision = manager.preflight(
+        PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md")
+    )
+
+    assert decision.kind == PermissionDecisionKind.ALLOW
+
+
+def test_manager_deny_grant_still_overrides_bypass_mode(tmp_path) -> None:
+    manager = PermissionManager(
+        policy=DefaultPermissionPolicy(tmp_path),
+        grants=PermissionGrantStore(
+            [
+                PermissionGrant(
+                    id="deny_shell",
+                    effect="deny",
+                    action=PermissionAction.EXECUTE_SHELL,
+                    scope_type=PermissionScopeType.COMMAND_PREFIX,
+                    scope_value="rm README.md",
+                    created_at="2026-07-03T00:00:00+00:00",
+                )
+            ]
+        ),
+        mode=PermissionMode.BYPASS,
+    )
+
+    decision = manager.preflight(
+        PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md")
+    )
+
+    assert decision.kind == PermissionDecisionKind.DENY
+    assert decision.grant is not None
+    assert decision.grant.id == "deny_shell"
+
+
 def test_manager_builds_permission_confirmation_request(tmp_path) -> None:
     manager = PermissionManager(policy=DefaultPermissionPolicy(tmp_path))
     request = PermissionRequest(

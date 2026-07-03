@@ -8,12 +8,13 @@ from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_write_tool(root: str | Path) -> Tool:
+def create_write_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建写入文本文件的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def write(path: str, content: str, create_dirs: bool = True, overwrite: bool = True) -> ToolResult:
         """写入项目内 UTF-8 文本文件；可创建目录或覆盖文件。"""

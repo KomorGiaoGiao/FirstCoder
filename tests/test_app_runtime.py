@@ -2,13 +2,15 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
+from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState, _display_lines_from_messages
+from firstcoder.agent.loop import ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.models import AgentMessage, MessagePart
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ProviderDiagnostics, ToolCall
 from firstcoder.tools.ask_user import create_ask_user_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import make_text_result, Tool
@@ -52,6 +54,8 @@ class FakeStreamingProvider(ChatProvider):
         self.requests.append(request)
         response = self.responses.pop(0)
         yield ChatStreamEvent(kind="message_started")
+        if response.diagnostics.reasoning:
+            yield ChatStreamEvent(kind="reasoning_delta", text=response.diagnostics.reasoning)
         if response.content:
             yield ChatStreamEvent(kind="text_delta", text=response.content)
         yield ChatStreamEvent(kind="message_completed", response=response)
@@ -168,6 +172,87 @@ def test_agent_chat_runner_records_tool_call_and_result_display_lines(tmp_path) 
     ]
 
 
+def test_agent_chat_runner_forwards_tool_execution_events(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_tool_events",
+        agents_md="",
+        tools=[
+            Tool(
+                definition=ToolCallEchoDefinition(),
+                executor=lambda path: make_text_result("echo_path", f"read {path}"),
+            )
+        ],
+    )
+    state = CurrentSessionState(session)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="echo_path", arguments={"path": "README.md"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="done"),
+        ]
+    )
+    events: list[ToolExecutionEvent] = []
+    runner = AgentChatRunner(current_session=state, provider=provider, tool_event_handler=events.append)
+
+    response = runner.run_user_turn("读一下")
+
+    assert response.content == "done"
+    assert [event.kind for event in events] == ["started", "finished"]
+    assert [event.tool_call.name for event in events] == ["echo_path", "echo_path"]
+    assert events[1].result is not None
+    assert events[1].result.content == "read README.md"
+
+
+def test_display_lines_hide_internal_task_boundary_tool() -> None:
+    messages = [
+        AgentMessage(
+            id="msg_assistant",
+            session_id="sess_test",
+            role="assistant",
+            parts=[
+                MessagePart(
+                    id="part_call",
+                    message_id="msg_assistant",
+                    kind="tool_call",
+                    content="",
+                    metadata={
+                        "tool_call_id": "call_boundary",
+                        "tool_name": "task_boundary",
+                        "arguments": {"decision": "new", "basis_message_id": "msg_user"},
+                    },
+                )
+            ],
+        ),
+        AgentMessage(
+            id="msg_tool",
+            session_id="sess_test",
+            role="tool",
+            parts=[
+                MessagePart(
+                    id="part_result",
+                    message_id="msg_tool",
+                    kind="tool_result",
+                    content="任务边界观察已记录，暂不触发压缩。",
+                    metadata={
+                        "tool_call_id": "call_boundary",
+                        "tool_name": "task_boundary",
+                        "ok": True,
+                    },
+                )
+            ],
+        ),
+    ]
+
+    assert _display_lines_from_messages(messages) == []
+
+
 def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(
@@ -274,6 +359,42 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     ]
     assert runner.last_display_lines == ["streamed"]
     assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_agent_chat_runner_streaming_forwards_reasoning_events(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_reasoning", agents_md="")
+    state = CurrentSessionState(session)
+    provider = FakeStreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="answer",
+                diagnostics=ProviderDiagnostics(reasoning="thinking"),
+            )
+        ]
+    )
+    seen: list[ChatStreamEvent] = []
+    runner = AgentChatRunner(
+        current_session=state,
+        provider=provider,
+        use_streaming=True,
+        stream_event_handler=seen.append,
+    )
+
+    response = await runner.arun_user_turn("你好")
+
+    assert response.content == "answer"
+    assert [event.kind for event in seen] == [
+        "message_started",
+        "reasoning_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    assert [event.kind for event in runner.last_stream_events] == [event.kind for event in seen]
+    assert [event.text for event in seen if event.kind == "reasoning_delta"] == ["thinking"]
 
 
 @pytest.mark.anyio

@@ -4,9 +4,9 @@ from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 def test_default_limits_match_tui_goal_profile() -> None:
     limits = AgentLoopLimits.default()
 
-    assert limits.max_tool_rounds == 20
-    assert limits.max_provider_calls == 40
-    assert limits.max_turn_seconds == 600
+    assert limits.max_tool_rounds == 200
+    assert limits.max_provider_calls == 400
+    assert limits.max_turn_seconds == 3600
     assert limits.successful_verification_stop is True
 
 

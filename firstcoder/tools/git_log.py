@@ -12,12 +12,13 @@ from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_er
 from firstcoder.utils import git as git_utils
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
-def create_git_log_tool(root: str | Path) -> Tool:
+def create_git_log_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建查看 git 提交历史的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def git_log(path: str = ".", max_entries: int = 10) -> ToolResult:
         """查看项目提交历史；可限制路径和条数。"""

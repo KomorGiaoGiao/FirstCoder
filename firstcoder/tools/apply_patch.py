@@ -9,6 +9,7 @@ from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
@@ -42,10 +43,10 @@ class PatchPlan:
     operations: list[PatchOperation]
 
 
-def create_apply_patch_tool(root: str | Path) -> Tool:
+def create_apply_patch_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建多文件文本补丁工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def apply_patch(patch: str, dry_run: bool = False) -> ToolResult:
         """按 patch 语法新增、更新、删除或移动项目内文本文件。"""

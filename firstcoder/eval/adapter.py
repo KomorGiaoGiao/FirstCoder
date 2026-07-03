@@ -19,6 +19,7 @@ from firstcoder.permissions.types import PermissionAction, PermissionDecision, P
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import create_provider
 from firstcoder.tools.builtin import create_builtin_registry
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 class CodingAgentAdapter(Protocol):
@@ -73,16 +74,18 @@ class FirstCoderCodingAgentAdapter:
         return session_root
 
     def _create_loop(self, task: CodingTask, session_root: Path) -> AgentLoop:
+        sandbox_access = SandboxAccess()
         registry = create_builtin_registry(
             task.repo_path,
             include_mutation_tools=True,
             include_execution_tools=True,
             include_network_tools=False,
+            access=sandbox_access,
         )
         permission_manager = PermissionManager(
             policy=BenchmarkPermissionPolicy(task.repo_path),
             grants=PermissionGrantStore(),
-            mode=PermissionMode.AGGRESSIVE,
+            mode=PermissionMode.BYPASS,
         )
         store = JsonlSessionStore(session_root)
         tools = registry.tools()
@@ -92,6 +95,7 @@ class FirstCoderCodingAgentAdapter:
             project_root=task.repo_path,
             tools=tools,
             permission_manager=permission_manager,
+            sandbox_access=sandbox_access,
         )
         return AgentLoop(
             session=session,

@@ -37,6 +37,7 @@ def run_command(
     timeout_seconds: int = 30,
     max_output_chars: int = 20000,
     shell: bool = False,
+    env: dict[str, str] | None = None,
 ) -> CommandResult:
     """执行子进程命令并返回统一结果。
 
@@ -49,6 +50,7 @@ def run_command(
             command,
             cwd=cwd,
             shell=shell,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",

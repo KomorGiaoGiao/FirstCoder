@@ -12,8 +12,9 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.triggers import ContextCompactionConfig
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall
+from firstcoder.providers.types import ChatRequest, ChatResponse, ToolCall, ToolDefinition
 from firstcoder.tools.view import create_view_tool
+from firstcoder.tools.types import Tool, ToolResult
 
 
 @dataclass
@@ -237,3 +238,267 @@ def test_prompt_too_long_e2e_writes_l4_checkpoint_and_retries_with_summary(tmp_p
     assert any("压缩摘要：旧问题已经回答。" in content for content in retry_contents)
     assert retry_request.messages[-1].content.endswith("新问题")
     assert all("旧问题" not in content for content in retry_contents[2:])
+
+
+def _compact_manager(store: JsonlSessionStore, provider: ChatProvider, *, reason: str) -> ContextWindowManager:
+    threshold = 1 if reason == "token_threshold" else 1_000_000
+    max_tail_messages = 2 if reason == "tail_message_count" else 1_000
+    large_tool_result_tokens = 10 if reason == "large_tool_result" else 1_000_000
+    max_turn_tool_result_tokens = 10 if reason == "turn_tool_results" else 1_000_000
+    target_tokens = 1_000 if reason == "large_tool_result" else 1
+    return ContextWindowManager(
+        store=store,
+        config=ContextCompactionConfig(
+            auto_compact_threshold=threshold,
+            target_tokens=target_tokens,
+            large_tool_result_tokens=large_tool_result_tokens,
+            max_turn_tool_result_tokens=max_turn_tool_result_tokens,
+            max_tail_messages=max_tail_messages,
+            max_tail_tokens=1_000_000,
+        ),
+        l4_service=LlmCompactService(
+            store=store,
+            summarizer=ProviderLlmCompactSummarizer(provider),
+        ),
+    )
+
+
+def _events(store: JsonlSessionStore, session_id: str, event_type: str) -> list:
+    return [event for event in store.list_events(session_id) if event.type == event_type]
+
+
+def _compact_events(store: JsonlSessionStore, session_id: str) -> list:
+    return _events(store, session_id, "compaction_completed")
+
+
+def _checkpoint_events(store: JsonlSessionStore, session_id: str) -> list:
+    return _events(store, session_id, "checkpoint_created")
+
+
+def _llm_compact_events(store: JsonlSessionStore, session_id: str) -> list:
+    return _events(store, session_id, "llm_compaction_completed")
+
+
+def _echo_tool(*, output: str) -> Tool:
+    def echo(text: str) -> ToolResult:
+        return ToolResult(name="echo", ok=True, content=output)
+
+    return Tool(
+        definition=ToolDefinition(
+            name="echo",
+            description="返回测试输出",
+            parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        ),
+        executor=echo,
+    )
+
+
+def test_auto_token_threshold_e2e_writes_compaction_and_checkpoint(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_auto_token", agents_md="")
+    seed = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
+    AgentLoop(session=session, provider=seed).run_user_turn("旧问题")
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="自动压缩摘要"),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+            ChatResponse(provider="fake", model="fake-model", content="最终压缩摘要"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=_compact_manager(store, provider, reason="token_threshold"),
+    ).run_user_turn("触发 token 阈值")
+
+    assert response.content == "完成"
+    compact = _compact_events(store, "sess_auto_token")[0]
+    assert compact.payload["trigger"] == "auto"
+    assert compact.payload["reason"] == "not_reached"
+    assert _llm_compact_events(store, "sess_auto_token")[0].payload["trigger"] == "auto"
+    assert _checkpoint_events(store, "sess_auto_token")
+    normal_requests = [request for request in provider.requests if request.tools]
+    assert normal_requests[-1].messages[-1].content.endswith("触发 token 阈值")
+
+
+def test_auto_large_single_tool_result_e2e_writes_auto_compaction(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_large_tool", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo", name="echo", arguments={"text": "x"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        tools=[_echo_tool(output="large output\n" * 50)],
+        context_manager=_compact_manager(store, provider, reason="large_tool_result"),
+    ).run_user_turn("调用大工具")
+
+    assert response.content == "完成"
+    compact = _compact_events(store, "sess_large_tool")[0]
+    assert compact.payload["trigger"] == "auto"
+    assert compact.payload["reason"] == "already_within_budget"
+    assert compact.payload["event"]["noop"] is True
+    assert not _checkpoint_events(store, "sess_large_tool")
+
+
+def test_auto_large_turn_tool_results_e2e_writes_auto_compaction(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_turn_tools", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(id="call_echo_1", name="echo", arguments={"text": "one"}),
+                    ToolCall(id="call_echo_2", name="echo", arguments={"text": "two"}),
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="turn 摘要"),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+            ChatResponse(provider="fake", model="fake-model", content="最终 turn 摘要"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        tools=[_echo_tool(output="turn output\n" * 8)],
+        context_manager=_compact_manager(store, provider, reason="turn_tool_results"),
+    ).run_user_turn("调用两个工具")
+
+    assert response.content == "完成"
+    compact = _compact_events(store, "sess_turn_tools")[0]
+    assert compact.payload["trigger"] == "auto"
+    assert compact.payload["reason"] == "not_reached"
+    assert _llm_compact_events(store, "sess_turn_tools")[0].payload["trigger"] == "auto"
+    assert _checkpoint_events(store, "sess_turn_tools")
+
+
+def test_auto_tail_message_count_e2e_writes_auto_compaction(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_tail_count", agents_md="")
+    seed = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
+    AgentLoop(session=session, provider=seed).run_user_turn("旧问题")
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="tail 摘要"),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=_compact_manager(store, provider, reason="tail_message_count"),
+    ).run_user_turn("新问题")
+
+    assert response.content == "完成"
+    compact = _compact_events(store, "sess_tail_count")[0]
+    assert compact.payload["trigger"] == "auto"
+    assert compact.payload["reason"] == "not_reached"
+    assert _llm_compact_events(store, "sess_tail_count")[0].payload["trigger"] == "auto"
+    assert _checkpoint_events(store, "sess_tail_count")
+
+
+def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_boundary", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_1",
+                        name="task_boundary",
+                        arguments={"decision": "new", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_2",
+                        name="task_boundary",
+                        arguments={"decision": "new", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="任务切换完成"),
+        ]
+    )
+
+    original_complete = provider.complete
+
+    def complete_with_basis(request: ChatRequest) -> ChatResponse:
+        response = original_complete(request)
+        user_message_id = session.rebuild_view().messages[0].id
+        for tool_call in response.tool_calls:
+            if tool_call.name == "task_boundary":
+                tool_call.arguments["basis_message_id"] = user_message_id
+        return response
+
+    provider.complete = complete_with_basis
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=ContextWindowManager(store=store),
+    ).run_user_turn("换一个任务")
+
+    assert response.content == "任务切换完成"
+    task_boundary_events = _events(store, "sess_task_boundary", "task_boundary_observed")
+    assert task_boundary_events[-1].payload["should_trigger_compaction"] is True
+    compact_events = _compact_events(store, "sess_task_boundary")
+    assert any(event.payload["trigger"] == "task_hash_changed" for event in compact_events)
+
+
+def test_manual_compact_command_e2e_writes_manual_route_compaction(tmp_path) -> None:
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="旧回复"),
+            ChatResponse(provider="fake", model="fake-model", content="手动压缩摘要"),
+        ]
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        provider=provider,
+        session_id="sess_manual_compact",
+        tools=[],
+    )
+
+    first = app.chat_runner.run_user_turn("旧问题 " * 10_000)
+    result = app.command_handler.handle("/compact")
+
+    assert first.content == "旧回复"
+    assert "Manual compact success" in result.output
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    compact = _compact_events(store, "sess_manual_compact")[0]
+    assert compact.payload["trigger"] == "manual"
+    event = compact.payload["event"]
+    assert event["changed_parts"] >= 1
+    assert event["replacements"][0]["replacement_part"]["metadata"]["compaction_state"] == "route_compacted"
+    assert event["replacements"][0]["replacement_part"]["metadata"]["compacted_by"].startswith("l3_")

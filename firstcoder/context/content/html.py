@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
@@ -31,7 +32,7 @@ class HtmlRouteCompressor:
             return None
 
         text_blocks = _dedupe_preserve_order(parser.text_blocks)
-        visible_blocks = text_blocks[: self.max_text_blocks]
+        visible_blocks = _select_visible_blocks(text_blocks, max_blocks=self.max_text_blocks)
         links = parser.links[: self.max_links]
 
         lines = ["[HTML compacted]"]
@@ -151,3 +152,32 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def _select_visible_blocks(blocks: list[str], *, max_blocks: int) -> list[str]:
+    if len(blocks) <= max_blocks:
+        return list(blocks)
+
+    selected: list[str] = list(blocks[:max_blocks])
+    for block in sorted(blocks[max_blocks:], key=_block_score, reverse=True):
+        if _block_score(block) <= 0:
+            break
+        if block in selected:
+            continue
+        if len(selected) >= max_blocks:
+            selected.pop()
+        selected.append(block)
+        if len(selected) >= max_blocks:
+            break
+    return selected
+
+
+def _block_score(block: str) -> int:
+    lowered = block.lower()
+    score = 0
+    for keyword in ("error", "failed", "fail", "traceback", "exception", "todo", "fixme", "warning", "sentinel"):
+        if keyword in lowered:
+            score += 10
+    if re.search(r"\b[A-Z][A-Z0-9_]{6,}\b", block):
+        score += 8
+    return score

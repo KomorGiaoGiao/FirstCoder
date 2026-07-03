@@ -111,3 +111,15 @@ class TestRunCommand:
         run_command(["echo hi"], cwd=tmp_path, shell=True)
 
         assert called["shell"] is True
+
+    def test_passes_custom_environment(self, monkeypatch, tmp_path):
+        called = {}
+
+        def _capture_run(*a, **kw):
+            called["env"] = kw.get("env")
+            return _fake_completed(stdout="ok")
+
+        monkeypatch.setattr(subprocess, "run", _capture_run)
+        run_command(["echo"], cwd=tmp_path, env={"PATH": "/bin", "CUSTOM": "1"})
+
+        assert called["env"] == {"PATH": "/bin", "CUSTOM": "1"}

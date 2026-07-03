@@ -118,6 +118,8 @@ def test_create_firstcoder_app_can_use_default_builtin_tools(tmp_path: Path) -> 
     assert "edit" in names
     assert "apply_patch" in names
     assert "shell" in names
+    assert "fetch" in names
+    assert "web_search" in names
 
 
 def test_create_firstcoder_app_exposes_task_boundary_in_real_prompt(tmp_path: Path) -> None:
@@ -133,6 +135,8 @@ def test_create_firstcoder_app_exposes_task_boundary_in_real_prompt(tmp_path: Pa
 
     tool_names = [tool.name for tool in provider.requests[0].tools]
     assert "task_boundary" in tool_names
+    assert "fetch" in tool_names
+    assert "web_search" in tool_names
     descriptions = {tool.name: tool.description for tool in provider.requests[0].tools}
     assert descriptions["task_boundary"].startswith("Report whether the current user message starts a new task")
     assert "Do not provide task hashes" in descriptions["task_boundary"]

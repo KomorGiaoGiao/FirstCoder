@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from firstcoder.context.content.router import RouteCompactResult, RouteContentType, RouteContext
@@ -121,5 +122,9 @@ def _search_match_score(match: _SearchMatch) -> int:
     for keyword in ("error", "failed", "fail", "traceback", "exception", "todo", "fixme", "warning"):
         if keyword in text:
             score += 10
+    if "sentinel" in text:
+        score += 20
+    if re.search(r"\b[A-Z][A-Z0-9_]{6,}\b", match.text):
+        score += 12
     score += min(3, len(match.text) // 80)
     return score

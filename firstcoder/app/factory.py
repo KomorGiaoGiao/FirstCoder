@@ -25,6 +25,7 @@ from firstcoder.session.resume import ResumeService
 from firstcoder.session.share import SessionShareService
 from firstcoder.tools.builtin import create_builtin_registry
 from firstcoder.tools.types import Tool
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 def create_firstcoder_app(
@@ -45,12 +46,15 @@ def create_firstcoder_app(
     project_path = Path(project_root)
     resolved_data_root = Path(data_root) if data_root is not None else project_path / ".firstcoder"
     store = JsonlSessionStore(resolved_data_root)
+    sandbox_access = SandboxAccess()
     resolved_tools = tools if tools is not None else create_builtin_registry(
         project_path,
         include_mutation_tools=True,
         include_execution_tools=True,
+        include_network_tools=True,
+        access=sandbox_access,
     ).tools()
-    resolved_provider = provider or create_provider()
+    resolved_provider = provider or create_provider(project_root=project_path)
     grant_store = FilePermissionGrantStore(resolved_data_root / "permissions.json")
     permission_manager = create_project_permission_manager(project_path, grants=grant_store)
     session = AgentSession.from_project(
@@ -59,6 +63,7 @@ def create_firstcoder_app(
         project_root=project_path,
         tools=resolved_tools,
         permission_manager=permission_manager,
+        sandbox_access=sandbox_access,
     )
     current = CurrentSessionState(session)
     context_manager = ContextWindowManager(
@@ -74,6 +79,7 @@ def create_firstcoder_app(
         project_root=project_path,
         data_root=resolved_data_root,
         tools=resolved_tools,
+        sandbox_access=sandbox_access,
         catalog=catalog,
     )
     session_handler = SessionCommandHandler(
@@ -99,5 +105,10 @@ def create_firstcoder_app(
         command_handler=command_handler,
         chat_runner=chat_runner,
         current_session=current,
-        config=config or FirstCoderTuiConfig(),
+        config=config
+        or FirstCoderTuiConfig(
+            provider_name=resolved_provider.name,
+            provider_model=resolved_provider.model,
+            project_name=project_path.resolve().name,
+        ),
     )

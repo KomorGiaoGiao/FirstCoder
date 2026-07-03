@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import re
+import threading
 
 import pytest
 
-from firstcoder.agent.loop import AgentLoop
+from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.agent.session import AgentSession
@@ -539,6 +541,65 @@ def test_agent_loop_streaming_tool_call_executes_after_message_completed(tmp_pat
     assert [message.role for message in view.messages] == ["user", "assistant", "tool", "assistant"]
     assert view.messages[1].parts[0].metadata["tool_call_id"] == "call_1"
     assert view.messages[2].parts[0].metadata["tool_call_id"] == "call_1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_agent_loop_streaming_tool_execution_does_not_block_event_loop(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_tool_thread", agents_md="")
+    provider = StreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[ToolCall(id="call_wait", name="wait_tool", arguments={})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="完成"),
+        ]
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def execute() -> ToolResult:
+        started.set()
+        release.wait(timeout=0.2)
+        return ToolResult(name="wait_tool", ok=True, content="waited")
+
+    tool = Tool(
+        definition=ToolDefinition(
+            name="wait_tool",
+            description="blocks until released",
+            parameters={"type": "object", "properties": {}},
+        ),
+        executor=execute,
+    )
+    events: list[ToolExecutionEvent] = []
+    loop = AgentLoop(session=session, provider=provider, tools=[tool], tool_event_handler=events.append)
+    task = asyncio.create_task(loop.run_user_turn_streaming("调用慢工具"))
+
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+
+    assert [event.kind for event in events] == ["started"]
+    assert events[0].tool_call.name == "wait_tool"
+
+    ticks = 0
+    for _ in range(5):
+        await asyncio.sleep(0)
+        ticks += 1
+
+    assert not task.done()
+    release.set()
+    result = await task
+
+    assert ticks == 5
+    assert result.content == "完成"
+    assert [event.kind for event in events] == ["started", "finished"]
+    assert events[1].result is not None
+    assert events[1].result.content == "waited"
 
 
 def test_agent_loop_streaming_does_not_execute_tool_before_message_completed(tmp_path) -> None:

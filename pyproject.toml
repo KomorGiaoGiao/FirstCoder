@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "firstcoder"
+version = "0.1.0"
+description = "A local Python coding agent with a Textual TUI."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual",
+    "prompt_toolkit",
+    "openai",
+    "anthropic",
+    "anyio",
+    "python-dotenv",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+firstcoder = "firstcoder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["firstcoder*"]
+
+[tool.setuptools.package-data]
+firstcoder = ["context/prompts/*.md", "app/*.tcss"]

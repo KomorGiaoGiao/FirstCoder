@@ -8,21 +8,21 @@ from pathlib import Path
 from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
-from firstcoder.utils.sandbox import PathSandbox
-from firstcoder.utils.subprocess import run_command
+from firstcoder.utils.execution_sandbox import ExecutionSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_MAX_OUTPUT_CHARS = 20000
 
 
-def create_shell_tool(root: str | Path) -> Tool:
+def create_shell_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建命令执行工具。
 
     这是高风险工具：调用方必须在用户明确开启执行权限后才能注册它。
     """
 
-    sandbox = PathSandbox(root)
+    sandbox = ExecutionSandbox(root, access=access)
 
     def shell(
         command: str,
@@ -38,11 +38,11 @@ def create_shell_tool(root: str | Path) -> Tool:
             return make_error_result("shell", "max_output_chars 必须大于 0")
 
         try:
-            workdir = sandbox.resolve_validated(cwd, expect="dir")
+            workdir = sandbox.resolve_cwd(cwd)
         except ValueError as exc:
             return make_error_result("shell", str(exc))
 
-        result = run_command(
+        result = sandbox.run(
             command,
             cwd=workdir,
             timeout_seconds=timeout_seconds,

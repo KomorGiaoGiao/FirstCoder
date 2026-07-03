@@ -12,6 +12,7 @@ from firstcoder.context.content.build import BuildOutputRouteCompressor
 from firstcoder.context.content.code import SourceCodeRouteCompressor
 from firstcoder.context.content.compressors import PlainTextRouteCompressor, compact_old_task_part
 from firstcoder.context.content.detector import (
+    is_already_compacted,
     is_current_task_cold_part,
     is_large_tool_result,
     is_old_task_part,
@@ -37,6 +38,7 @@ class CompactionRequest:
     target_tokens: int
     current_turn: int
     enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")
+    force_route_current_text: bool = False
 
 
 @dataclass(slots=True)
@@ -152,6 +154,7 @@ class CompactionPipeline:
         if level == "l3":
             return self._apply_l3(
                 view,
+                request=request,
                 active_task_hash=request.active_task_hash,
                 current_turn=request.current_turn,
             )
@@ -182,6 +185,7 @@ class CompactionPipeline:
         self,
         view: SessionView,
         *,
+        request: CompactionRequest,
         active_task_hash: str | None,
         current_turn: int,
     ) -> list[dict[str, object]]:
@@ -202,8 +206,9 @@ class CompactionPipeline:
         )
         for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
-                if is_current_task_cold_part(
+                if _should_route_compact_part(
                     part,
+                    request=request,
                     active_task_hash=active_task_hash,
                     current_turn=current_turn,
                     cold_turn_distance=self.cold_turn_distance,
@@ -270,3 +275,25 @@ def _replace_if_smaller(parts: list[MessagePart], index: int, compacted: Message
         return False
     parts[index] = compacted
     return True
+
+
+def _should_route_compact_part(
+    part: MessagePart,
+    *,
+    request: CompactionRequest,
+    active_task_hash: str | None,
+    current_turn: int,
+    cold_turn_distance: int,
+) -> bool:
+    if is_current_task_cold_part(
+        part,
+        active_task_hash=active_task_hash,
+        current_turn=current_turn,
+        cold_turn_distance=cold_turn_distance,
+    ):
+        return True
+    if not request.force_route_current_text:
+        return False
+    if is_already_compacted(part):
+        return False
+    return part.kind == "text"

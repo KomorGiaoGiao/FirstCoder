@@ -286,6 +286,88 @@ def test_l3_uses_git_diff_route_compressor(tmp_path: Path) -> None:
     assert part.metadata["diff_deletions"] == 1
 
 
+def test_l3_skips_hot_content_by_default(tmp_path: Path) -> None:
+    content = "\n".join(
+        [
+            "diff --git a/firstcoder/app.py b/firstcoder/app.py",
+            "--- a/firstcoder/app.py",
+            "+++ b/firstcoder/app.py",
+            "@@ -1,4 +1,4 @@",
+            *[f" context {line}" for line in range(1, 80)],
+            "-old line",
+            "+new line",
+        ]
+    )
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _message(
+                "msg_diff_hot",
+                content=content,
+                task_hash="task_current",
+                created_turn=10,
+                metadata={"tool_name": "git_diff"},
+            )
+        ],
+    )
+
+    result = CompactionPipeline(root=tmp_path, cold_turn_distance=5).compact(
+        CompactionRequest(
+            view=view,
+            active_task_hash="task_current",
+            target_tokens=1,
+            current_turn=10,
+            enabled_levels=("l3",),
+        )
+    )
+
+    assert result.view.messages[0].parts[0].content == content
+    assert result.event.noop is True
+
+
+def test_l3_can_force_route_compact_hot_current_text(tmp_path: Path) -> None:
+    content = "\n".join(
+        [
+            "diff --git a/firstcoder/app.py b/firstcoder/app.py",
+            "--- a/firstcoder/app.py",
+            "+++ b/firstcoder/app.py",
+            "@@ -1,4 +1,4 @@",
+            *[f" context {line}" for line in range(1, 80)],
+            "-old line",
+            "+new line",
+        ]
+    )
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _message(
+                "msg_diff_hot",
+                content=content,
+                task_hash="task_current",
+                created_turn=10,
+                metadata={"tool_name": "git_diff"},
+            )
+        ],
+    )
+
+    result = CompactionPipeline(root=tmp_path, cold_turn_distance=5).compact(
+        CompactionRequest(
+            view=view,
+            active_task_hash="task_current",
+            target_tokens=1,
+            current_turn=10,
+            enabled_levels=("l3",),
+            force_route_current_text=True,
+        )
+    )
+
+    part = result.view.messages[0].parts[0]
+    assert part.metadata["compaction_state"] == "route_compacted"
+    assert part.metadata["content_type"] == "git_diff"
+    assert part.metadata["compacted_by"] == "l3_git_diff"
+    assert result.event.changed_parts == 1
+
+
 def test_l3_uses_build_output_route_compressor(tmp_path: Path) -> None:
     content = "\n".join(
         [

@@ -27,6 +27,7 @@ from firstcoder.tools.view import create_view_tool
 from firstcoder.tools.web_search import create_web_search_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.descriptions import apply_agent_tool_description
+from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 def create_builtin_registry(
@@ -34,6 +35,7 @@ def create_builtin_registry(
     include_mutation_tools: bool = False,
     include_execution_tools: bool = False,
     include_network_tools: bool = False,
+    access: SandboxAccess | None = None,
 ) -> ToolRegistry:
     """创建第一阶段默认可用工具。
 
@@ -41,34 +43,34 @@ def create_builtin_registry(
     """
 
     tools = [
-        create_ls_tool(root),
-        create_view_tool(root),
-        create_grep_tool(root),
-        create_glob_tool(root),
-        create_tree_tool(root),
-        create_git_status_tool(root),
-        create_git_diff_tool(root),
-        create_git_log_tool(root),
-        create_diagnostics_tool(root),
+        create_ls_tool(root, access=access),
+        create_view_tool(root, access=access),
+        create_grep_tool(root, access=access),
+        create_glob_tool(root, access=access),
+        create_tree_tool(root, access=access),
+        create_git_status_tool(root, access=access),
+        create_git_diff_tool(root, access=access),
+        create_git_log_tool(root, access=access),
+        create_diagnostics_tool(root, access=access),
         create_think_tool(),
-        create_read_multi_tool(root),
+        create_read_multi_tool(root, access=access),
         create_ask_user_tool(),
         create_todo_tool(),
     ]
     if include_mutation_tools:
         tools.extend(
             [
-                create_write_tool(root),
-                create_edit_tool(root),
-                create_delete_tool(root),
-                create_apply_patch_tool(root),
+                create_write_tool(root, access=access),
+                create_edit_tool(root, access=access),
+                create_delete_tool(root, access=access),
+                create_apply_patch_tool(root, access=access),
             ]
         )
     if include_execution_tools:
         tools.extend(
             [
-                create_shell_tool(root),
-                create_python_exec_tool(root),
+                create_shell_tool(root, access=access),
+                create_python_exec_tool(root, access=access),
             ]
         )
     if include_network_tools:

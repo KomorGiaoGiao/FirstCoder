@@ -16,9 +16,9 @@ class AgentLoopStopReason(StrEnum):
 class AgentLoopLimits:
     """Configurable guardrails for one user turn."""
 
-    max_tool_rounds: int | None = 20
-    max_provider_calls: int | None = 40
-    max_turn_seconds: float | None = 600
+    max_tool_rounds: int | None = 200
+    max_provider_calls: int | None = 400
+    max_turn_seconds: float | None = 3600
     successful_verification_stop: bool = True
 
     @classmethod

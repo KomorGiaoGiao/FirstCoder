@@ -208,6 +208,35 @@ class _FakeOpenAITextStreamClient:
         self.chat = _Object(completions=self.completions)
 
 
+class _FakeOpenAIReasoningStreamCompletions:
+    def create(self, **params):
+        return iter(
+            [
+                _Object(
+                    model=params["model"],
+                    choices=[_Object(delta=_Object(reasoning_content="先想"), finish_reason=None)],
+                ),
+                _Object(
+                    model=params["model"],
+                    choices=[_Object(delta={"reasoning": {"content": "一下"}}, finish_reason=None)],
+                ),
+                _Object(
+                    model=params["model"],
+                    choices=[_Object(delta=_Object(content="答"), finish_reason=None)],
+                ),
+                _Object(
+                    model=params["model"],
+                    choices=[_Object(delta=_Object(), finish_reason="stop")],
+                ),
+            ]
+        )
+
+
+class _FakeOpenAIReasoningStreamClient:
+    def __init__(self):
+        self.chat = _Object(completions=_FakeOpenAIReasoningStreamCompletions())
+
+
 class _FakeOpenAIToolStreamCompletions:
     def __init__(self):
         self.last_params = None
@@ -774,6 +803,35 @@ def test_openai_compatible_provider_streams_text_deltas_and_final_response():
     assert events[-1].response is not None
     assert events[-1].response.content == "你好"
     assert events[-1].response.finish_reason == "stop"
+
+
+def test_openai_compatible_provider_streams_reasoning_deltas_into_diagnostics():
+    async def collect_events():
+        provider = OpenAICompatibleProvider(
+            name="test-openai",
+            model="test-model",
+            api_key="test-key",
+            client=_FakeOpenAIReasoningStreamClient(),
+        )
+
+        return [
+            event
+            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        ]
+
+    events = asyncio.run(collect_events())
+
+    assert [event.kind for event in events] == [
+        "message_started",
+        "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    assert [event.text for event in events if event.kind == "reasoning_delta"] == ["先想", "一下"]
+    assert events[-1].response is not None
+    assert events[-1].response.content == "答"
+    assert events[-1].response.diagnostics.reasoning == "先想一下"
 
 
 def test_openai_compatible_provider_accumulates_streaming_tool_calls():

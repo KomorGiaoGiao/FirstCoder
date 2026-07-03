@@ -139,6 +139,7 @@ class ContextWindowManager:
             )
 
         target_tokens = request.target_tokens or self.config.target_for_trigger(trigger.value)
+        force_route_current_text = _force_route_current_text_for_trigger(trigger)
         # 先跑确定性的 L1-L3。它们不依赖模型，成本低、结果可重放；只有仍然超预算时
         # 才进入 L4 LLM 摘要。
         programmatic = self.pipeline.compact(
@@ -147,6 +148,7 @@ class ContextWindowManager:
                 active_task_hash=request.runtime_state.active_task_hash,
                 target_tokens=target_tokens,
                 current_turn=request.current_turn,
+                force_route_current_text=force_route_current_text,
             )
         )
         self._record_programmatic_event(
@@ -310,6 +312,7 @@ class ContextWindowManager:
                     target_tokens=target_tokens,
                     current_turn=request.current_turn,
                     enabled_levels=("l1", "l2", "l3"),
+                    force_route_current_text=_force_route_current_text_for_trigger(trigger),
                 )
             )
             self._record_programmatic_event(
@@ -535,6 +538,10 @@ def _result_reason(*, trigger: ContextWindowTrigger, auto_reason: str) -> str:
     if trigger == ContextWindowTrigger.AUTO:
         return auto_reason
     return trigger.value
+
+
+def _force_route_current_text_for_trigger(trigger: ContextWindowTrigger) -> bool:
+    return trigger in {ContextWindowTrigger.MANUAL, ContextWindowTrigger.PROMPT_TOO_LONG}
 
 
 def _with_fallback(

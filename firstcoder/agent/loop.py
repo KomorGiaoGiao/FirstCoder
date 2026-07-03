@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Literal
 from typing import Protocol
+
+import anyio
 
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
@@ -22,10 +27,24 @@ from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
 from firstcoder.tools.permission_results import make_permission_denied_result
-from firstcoder.tools.types import Tool, make_error_result
+from firstcoder.tools.types import Tool, ToolResult, make_error_result
 
 
 _DEFAULT_MAX_TOOL_ROUNDS = object()
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionEvent:
+    """Runtime-visible tool activity event.
+
+    These events are intentionally separate from provider stream events: provider
+    streams describe model output, while this describes local tool execution.
+    """
+
+    kind: Literal["started", "finished", "permission_requested", "denied", "skipped"]
+    tool_call: ToolCall
+    result: ToolResult | None = None
+    permission_request: PermissionRequest | None = None
 
 
 class ContextManagerLike(Protocol):
@@ -59,6 +78,8 @@ class AgentLoop:
         max_tool_rounds: int | None | object = _DEFAULT_MAX_TOOL_ROUNDS,
         limits: AgentLoopLimits | None = None,
         clock=time.monotonic,
+        stream_event_handler: Callable[[ChatStreamEvent], None] | None = None,
+        tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None,
     ) -> None:
         self.session = session
         self.provider = provider
@@ -73,6 +94,8 @@ class AgentLoop:
         self.provider_call_count = 0
         self.turn_started_at: float | None = None
         self.last_stream_events: list[ChatStreamEvent] = []
+        self.stream_event_handler = stream_event_handler
+        self.tool_event_handler = tool_event_handler
         # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
         # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
@@ -142,7 +165,7 @@ class AgentLoop:
     async def resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
         """流式模式下恢复权限确认，并继续消费 provider stream。"""
 
-        result = self._append_permission_resume_result(request_id, answer)
+        result = await self._append_permission_resume_result_async(request_id, answer)
         if result is not None:
             return result
         self._begin_turn()
@@ -225,10 +248,86 @@ class AgentLoop:
                 request=pending.permission_request,
                 decision=decision,
             )
+            self._emit_tool_event(
+                "denied",
+                pending.tool_call,
+                result=result,
+                permission_request=pending.permission_request,
+            )
         else:
             # 用户同意后执行原始 pending tool_call。这里绕过再次权限检查，避免同一个
             # 确认请求被重复拦截；授权是否长期有效由 PermissionManager/GrantStore 决定。
+            self._emit_tool_event(
+                "started",
+                pending.tool_call,
+                permission_request=pending.permission_request,
+            )
             result = self.session.execute_tool_call_after_permission_confirmation(pending.tool_call)
+            self._emit_tool_event(
+                "finished",
+                pending.tool_call,
+                result=result,
+                permission_request=pending.permission_request,
+            )
+
+        self.session.pending_permission_execution = None
+        self.session.append_tool_result(tool_call=pending.tool_call, result=result)
+        self._append_skipped_tool_results(pending.skipped_tool_calls)
+        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        return None
+
+    async def _append_permission_resume_result_async(self, request_id: str, answer: str) -> AgentTurnResult | None:
+        pending = self.session.pending_permission_execution
+        if pending is None or pending.request_id != request_id:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="没有找到可恢复的权限确认请求。",
+                    finish_reason="error",
+                ),
+            )
+        if self.session.permission_manager is None:
+            return AgentTurnResult(
+                status=AgentTurnStatus.COMPLETED,
+                response=ChatResponse(
+                    provider=self.provider.name,
+                    model=self.provider.model,
+                    content="当前会话没有权限管理器，无法恢复权限确认。",
+                    finish_reason="error",
+                ),
+            )
+
+        decision = self.session.permission_manager.resolve_confirmation(pending.permission_request, answer)
+        if decision.kind == PermissionDecisionKind.DENY:
+            result = make_permission_denied_result(
+                tool_name=pending.tool_call.name,
+                request=pending.permission_request,
+                decision=decision,
+            )
+            self._emit_tool_event(
+                "denied",
+                pending.tool_call,
+                result=result,
+                permission_request=pending.permission_request,
+            )
+        else:
+            self._emit_tool_event(
+                "started",
+                pending.tool_call,
+                permission_request=pending.permission_request,
+            )
+            result = await anyio.to_thread.run_sync(
+                self.session.execute_tool_call_after_permission_confirmation,
+                pending.tool_call,
+            )
+            self._emit_tool_event(
+                "finished",
+                pending.tool_call,
+                result=result,
+                permission_request=pending.permission_request,
+            )
 
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
@@ -300,6 +399,8 @@ class AgentLoop:
         self.provider_call_count += 1
         async for event in self.provider.astream(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice)):
             self.last_stream_events.append(event)
+            if self.stream_event_handler is not None:
+                self.stream_event_handler(event)
             if event.kind == "message_completed":
                 final_response = event.response
         if final_response is None:
@@ -392,7 +493,7 @@ class AgentLoop:
                     break
 
                 self.session.append_assistant_response(response)
-                execution = self._execute_tool_calls_interactive(response.tool_calls)
+                execution = await self._execute_tool_calls_interactive_async(response.tool_calls)
                 if execution.pending_input is not None:
                     return AgentTurnResult(
                         status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
@@ -436,6 +537,12 @@ class AgentLoop:
                         request=preflight.request,
                         decision=preflight.decision,
                     )
+                    self._emit_tool_event(
+                        "denied",
+                        tool_call,
+                        result=result,
+                        permission_request=preflight.request,
+                    )
                     self.session.append_tool_result(tool_call=tool_call, result=result)
                     continue
                 if preflight.decision.kind == PermissionDecisionKind.ASK:
@@ -446,12 +553,19 @@ class AgentLoop:
                         request=preflight.request,
                         skipped_tool_calls=tool_calls[index + 1 :],
                     )
+                    self._emit_tool_event(
+                        "permission_requested",
+                        tool_call,
+                        permission_request=preflight.request,
+                    )
                     return _ToolExecutionState(
                         task_hash_changed=task_hash_changed,
                         pending_input=pending_input,
                     )
 
+            self._emit_tool_event("started", tool_call)
             result = self.session.execute_tool_call(tool_call)
+            self._emit_tool_event("finished", tool_call, result=result)
             self.session.append_tool_result(tool_call=tool_call, result=result)
             if is_successful_verification_result(tool_call.name, result):
                 successful_verification = True
@@ -471,6 +585,66 @@ class AgentLoop:
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
                 # task_boundary 是一种“语义触发”：即使上下文还没超 token 阈值，确认任务切换
                 # 后也应该整理旧任务上下文，降低旧任务信息污染新任务的概率。
+                task_hash_changed = True
+        return _ToolExecutionState(
+            task_hash_changed=task_hash_changed,
+            successful_verification=successful_verification,
+        )
+
+    async def _execute_tool_calls_interactive_async(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
+        task_hash_changed = False
+        successful_verification = False
+        for index, tool_call in enumerate(tool_calls):
+            preflight = self.session.preflight_tool_call_permission(tool_call)
+            if preflight is not None:
+                if preflight.decision.kind == PermissionDecisionKind.DENY:
+                    result = make_permission_denied_result(
+                        tool_name=tool_call.name,
+                        request=preflight.request,
+                        decision=preflight.decision,
+                    )
+                    self._emit_tool_event(
+                        "denied",
+                        tool_call,
+                        result=result,
+                        permission_request=preflight.request,
+                    )
+                    self.session.append_tool_result(tool_call=tool_call, result=result)
+                    continue
+                if preflight.decision.kind == PermissionDecisionKind.ASK:
+                    pending_input = self._store_pending_permission_request(
+                        tool_call=tool_call,
+                        request=preflight.request,
+                        skipped_tool_calls=tool_calls[index + 1 :],
+                    )
+                    self._emit_tool_event(
+                        "permission_requested",
+                        tool_call,
+                        permission_request=preflight.request,
+                    )
+                    return _ToolExecutionState(
+                        task_hash_changed=task_hash_changed,
+                        pending_input=pending_input,
+                    )
+
+            self._emit_tool_event("started", tool_call)
+            result = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
+            self._emit_tool_event("finished", tool_call, result=result)
+            self.session.append_tool_result(tool_call=tool_call, result=result)
+            if is_successful_verification_result(tool_call.name, result):
+                successful_verification = True
+            pending_input = user_input_request_from_tool_result(
+                result,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+            )
+            if pending_input is not None:
+                self._append_skipped_tool_results(tool_calls[index + 1 :])
+                return _ToolExecutionState(
+                    task_hash_changed=task_hash_changed,
+                    pending_input=pending_input,
+                )
+            if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
                 task_hash_changed = True
         return _ToolExecutionState(
             task_hash_changed=task_hash_changed,
@@ -529,7 +703,27 @@ class AgentLoop:
                 "已暂停等待用户输入，跳过同批次后续工具调用。",
                 skipped_due_to_user_input=True,
             )
+            self._emit_tool_event("skipped", tool_call, result=result)
             self.session.append_tool_result(tool_call=tool_call, result=result)
+
+    def _emit_tool_event(
+        self,
+        kind: Literal["started", "finished", "permission_requested", "denied", "skipped"],
+        tool_call: ToolCall,
+        *,
+        result: ToolResult | None = None,
+        permission_request: PermissionRequest | None = None,
+    ) -> None:
+        if self.tool_event_handler is None:
+            return
+        self.tool_event_handler(
+            ToolExecutionEvent(
+                kind=kind,
+                tool_call=tool_call,
+                result=result,
+                permission_request=permission_request,
+            )
+        )
 
     def _compact_if_needed(self, *, trigger: ContextWindowTrigger):
         """把压缩触发交给 context manager。

@@ -45,6 +45,21 @@ def _read_field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
+def _read_reasoning_delta(delta: Any) -> str:
+    """读取 OpenAI-compatible 厂商常见的 reasoning 增量字段。"""
+
+    for name in ("reasoning_content", "reasoning"):
+        value = _read_field(delta, name)
+        if isinstance(value, str):
+            return value
+        if value is not None:
+            for nested_name in ("delta", "content", "text"):
+                nested = _read_field(value, nested_name)
+                if isinstance(nested, str):
+                    return nested
+    return ""
+
+
 class OpenAICompatibleProvider(ChatProvider):
     """使用 OpenAI Chat Completions 协议的 provider。
 
@@ -123,6 +138,7 @@ class OpenAICompatibleProvider(ChatProvider):
         raw_finish_reason = _read_field(choice, "finish_reason")
         finish_reason = _normalize_finish_reason(raw_finish_reason)
         diagnostics = ProviderDiagnostics(raw_finish_reason=raw_finish_reason)
+        diagnostics.reasoning = _read_reasoning_delta(message) or None
         tool_calls = self._parse_tool_calls(_read_field(message, "tool_calls", []) or [], diagnostics=diagnostics)
         if finish_reason == "length" and tool_calls:
             # length 表示模型输出被截断。此时即使 SDK 对象里出现了 tool_calls，也可能只是
@@ -158,6 +174,7 @@ class OpenAICompatibleProvider(ChatProvider):
         params["stream"] = True
         diagnostics = ProviderDiagnostics()
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_accumulators: dict[int, _StreamToolCallAccumulator] = {}
         raw_finish_reason: Any = None
         response_model = self._model
@@ -205,6 +222,11 @@ class OpenAICompatibleProvider(ChatProvider):
                     content_parts.append(text)
                     yield ChatStreamEvent(kind="text_delta", text=text)
 
+                reasoning = _read_reasoning_delta(delta)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield ChatStreamEvent(kind="reasoning_delta", text=reasoning)
+
                 # tool_calls 在 streaming 中不是一次性完整返回，而是按 index 分片到达。
                 # 这里只累计和展示 delta，不解析执行；真正执行要等 finish_reason=tool_calls。
                 for event in _accumulate_stream_tool_call_deltas(
@@ -219,6 +241,8 @@ class OpenAICompatibleProvider(ChatProvider):
 
         finish_reason = _normalize_finish_reason(raw_finish_reason)
         diagnostics.raw_finish_reason = raw_finish_reason
+        if reasoning_parts:
+            diagnostics.reasoning = "".join(reasoning_parts)
 
         tool_calls: list[ToolCall] = []
         if tool_accumulators and finish_reason != "tool_calls":

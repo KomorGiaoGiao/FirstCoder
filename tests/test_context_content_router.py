@@ -178,6 +178,25 @@ def test_search_results_compressor_parses_windows_paths() -> None:
     assert r"C:\repo\firstcoder\app.py:1:" in result.content
 
 
+def test_search_results_compressor_keeps_sentinel_like_matches() -> None:
+    content = "\n".join(
+        [
+            *[f"firstcoder/context/manager.py:{line}: normal match {line}" for line in range(1, 180)],
+            "firstcoder/context/manager.py:180: SEARCH_SENTINEL_9 important routing evidence",
+            *[f"firstcoder/context/manager.py:{line}: trailing match {line}" for line in range(181, 360)],
+        ]
+    )
+    router = RouteCompactRouter(
+        compressors={RouteContentType.SEARCH_RESULTS: SearchResultsRouteCompressor(max_matches_per_file=5)},
+        min_original_tokens=1,
+    )
+
+    result = router.compact_part(_part(content, tool_name="rg"))
+
+    assert result is not None
+    assert "SEARCH_SENTINEL_9 important routing evidence" in result.content
+
+
 def test_git_diff_compressor_keeps_headers_changes_and_limited_context() -> None:
     content = "\n".join(
         [
@@ -270,6 +289,36 @@ def test_build_output_compressor_keeps_errors_tracebacks_and_summary() -> None:
     assert "tests/test_app.py::test_run FAILED" in result.content
     assert 'File "tests/test_app.py", line 12' in result.content
     assert "1 failed, 4 passed" in result.content
+
+
+def test_build_output_compressor_detects_late_errors_in_large_logs() -> None:
+    content = "\n".join(
+        [
+            "pytest tests/test_context.py -q",
+            *[f"normal log line {line}" for line in range(1, 520)],
+            "tests/test_context.py::test_resume FAILED",
+            "Traceback (most recent call last):",
+            '  File "tests/test_context.py", line 33, in test_resume',
+            "    assert resume()",
+            "AssertionError: RESUME_SENTINEL_42",
+            *[f"more build noise {line}" for line in range(520, 1040)],
+            "FAILED tests/test_context.py::test_resume - AssertionError: RESUME_SENTINEL_42",
+            "1 failed, 120 passed in 9.99s",
+        ]
+    )
+    router = RouteCompactRouter(
+        compressors={RouteContentType.BUILD_OUTPUT: BuildOutputRouteCompressor(context_lines=1)},
+        min_original_tokens=1,
+    )
+
+    result = router.compact_part(_part(content, tool_name="pytest"))
+
+    assert result is not None
+    assert result.metadata["content_type"] == "build_output"
+    assert result.metadata["compacted_by"] == "l3_build_output"
+    assert result.metadata["build_omitted_lines"] > 900
+    assert "AssertionError: RESUME_SENTINEL_42" in result.content
+    assert "1 failed, 120 passed" in result.content
 
 
 def test_json_array_compressor_keeps_anchors_and_important_items() -> None:
@@ -391,3 +440,30 @@ def test_html_compressor_extracts_visible_content_and_links() -> None:
     assert "Context Compression" in result.content
     assert "Read docs -> /docs/context" in result.content
     assert "console.log" not in result.content
+
+
+def test_html_compressor_keeps_sentinel_like_visible_text_from_late_blocks() -> None:
+    content = "<html><body>" + "".join(f"<p>paragraph {line}</p>" for line in range(1, 120))
+    content += "<section>HTML_SENTINEL_88 important final state</section></body></html>"
+    router = RouteCompactRouter(
+        compressors={RouteContentType.HTML: HtmlRouteCompressor(max_text_blocks=8)},
+        min_original_tokens=1,
+    )
+
+    result = router.compact_part(_part(content, tool_name="shell"))
+
+    assert result is not None
+    assert "HTML_SENTINEL_88 important final state" in result.content
+
+
+def test_plain_text_compressor_keeps_tail_when_preview_omits_it() -> None:
+    content = ("普通说明段落，围绕压缩策略和 resume session 反复展开。" * 900) + " PLAIN_SENTINEL_END"
+    router = RouteCompactRouter(
+        compressors={RouteContentType.PLAIN_TEXT: PlainTextRouteCompressor()},
+        min_original_tokens=1,
+    )
+
+    result = router.compact_part(_part(content))
+
+    assert result is not None
+    assert "PLAIN_SENTINEL_END" in result.content

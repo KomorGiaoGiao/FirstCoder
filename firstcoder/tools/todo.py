@@ -12,8 +12,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from firstcoder.providers.types import ToolDefinition
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
-from firstcoder.utils.introspection import tool_from_function
+from firstcoder.utils.schema import object_schema, property_schema
 
 
 @dataclass
@@ -39,6 +40,21 @@ class TodoStore:
         item = TodoItem(id=f"todo_{self._counter}", content=content)
         self._todos[item.id] = item
         return item
+
+    def replace_all(self, todos: list[dict[str, Any]]) -> list[TodoItem]:
+        """用一组任务替换当前清单。"""
+
+        self._todos.clear()
+        self._counter = 0
+        items: list[TodoItem] = []
+        for todo in todos:
+            content = str(todo.get("content") or "").strip()
+            status = str(todo.get("status") or "pending")
+            self._counter += 1
+            item = TodoItem(id=f"todo_{self._counter}", content=content, status=status)
+            self._todos[item.id] = item
+            items.append(item)
+        return items
 
     def update(self, todo_id: str, content: str | None = None, status: str | None = None) -> TodoItem | None:
         """更新任务内容或状态。"""
@@ -71,6 +87,9 @@ class TodoStore:
         self._todos.clear()
 
 
+VALID_STATUSES = {"pending", "in_progress", "done"}
+
+
 def _status_emoji(status: str) -> str:
     """状态对应的展示符号。"""
 
@@ -91,18 +110,34 @@ def create_todo_tool() -> Tool:
         content: str | None = None,
         todo_id: str | None = None,
         status: str | None = None,
+        todos: list[dict[str, Any]] | None = None,
     ) -> ToolResult:
-        """管理会话内任务清单；支持 add/update/delete/list/clear。"""
+        """管理会话内任务清单；支持 set/add/update/delete/list/clear。"""
+
+        if action == "set":
+            if not todos:
+                return make_error_result("todo", "set 操作需要提供 todos")
+            invalid = _first_invalid_todo(todos)
+            if invalid:
+                return make_error_result("todo", invalid)
+            items = store.replace_all(todos)
+            return _format_result("已设置任务清单", items)
 
         if action == "add":
             if not content:
                 return make_error_result("todo", "content 不能为空")
+            if status is not None and status not in VALID_STATUSES:
+                return make_error_result("todo", f"未知状态：{status}")
             item = store.add(content)
+            if status is not None:
+                item.status = status
             return _format_result("已添加任务", [item])
 
         if action == "update":
             if not todo_id:
                 return make_error_result("todo", "update 操作需要提供 todo_id")
+            if status is not None and status not in VALID_STATUSES:
+                return make_error_result("todo", f"未知状态：{status}")
             item = store.update(todo_id, content=content, status=status)
             if item is None:
                 return make_error_result("todo", f"任务不存在：{todo_id}")
@@ -125,7 +160,69 @@ def create_todo_tool() -> Tool:
 
         return make_error_result("todo", f"未知操作：{action}")
 
-    return tool_from_function(todo)
+    return Tool(
+        definition=ToolDefinition(
+            name="todo",
+            description=(
+                "Track progress for multi-step work. Prefer action='set' once at the start "
+                "to create the whole plan, then action='update' as items move through "
+                "pending, in_progress, and done. Keep exactly one item in_progress."
+            ),
+            parameters=object_schema(
+                {
+                    "action": property_schema(
+                        "string",
+                        enum=["set", "add", "update", "delete", "list", "clear"],
+                        description=(
+                            "set replaces the whole plan; add creates one item; update changes "
+                            "content or status; delete removes one item; list shows the plan; "
+                            "clear removes all items."
+                        ),
+                    ),
+                    "content": property_schema("string", description="Todo text for add or update."),
+                    "todo_id": property_schema(
+                        "string",
+                        description="Existing id such as todo_1. Required for update and delete.",
+                    ),
+                    "status": property_schema(
+                        "string",
+                        enum=["pending", "in_progress", "done"],
+                        description="Use exactly one in_progress item while work is underway.",
+                    ),
+                    "todos": {
+                        "type": "array",
+                        "description": (
+                            "Full plan for action='set'. Use this instead of multiple add calls "
+                            "when creating an initial checklist."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "done"],
+                                },
+                            },
+                            "required": ["content"],
+                        },
+                    },
+                },
+                required=["action"],
+            ),
+        ),
+        executor=todo,
+    )
+
+
+def _first_invalid_todo(todos: list[dict[str, Any]]) -> str | None:
+    for index, todo in enumerate(todos, start=1):
+        if not str(todo.get("content") or "").strip():
+            return f"todos[{index}] 缺少 content"
+        status = str(todo.get("status") or "pending")
+        if status not in VALID_STATUSES:
+            return f"todos[{index}] 未知状态：{status}"
+    return None
 
 
 def _format_result(message: str, items: list[TodoItem]) -> ToolResult:

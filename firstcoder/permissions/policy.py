@@ -61,6 +61,8 @@ class DefaultPermissionPolicy:
         self.project_root = Path(project_root).resolve()
 
     def decide(self, request: PermissionRequest, *, mode: PermissionMode) -> PermissionDecision:
+        if mode == PermissionMode.BYPASS:
+            return self._allow("bypass 模式允许权限请求。")
         if request.action in {
             PermissionAction.READ_PATH,
             PermissionAction.WRITE_PATH,

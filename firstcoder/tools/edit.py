@@ -8,13 +8,14 @@ from firstcoder.permissions.types import PermissionAction
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
 
-def create_edit_tool(root: str | Path) -> Tool:
+def create_edit_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建替换文本片段的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def edit(path: str, old: str, new: str, replace_all: bool = False) -> ToolResult:
         """替换项目内 UTF-8 文本片段；默认只替换唯一匹配。"""

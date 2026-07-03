@@ -70,6 +70,7 @@ class ContextCommandHandler:
         if self.context_manager is None:
             return "Manual compact unavailable: context manager is not configured"
 
+        report = self._inspect()
         result = self.context_manager.compact_if_needed(
             ContextCompactRequest(
                 view=self.session.rebuild_view(),
@@ -77,8 +78,14 @@ class ContextCommandHandler:
                 trigger=ContextWindowTrigger.MANUAL,
                 mode="manual",
                 current_turn=self.session.current_turn,
+                target_tokens=_manual_target_tokens(report.estimated_tokens),
             )
         )
+        if _is_noop_compact(result):
+            return (
+                f"Manual compact skipped: {result.programmatic_event.reason} "
+                f"({result.before_tokens} -> {result.after_tokens} tokens)"
+            )
         return (
             f"Manual compact {result.status}: {result.reason} "
             f"({result.before_tokens} -> {result.after_tokens} tokens)"
@@ -129,3 +136,18 @@ def _value(value: object | None) -> str:
     if value in (None, ""):
         return "-"
     return str(value)
+
+
+def _manual_target_tokens(estimated_tokens: int) -> int | None:
+    if estimated_tokens <= 2_000:
+        return None
+    return max(2_000, min(12_000, int(estimated_tokens * 0.6)))
+
+
+def _is_noop_compact(result: ContextCompactResult) -> bool:
+    return (
+        result.programmatic_event is not None
+        and result.programmatic_event.noop
+        and result.l4_event is None
+        and result.before_tokens == result.after_tokens
+    )

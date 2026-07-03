@@ -9,13 +9,14 @@ from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_er
 from firstcoder.utils import git as git_utils
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import truncate
 
 
-def create_git_diff_tool(root: str | Path) -> Tool:
+def create_git_diff_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建查看 git diff 的工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
 
     def git_diff(path: str = ".", staged: bool = False, max_chars: int = 20000) -> ToolResult:
         """查看项目未提交 diff；staged=true 时查看暂存区。"""

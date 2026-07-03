@@ -4,19 +4,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from firstcoder.utils.sandbox_access import SandboxAccess
+
 
 class PathSandbox:
     """限制工具只能访问指定根目录内的路径。"""
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, access: SandboxAccess | None = None) -> None:
         self.root = Path(root).resolve()
+        self.access = access or SandboxAccess()
 
     def resolve(self, path: str | Path | None = None) -> Path:
         """把输入路径解析成沙箱内的绝对路径。"""
 
-        target = self.root if path in (None, "") else (self.root / Path(path)).resolve()
+        if path in (None, ""):
+            target = self.root
+        else:
+            raw = Path(path)
+            target = (raw if raw.is_absolute() else self.root / raw).resolve()
 
-        if target != self.root and self.root not in target.parents:
+        if not self.access.unrestricted and target != self.root and self.root not in target.parents:
             raise ValueError(f"路径超出项目目录：{path}")
         return target
 
@@ -46,4 +53,10 @@ class PathSandbox:
     def relative(self, path: str | Path) -> str:
         """把沙箱内路径转换成相对项目根目录的 POSIX 风格路径。"""
 
-        return Path(path).resolve().relative_to(self.root).as_posix()
+        resolved = Path(path).resolve()
+        try:
+            return resolved.relative_to(self.root).as_posix()
+        except ValueError:
+            if self.access.unrestricted:
+                return str(resolved)
+            raise

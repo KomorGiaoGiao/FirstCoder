@@ -21,6 +21,7 @@ TokenParam = Literal["max_tokens", "max_completion_tokens"]
 ToolChoiceMode = Literal["auto", "none", "required"]
 StreamEventKind = Literal[
     "message_started",
+    "reasoning_delta",
     "text_delta",
     "tool_call_started",
     "tool_call_delta",

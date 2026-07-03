@@ -1,0 +1,12 @@
+exclude .env
+recursive-exclude tests *
+recursive-exclude benchmark *
+recursive-exclude data *
+recursive-exclude logs *
+recursive-exclude runs *
+recursive-exclude .codex_tmp *
+recursive-exclude .firstcoder *
+recursive-exclude .pytest_cache *
+recursive-exclude .tools *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]

@@ -30,6 +30,7 @@ class PermissionMode(StrEnum):
     CONSERVATIVE = "conservative"
     STANDARD = "standard"
     AGGRESSIVE = "aggressive"
+    BYPASS = "bypass"
 
 
 class PermissionDecisionKind(StrEnum):

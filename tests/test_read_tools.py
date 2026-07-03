@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from firstcoder.utils import git as git_utils
+from firstcoder.utils.subprocess import CommandResult
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.tools import grep as grep_module
 from firstcoder.tools import create_builtin_registry
@@ -118,6 +119,35 @@ def test_grep_finds_matching_lines(tmp_path):
     assert result.ok is True
     assert result.data["results"][0]["path"] == "firstcoder.py"
     assert result.data["results"][0]["line"] == 2
+
+
+def test_grep_with_rg_filters_sensitive_environment(tmp_path, monkeypatch):
+    source = tmp_path / "firstcoder.py"
+    source.write_text("FirstCoder agent\n", encoding="utf-8")
+    captured = {}
+
+    def fake_run_command(command, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return CommandResult(
+            exit_code=0,
+            stdout=f"{source}:1:FirstCoder agent\n",
+            stderr="",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            ok=True,
+        )
+
+    monkeypatch.setattr(grep_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(grep_module, "run_command", fake_run_command)
+    monkeypatch.setenv("SEARCH_API_KEY", "secret")
+    monkeypatch.setenv("FIRSTCODER_VISIBLE_TEST_FLAG", "visible")
+    registry = create_builtin_registry(tmp_path)
+
+    result = registry.execute("grep", {"pattern": "firstcoder", "include": "*.py"})
+
+    assert result.ok is True
+    assert "SEARCH_API_KEY" not in captured["env"]
+    assert captured["env"]["FIRSTCODER_VISIBLE_TEST_FLAG"] == "visible"
 
 
 def test_grep_falls_back_to_python_when_rg_is_missing(tmp_path, monkeypatch):

@@ -32,6 +32,7 @@ from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.session_registry import ToolRegistryLike, create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult
 from firstcoder.context.models import AgentMessage, MessagePart
+from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
 
 
 DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
@@ -79,6 +80,7 @@ class AgentSession:
     provider_capability_overrides: dict[str, object] = field(default_factory=dict)
     permission_manager: PermissionManager | None = None
     permission_policy: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_PERMISSION_POLICY))
+    sandbox_access: SandboxAccess = field(default_factory=SandboxAccess)
     known_message_ids: set[str] = field(default_factory=set)
     turn_counter: int = 0
     mode: str = "default"
@@ -93,6 +95,7 @@ class AgentSession:
         agents_md: str = "",
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
+        sandbox_access: SandboxAccess | None = None,
     ) -> "AgentSession":
         """创建全新 session，并初始化 session-scoped 工具。
 
@@ -118,9 +121,11 @@ class AgentSession:
             agents_md=agents_md,
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
+            sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=0,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
         )
+        session._sync_sandbox_access_with_mode()
         session.append_session_created()
         return session
 
@@ -133,6 +138,7 @@ class AgentSession:
         project_root: str | Path,
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
+        sandbox_access: SandboxAccess | None = None,
     ) -> "AgentSession":
         """从项目根目录创建 session。
 
@@ -151,6 +157,7 @@ class AgentSession:
             agents_md=agents_md,
             tools=tools,
             permission_manager=permission_manager,
+            sandbox_access=sandbox_access,
         )
 
     @classmethod
@@ -162,6 +169,7 @@ class AgentSession:
         agents_md: str = "",
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
+        sandbox_access: SandboxAccess | None = None,
     ) -> "AgentSession":
         """从 JSONL 会话日志恢复运行期 session。
 
@@ -181,7 +189,7 @@ class AgentSession:
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
         )
-        return cls(
+        session = cls(
             session_id=session_id,
             store=store,
             runtime_state=runtime_state,
@@ -190,9 +198,12 @@ class AgentSession:
             agents_md=agents_md,
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
+            sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=turn_counter,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
         )
+        session._sync_sandbox_access_with_mode()
+        return session
 
     def restore_pending_permission_execution(self) -> PendingPermissionExecution | None:
         """从 append-only 历史中重建未完成的权限确认。
@@ -323,7 +334,27 @@ class AgentSession:
         self.mode = resolved.value
         if self.permission_manager is not None:
             self.permission_manager.mode = resolved
+        self._sync_sandbox_access_with_mode()
         return resolved
+
+    def _sync_sandbox_access_with_mode(self) -> None:
+        if self.mode == PermissionMode.BYPASS.value:
+            self.sandbox_access.mode = SandboxAccessMode.UNRESTRICTED
+            self.permission_policy["path_access"] = "unrestricted"
+            self.permission_policy["read"] = "allow"
+            self.permission_policy["write"] = "allow"
+            self.permission_policy["delete"] = "allow"
+            self.permission_policy["shell"] = "allow"
+            self.permission_policy["network"] = "allow"
+            return
+
+        self.sandbox_access.mode = SandboxAccessMode.PROJECT
+        self.permission_policy["path_access"] = DEFAULT_PERMISSION_POLICY["path_access"]
+        self.permission_policy["read"] = DEFAULT_PERMISSION_POLICY["read"]
+        self.permission_policy["write"] = DEFAULT_PERMISSION_POLICY["write"]
+        self.permission_policy["delete"] = DEFAULT_PERMISSION_POLICY["delete"]
+        self.permission_policy["shell"] = DEFAULT_PERMISSION_POLICY["shell"]
+        self.permission_policy["network"] = DEFAULT_PERMISSION_POLICY["network"]
 
     def append_tool_result(self, *, tool_call: ToolCall, result: ToolResult) -> str:
         """把工具执行结果写成 role=tool 事实。

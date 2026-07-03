@@ -8,6 +8,8 @@ from pathlib import Path
 
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
+from firstcoder.utils.execution_sandbox import ExecutionSandbox
+from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import run_command
 
@@ -15,10 +17,11 @@ from firstcoder.utils.subprocess import run_command
 DEFAULT_MAX_SEARCH_RESULTS = 50
 
 
-def create_grep_tool(root: str | Path) -> Tool:
+def create_grep_tool(root: str | Path, *, access: SandboxAccess | None = None) -> Tool:
     """创建文本搜索工具。"""
 
-    sandbox = PathSandbox(root)
+    sandbox = PathSandbox(root, access=access)
+    execution_sandbox = ExecutionSandbox(root, access=access)
 
     def grep(
         pattern: str,
@@ -42,6 +45,7 @@ def create_grep_tool(root: str | Path) -> Tool:
                 tool_name="grep",
                 rg_path=rg_path,
                 sandbox=sandbox,
+                execution_sandbox=execution_sandbox,
                 pattern=pattern,
                 target=target,
                 include=include,
@@ -67,6 +71,7 @@ def _grep_with_rg(
     tool_name: str,
     rg_path: str,
     sandbox: PathSandbox,
+    execution_sandbox: ExecutionSandbox,
     pattern: str,
     target: Path,
     include: str,
@@ -93,6 +98,7 @@ def _grep_with_rg(
         cwd=sandbox.root,
         timeout_seconds=30,
         max_output_chars=1_000_000,
+        env=execution_sandbox.build_env(),
     )
 
     if result.error:

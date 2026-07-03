@@ -32,7 +32,7 @@ class PermissionCommandHandler:
                 handled=True,
                 output=(
                     f"Permission mode: {self.session.mode}\n"
-                    "Available: conservative, standard, aggressive"
+                    "Available: conservative, standard, aggressive, bypass"
                 ),
             )
 
@@ -43,7 +43,7 @@ class PermissionCommandHandler:
             except ValueError:
                 return CommandResult(
                     handled=True,
-                    output="Unknown permission mode. Available: conservative, standard, aggressive",
+                    output="Unknown permission mode. Available: conservative, standard, aggressive, bypass",
                 )
             return CommandResult(handled=True, output=f"Permission mode set to: {mode.value}")
 
