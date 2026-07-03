@@ -149,6 +149,27 @@ def test_default_loop_factory_keeps_session_outside_repo(tmp_path: Path):
     assert loop.limits == AgentLoopLimits.swe_lite()
 
 
+def test_default_loop_factory_uses_custom_limits(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    limits = AgentLoopLimits.swe_lite().with_max_tool_rounds(123)
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        limits=limits,
+        provider_factory=lambda provider_name: FakeProvider(),
+    )
+    task = CodingTask(
+        instance_id="sympy__sympy-20590",
+        repo_path=repo,
+        problem_statement="Fix the issue.",
+    )
+
+    loop = adapter._create_loop(task, tmp_path / "sessions" / task.instance_id)
+
+    assert loop.limits == limits
+
+
 def test_default_loop_factory_auto_allows_repo_writes_for_benchmarks(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

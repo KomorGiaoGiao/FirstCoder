@@ -1,0 +1,34 @@
+#!/bin/bash
+
+set -e
+
+{% if version %}
+PACKAGE_SPEC="{{ package }}=={{ version }}"
+{% else %}
+PACKAGE_SPEC="{{ package }}"
+{% endif %}
+
+missing_packages=()
+
+if ! command -v python3 >/dev/null 2>&1; then
+  missing_packages+=("python3")
+fi
+
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  missing_packages+=("python3-pip")
+fi
+
+if [[ "$PACKAGE_SPEC" == git+* ]] && ! command -v git >/dev/null 2>&1; then
+  missing_packages+=("git")
+fi
+
+if [ "${missing_packages[*]}" != "" ]; then
+  apt-get update
+  apt-get install -y "${missing_packages[@]}"
+fi
+
+python3 -m pip install --upgrade pip
+
+python3 -m pip install "$PACKAGE_SPEC"
+
+echo "FIRSTCODER_INSTALL_SUCCESS"

@@ -96,6 +96,7 @@ def test_main_runs_single_message_with_injected_runner(tmp_path: Path, capsys):
             provider_name=None,
             message="solve it",
             max_tool_rounds=None,
+            benchmark=False,
         )
     ]
 
@@ -204,6 +205,7 @@ def test_main_tui_runs_textual_app(monkeypatch, tmp_path: Path):
             provider_name=None,
             message="",
             max_tool_rounds=3,
+            benchmark=False,
         )
     ]
 
@@ -342,3 +344,41 @@ def test_main_parses_max_tool_rounds_for_single_message(tmp_path: Path):
 
     assert exit_code == 0
     assert seen[0].max_tool_rounds == 80
+
+
+def test_main_parses_benchmark_mode_for_single_message(tmp_path: Path):
+    seen: list[CliConfig] = []
+
+    def fake_runner(config: CliConfig) -> str:
+        seen.append(config)
+        return "done"
+
+    exit_code = main(
+        [
+            "--project",
+            str(tmp_path),
+            "--data-root",
+            str(tmp_path / ".fc-bench"),
+            "--session-id",
+            "terminal_task",
+            "--message",
+            "solve it",
+            "--benchmark",
+            "--max-tool-rounds",
+            "120",
+        ],
+        runner=fake_runner,
+    )
+
+    assert exit_code == 0
+    assert seen == [
+        CliConfig(
+            project_root=tmp_path,
+            data_root=tmp_path / ".fc-bench",
+            session_id="terminal_task",
+            provider_name=None,
+            message="solve it",
+            max_tool_rounds=120,
+            benchmark=True,
+        )
+    ]

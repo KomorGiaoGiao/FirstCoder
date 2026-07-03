@@ -12,6 +12,8 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.config import load_config
 from firstcoder.config.settings import default_global_config_path, project_config_path, render_default_config
+from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
+from firstcoder.eval.tasks import CodingTask
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +24,7 @@ class CliConfig:
     provider_name: str | None
     message: str
     max_tool_rounds: int | None = None
+    benchmark: bool = False
 
 
 CliRunner = Callable[[CliConfig], str]
@@ -65,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tui", action="store_true", help="Run the Textual TUI.")
     parser.add_argument("--auto-approve", action="store_true", help="Automatically answer permission confirmations with allow_once.")
     parser.add_argument("--max-tool-rounds", type=_positive_int, default=None, help="Override per-turn tool round limit.")
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Run the message with the non-interactive benchmark adapter using bypass permissions.",
+    )
     return parser
 
 
@@ -86,6 +94,7 @@ def main(
             provider_name=args.provider,
             message="",
             max_tool_rounds=args.max_tool_rounds,
+            benchmark=args.benchmark,
         )
         try:
             app = create_cli_app(config)
@@ -103,6 +112,7 @@ def main(
             provider_name=args.provider,
             message="",
             max_tool_rounds=args.max_tool_rounds,
+            benchmark=args.benchmark,
         )
         try:
             app = create_cli_app(config)
@@ -125,6 +135,7 @@ def main(
         provider_name=args.provider,
         message=message,
         max_tool_rounds=args.max_tool_rounds,
+        benchmark=args.benchmark,
     )
     run = runner or run_single_turn
     try:
@@ -138,9 +149,31 @@ def main(
 
 
 def run_single_turn(config: CliConfig) -> str:
+    if config.benchmark:
+        return run_benchmark_turn(config)
     app = create_cli_app(config)
     response = app.chat_runner.run_user_turn(config.message)
     return response.content
+
+
+def run_benchmark_turn(config: CliConfig) -> str:
+    """Run a single benchmark task with bypass permissions and repo-local tools."""
+
+    adapter = FirstCoderCodingAgentAdapter(
+        model_name_or_path="firstcoder-benchmark",
+        provider_name=config.provider_name,
+        session_root=config.data_root or (config.project_root.resolve().parent / ".firstcoder-benchmark"),
+        limits=_benchmark_limits(config.max_tool_rounds),
+    )
+    result = adapter.run_task(
+        CodingTask(
+            instance_id=config.session_id or config.project_root.resolve().name,
+            repo_path=config.project_root,
+            problem_statement=config.message,
+            metadata={"benchmark": "firstcoder-cli"},
+        )
+    )
+    return result.raw_response
 
 
 def create_cli_app(config: CliConfig):
@@ -200,6 +233,13 @@ def _effective_model(config) -> str:
 def _effective_base_url(config) -> str:
     base_url = config.get_provider_value("base_url", env="FIRSTCODER_BASE_URL")
     return base_url or "<provider default>"
+
+
+def _benchmark_limits(max_tool_rounds: int | None) -> AgentLoopLimits:
+    base = AgentLoopLimits.swe_lite()
+    if max_tool_rounds is None:
+        return base
+    return base.with_max_tool_rounds(max_tool_rounds)
 
 
 def run_repl(

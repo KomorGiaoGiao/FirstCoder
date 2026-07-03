@@ -41,12 +41,14 @@ class FirstCoderCodingAgentAdapter:
         model_name_or_path: str = "firstcoder",
         provider_name: str | None = None,
         session_root: str | Path = ".firstcoder-eval",
+        limits: AgentLoopLimits | None = None,
         loop_factory: LoopFactory | None = None,
         provider_factory: ProviderFactory = create_provider,
     ) -> None:
         self.model_name_or_path = model_name_or_path
         self.provider_name = provider_name
         self.session_root = Path(session_root)
+        self.limits = limits
         self.loop_factory = loop_factory or self._create_loop
         self.provider_factory = provider_factory
 
@@ -101,7 +103,7 @@ class FirstCoderCodingAgentAdapter:
             session=session,
             provider=self.provider_factory(self.provider_name),
             tools=tools,
-            limits=AgentLoopLimits.swe_lite(),
+            limits=self.limits or AgentLoopLimits.swe_lite(),
         )
 
 
