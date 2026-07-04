@@ -94,3 +94,17 @@ def test_task_boundary_tool_supports_single_observation_policy_without_schema_ch
     assert result.data["confirmed_change"] is True
     assert result.data["should_trigger_compaction"] is True
     assert result.data["stable_count"] == 0
+
+
+def test_session_registry_can_lower_required_stable_count() -> None:
+    registry = create_session_tool_registry(
+        session_id="sess_test",
+        task_boundary_required_stable_count=1,
+    )
+
+    result = registry.execute("task_boundary", {"decision": "new", "basis_message_id": "msg_new"})
+
+    assert result.ok is True
+    assert result.data["confirmed_change"] is True
+    assert result.data["should_trigger_compaction"] is True
+    assert result.data["required_stable_count"] == 1

@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+import asyncio
+import time
 
 import pytest
 
@@ -77,6 +79,15 @@ class FailingStreamingProvider(ChatProvider):
     async def astream(self, request: ChatRequest):
         yield ChatStreamEvent(kind="message_started")
         raise RuntimeError("stream failed")
+
+
+class SlowContextBuilder:
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+
+    def build_provider_messages(self, view, *, system_prefix=None, checkpoint=None):
+        time.sleep(self.delay_seconds)
+        return list(system_prefix or [])
 
 
 def test_current_session_state_proxies_replaced_session(tmp_path) -> None:
@@ -359,6 +370,36 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     ]
     assert runner.last_display_lines == ["streamed"]
     assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_agent_chat_runner_streaming_does_not_block_event_loop_during_setup(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_threaded", agents_md="")
+    state = CurrentSessionState(session)
+    provider = FakeStreamingProvider(
+        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="streamed")]
+    )
+    runner = AgentChatRunner(
+        current_session=state,
+        provider=provider,
+        context_builder=SlowContextBuilder(delay_seconds=0.08),
+        use_streaming=True,
+    )
+    ticks = 0
+    deadline = time.monotonic() + 0.04
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while time.monotonic() < deadline:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    response, _ = await asyncio.gather(runner.arun_user_turn("你好"), ticker())
+
+    assert response.content == "streamed"
+    assert ticks > 1
 
 
 @pytest.mark.anyio

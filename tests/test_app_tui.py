@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from textual.widgets import Markdown
 
 from firstcoder.agent.loop import ToolExecutionEvent
 from firstcoder.app.commands import CommandResult
@@ -9,13 +10,15 @@ from firstcoder.agent.user_input import UserInputOption, UserInputRequest
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
+from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _observe_markdown_update
+from firstcoder.app.tui import _turn_metrics_text
 from firstcoder.app.tui import _entry_classes, _tool_event_entry_kind, _tool_event_label, _tool_event_status
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript
 from firstcoder.app.tui_state import TuiTranscriptEntry
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
-from firstcoder.providers.types import ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatResponse, ChatStreamEvent, TokenUsage, ToolCall
 from firstcoder.tools.types import ToolResult
 
 
@@ -23,6 +26,9 @@ class FakeOutput:
     def __init__(self) -> None:
         self.lines: list[str] = []
         self.mounted: list[object] = []
+        self.scroll_end_calls = 0
+        self.scroll_y = 0
+        self.max_scroll_y = 0
 
     def write(self, line: str) -> None:
         if self.lines:
@@ -37,7 +43,7 @@ class FakeOutput:
         self.mounted.append(widget)
         if type(widget).__name__ == "Static":
             self.lines.append(str(getattr(widget, "content", getattr(widget, "renderable", ""))))
-        if type(widget).__name__ == "Markdown":
+        if isinstance(widget, Markdown):
             widget.updates = []  # type: ignore[attr-defined]
 
             def update(markdown: str) -> None:
@@ -46,6 +52,7 @@ class FakeOutput:
             widget.update = update  # type: ignore[method-assign]
 
     def scroll_end(self, animate: bool = False) -> None:
+        self.scroll_end_calls += 1
         return None
 
 
@@ -71,8 +78,11 @@ class FakeMarkdownUpdateResult:
 class FakeActivity:
     def __init__(self) -> None:
         self.updates: list[str] = []
+        self.renderables: list[object] = []
+        self.size = type("Size", (), {"width": 60})()
 
     def update(self, text: object) -> None:
+        self.renderables.append(text)
         plain = getattr(text, "plain", None)
         self.updates.append(str(plain if plain is not None else text))
 
@@ -83,6 +93,22 @@ class FakeTopbar(FakeActivity):
 
 class FakeTodoPanel(FakeActivity):
     pass
+
+
+@pytest.mark.parametrize(
+    ("elapsed_seconds", "expected"),
+    [
+        (0, "0.0s · 0 tools"),
+        (59.9, "59.9s · 0 tools"),
+        (60, "1m 0s · 0 tools"),
+        (61, "1m 1s · 0 tools"),
+        (3599, "59m 59s · 0 tools"),
+        (3600, "1h 0m 0s · 0 tools"),
+        (3661, "1h 1m 1s · 0 tools"),
+    ],
+)
+def test_turn_metrics_time_units_appear_only_after_thresholds(elapsed_seconds, expected) -> None:
+    assert _turn_metrics_text(elapsed_seconds, 0) == expected
 
 
 class FakeSession:
@@ -161,6 +187,17 @@ def test_observe_markdown_update_does_not_consume_unexpected_update_errors() -> 
     _observe_markdown_update(result)
     with pytest.raises(RuntimeError, match="markdown failed"):
         result.finish()
+
+
+def test_firstcoder_markdown_does_not_enter_textual_selection_path() -> None:
+    markdown = FirstCoderMarkdown()
+
+    assert markdown.allow_select is False
+
+
+def test_firstcoder_markdown_blocks_do_not_enter_textual_selection_path() -> None:
+    assert FirstCoderMarkdown.BLOCKS
+    assert all(block.ALLOW_SELECT is False for block in FirstCoderMarkdown.BLOCKS.values())
 
 
 def test_firstcoder_app_topbar_uses_spacious_two_sided_layout_when_width_is_known() -> None:
@@ -427,6 +464,7 @@ def test_firstcoder_app_can_be_created_with_composite_handler_and_chat_runner() 
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_runs_plain_chat_when_only_chat_runner_is_configured() -> None:
     runner = FakeChatRunner()
     app = FirstCoderApp(chat_runner=runner)
@@ -440,6 +478,7 @@ async def test_firstcoder_app_runs_plain_chat_when_only_chat_runner_is_configure
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_does_not_send_unhandled_slash_command_to_chat_runner() -> None:
     runner = FakeChatRunner()
     app = FirstCoderApp(command_handler=UnhandledCommandHandler(), chat_runner=runner)
@@ -453,6 +492,7 @@ async def test_firstcoder_app_does_not_send_unhandled_slash_command_to_chat_runn
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_displays_session_id_and_runner_display_lines() -> None:
     runner = FakeDisplayChatRunner()
     app = FirstCoderApp(chat_runner=runner, current_session=FakeSession())
@@ -467,6 +507,7 @@ async def test_firstcoder_app_displays_session_id_and_runner_display_lines() -> 
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_awaits_async_chat_runner_when_available() -> None:
     runner = FakeAsyncChatRunner()
     app = FirstCoderApp(chat_runner=runner)
@@ -497,6 +538,37 @@ async def test_firstcoder_app_streaming_tui_does_not_render_duplicate_final_mark
     assert runner.inputs == ["hello"]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_right_clicking_markdown_output_does_not_crash_selection_path() -> None:
+    runner = FakeChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+        await pilot.pause()
+        markdown = app.query_one("FirstCoderMarkdown")
+        assert markdown.allow_select is False
+        await pilot.click(markdown, button=3)
+        await pilot.pause()
+
+    assert runner.inputs == ["hello"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_right_clicking_markdown_code_block_does_not_crash_selection_path() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        app._write_markdown_message("```text\nIt was the best of times\n```")
+        assert app.ALLOW_SELECT is False
+        await pilot.click("FirstCoderMarkdown", button=3)
+        await pilot.pause()
+
+
 def test_firstcoder_app_installs_and_restores_stream_event_handler() -> None:
     runner = FakeStreamingAsyncChatRunner()
     original_handler = runner.stream_event_handler
@@ -523,8 +595,9 @@ def test_firstcoder_app_streams_text_delta_without_repeating_final_text(monkeypa
     app._write_chat_response(ChatResponse(provider="fake", model="fake", content="hello"))
     app._restore_stream_event_handler(previous_handler)
 
-    mounted_types = [type(widget).__name__ for widget in output.mounted]
-    assert mounted_types == ["Markdown"]
+    assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
+    assert output.mounted[0].allow_select is False
+    assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
     assert app._stream_text_buffer == "hello"
     assert runner.seen == [
         ChatStreamEvent(kind="text_delta", text="he"),
@@ -540,15 +613,17 @@ def test_firstcoder_app_streaming_skips_normalized_duplicate_assistant_line(monk
     monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
 
     previous_handler = app._install_stream_event_handler()
+    app._start_turn_metrics()
     runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="hello"))
     app._write_chat_response(ChatResponse(provider="fake", model="fake", content="hello"))
     app._restore_stream_event_handler(previous_handler)
 
-    assert [type(widget).__name__ for widget in output.mounted] == ["Markdown"]
-    assert len(getattr(output.mounted[0], "updates")) == 1
+    assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
+    assert output.mounted[0].allow_select is False
+    assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
 
 
-def test_firstcoder_app_batches_stream_markdown_updates(monkeypatch) -> None:
+def test_firstcoder_app_paces_stream_markdown_updates(monkeypatch) -> None:
     runner = FakeStreamingAsyncChatRunner()
     output = FakeOutput()
     app = FirstCoderApp(chat_runner=runner)
@@ -560,12 +635,43 @@ def test_firstcoder_app_batches_stream_markdown_updates(monkeypatch) -> None:
     app._append_stream_text("这里")
 
     markdown = output.mounted[0]
-    assert getattr(markdown, "updates") == ["FirstCoder:\n\n我"]
+    assert type(markdown).__name__ == "FirstCoderMarkdown"
+    assert markdown.allow_select is False
+    assert markdown.updates == ["FirstCoder:\n\n我"]
     assert app._stream_text_buffer == "我在这里"
 
     app._flush_stream_text()
 
-    assert getattr(markdown, "updates")[-1] == "FirstCoder:\n\n我在这里"
+    assert markdown.updates[-1] == "FirstCoder:\n\n我在这里"
+
+
+def test_firstcoder_app_does_not_scroll_stream_when_render_is_deferred(monkeypatch) -> None:
+    output = FakeOutput()
+    app = FirstCoderApp()
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_timer", lambda *args, **kwargs: object())
+
+    app._append_stream_text("我")
+    after_initial_render = output.scroll_end_calls
+    app._append_stream_text("在")
+    app._append_stream_text("这里")
+
+    assert after_initial_render == 1
+    assert output.scroll_end_calls == after_initial_render
+
+
+def test_firstcoder_app_does_not_auto_scroll_stream_when_user_is_reading_history(monkeypatch) -> None:
+    output = FakeOutput()
+    output.scroll_y = 1
+    output.max_scroll_y = 10
+    app = FirstCoderApp()
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+
+    app._append_stream_text("hello")
+    app._flush_stream_text()
+
+    assert output.scroll_end_calls == 0
 
 
 def test_firstcoder_app_records_streaming_assistant_text_in_transcript(monkeypatch) -> None:
@@ -601,10 +707,10 @@ def test_firstcoder_app_shows_reasoning_delta_in_activity_line(monkeypatch) -> N
     reasoning_entries = [entry for entry in app.transcript.entries if entry.kind == TuiEntryKind.REASONING]
     assert reasoning_entries == []
     assert output.mounted == []
-    assert activity.updates == [
-        "thinking [.  ] planning ",
-        "thinking [.  ] planning tools",
-    ]
+    assert activity.updates[0].startswith("thinking [.  ] planning ")
+    assert activity.updates[0].rstrip().endswith("0.0s · 0 tools")
+    assert activity.updates[1].startswith("thinking [.  ] planning tools")
+    assert activity.updates[1].rstrip().endswith("0.0s · 0 tools")
 
 
 def test_firstcoder_app_shows_working_indicator_without_reasoning_delta(monkeypatch) -> None:
@@ -625,10 +731,10 @@ def test_firstcoder_app_shows_working_indicator_without_reasoning_delta(monkeypa
     reasoning_entries = [entry for entry in app.transcript.entries if entry.kind == TuiEntryKind.REASONING]
     assert reasoning_entries == []
     assert output.mounted == []
-    assert activity.updates == [
-        "thinking [.  ] planning next step...",
-        "streaming · response",
-    ]
+    assert activity.updates[0].startswith("thinking [.  ] planning next step...")
+    assert activity.updates[0].rstrip().endswith("0.0s · 0 tools")
+    assert activity.updates[1].startswith("streaming [>   ] · response")
+    assert activity.updates[1].rstrip().endswith("0.0s · 0 tools")
 
 
 def test_firstcoder_app_animates_working_indicator(monkeypatch) -> None:
@@ -651,12 +757,14 @@ def test_firstcoder_app_animates_working_indicator(monkeypatch) -> None:
 
     reasoning_entries = [entry for entry in app.transcript.entries if entry.kind == TuiEntryKind.REASONING]
     assert reasoning_entries == []
-    assert activity.updates[-1] == "thinking [.. ] planning next step..."
+    assert activity.updates[-1].startswith("thinking [.. ] planning next step...")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 0 tools")
     assert app._working_timer is timer
 
     app._complete_working_indicator()
 
-    assert activity.updates[-1] == "streaming · response"
+    assert activity.updates[-1].startswith("streaming [>   ] · response")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 0 tools")
     assert timer.stopped is True
     assert app._working_timer is None
 
@@ -673,9 +781,44 @@ def test_firstcoder_app_streaming_final_response_skips_assistant_display_line(mo
     app._write_chat_response(ChatResponse(provider="fake", model="fake", content="hello"))
     app._restore_stream_event_handler(previous_handler)
 
-    mounted_types = [type(widget).__name__ for widget in output.mounted]
-    assert mounted_types.count("Markdown") == 1
-    assert mounted_types == ["Markdown", "Static"]
+    assert sum(isinstance(widget, Markdown) for widget in output.mounted) == 1
+    assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown", "Static"]
+    assert output.mounted[0].allow_select is False
+
+
+def test_firstcoder_app_stops_streaming_status_after_final_response(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stopped": False, "stop": lambda self: setattr(self, "stopped", True)})()
+    app = FirstCoderApp(chat_runner=runner)
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+
+    previous_handler = app._install_stream_event_handler()
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="hello"))
+    app._write_chat_response(
+        ChatResponse(
+            provider="fake",
+            model="fake",
+            content="hello",
+            usage=TokenUsage(input_tokens=3, output_tokens=5, total_tokens=8),
+        )
+    )
+    app._restore_stream_event_handler(previous_handler)
+
+    assert activity.updates[-1].startswith("done")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 0 tools")
+    assert "tok" not in activity.updates[-1]
+    assert timer.stopped is True
+    assert app._activity_timer is None
 
 
 def test_firstcoder_app_stream_event_handler_schedules_ui_updates_on_app_thread(monkeypatch) -> None:
@@ -747,12 +890,16 @@ def test_firstcoder_app_updates_activity_line_for_tool_events(monkeypatch) -> No
     )
     app._restore_tool_event_handler(previous_handler)
 
-    assert activity.updates == ["running · echo", "thinking [.  ] reading echo result"]
+    assert activity.updates[0].startswith("running [=   ] · echo")
+    assert activity.updates[0].rstrip().endswith("0.0s · 1 tool")
+    assert activity.updates[1].startswith("thinking [.  ] reading echo result")
+    assert activity.updates[1].rstrip().endswith("0.0s · 1 tool")
     assert app._working_timer is timer
 
     app._advance_working_animation()
 
-    assert activity.updates[-1] == "thinking [.. ] reading echo result"
+    assert activity.updates[-1].startswith("thinking [.. ] reading echo result")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 1 tool")
 
 
 def test_firstcoder_app_stops_post_tool_animation_when_next_tool_starts(monkeypatch) -> None:
@@ -785,7 +932,180 @@ def test_firstcoder_app_stops_post_tool_animation_when_next_tool_starts(monkeypa
 
     assert timer.stopped is True
     assert app._working_timer is None
-    assert activity.updates[-1] == "running · ls"
+    assert activity.updates[-1].startswith("running [=   ] · ls")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 1 tool")
+
+
+def test_firstcoder_app_animates_running_tool_status(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stopped": False, "stop": lambda self: setattr(self, "stopped", True)})()
+    app = FirstCoderApp()
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+
+    app._start_turn_metrics()
+    app._show_activity_animation("running", "echo")
+    app._advance_activity_animation()
+
+    assert activity.updates[0].startswith("running [=   ] · echo")
+    assert activity.updates[0].rstrip().endswith("0.0s · 0 tools")
+    assert activity.updates[1].startswith("running [==  ] · echo")
+    assert activity.updates[1].rstrip().endswith("0.0s · 0 tools")
+    app._advance_activity_animation()
+    assert activity.updates[-1].startswith("running [=== ] · echo")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 0 tools")
+    assert app._activity_timer is timer
+
+    app._stop_activity_animation()
+
+    assert timer.stopped is True
+    assert app._activity_timer is None
+
+
+def test_firstcoder_app_keeps_elapsed_time_live_after_tool_failure(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stopped": False, "stop": lambda self: setattr(self, "stopped", True)})()
+    app = FirstCoderApp()
+    clock = {"now": 100.0}
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+    monkeypatch.setattr("firstcoder.app.tui.time.monotonic", lambda: clock["now"])
+
+    tool_call = ToolCall(id="call_echo", name="echo", arguments={})
+    app._start_turn_metrics()
+    app._record_tool_activity(ToolExecutionEvent(kind="started", tool_call=tool_call))
+    app._record_tool_activity(
+        ToolExecutionEvent(
+            kind="finished",
+            tool_call=tool_call,
+            result=ToolResult(name="echo", ok=False, content="boom"),
+        )
+    )
+
+    assert activity.updates[-1].startswith("error · echo")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 1 tool")
+    assert app._activity_timer is timer
+
+    clock["now"] = 102.5
+    app._advance_activity_animation()
+
+    assert activity.updates[-1].startswith("error · echo")
+    assert activity.updates[-1].rstrip().endswith("2.5s · 1 tool")
+
+
+def test_firstcoder_app_activity_line_uses_plain_status_text(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    app = FirstCoderApp()
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+
+    app._set_activity("running [=   ] · echo")
+
+    renderable = activity.renderables[-1]
+    assert getattr(renderable, "plain", "").startswith("running [=   ] · echo")
+    assert getattr(renderable, "plain", "").rstrip().endswith("0.0s · 0 tools")
+    assert renderable.spans == []
+
+
+def test_firstcoder_app_activity_metrics_are_pinned_right(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    activity.size = type("Size", (), {"width": 42})()
+    app = FirstCoderApp()
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+
+    app._start_turn_metrics()
+    app._set_activity("running [=   ] · echo")
+    first = activity.updates[-1]
+    app._set_activity("streaming [>   ] · response")
+    second = activity.updates[-1]
+
+    assert first.endswith("0.0s · 0 tools")
+    assert second.endswith("0.0s · 0 tools")
+    assert first.rfind("0.0s · 0 tools") == second.rfind("0.0s · 0 tools")
+
+
+def test_firstcoder_app_animates_streaming_status(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stopped": False, "stop": lambda self: setattr(self, "stopped", True)})()
+    app = FirstCoderApp()
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+
+    app._start_turn_metrics()
+    app._complete_working_indicator()
+    app._advance_activity_animation()
+
+    assert activity.updates[0].startswith("streaming [>   ] · response")
+    assert activity.updates[0].rstrip().endswith("0.0s · 0 tools")
+    assert activity.updates[1].startswith("streaming [>>  ] · response")
+    assert activity.updates[1].rstrip().endswith("0.0s · 0 tools")
+    app._advance_activity_animation()
+    assert activity.updates[-1].startswith("streaming [>>> ] · response")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 0 tools")
+    assert app._activity_timer is timer
+
+
+def test_firstcoder_app_does_not_restart_streaming_status_for_every_token(monkeypatch) -> None:
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stopped": False, "stop": lambda self: setattr(self, "stopped", True)})()
+    app = FirstCoderApp()
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+
+    app._start_turn_metrics()
+    app._complete_working_indicator()
+    after_first_token = len(activity.updates)
+    app._complete_working_indicator()
+    app._complete_working_indicator()
+
+    assert after_first_token == 1
+    assert len(activity.updates) == after_first_token
+    assert app._activity_timer is timer
 
 
 def test_firstcoder_app_updates_persistent_todo_panel_for_todo_events(monkeypatch) -> None:
@@ -850,7 +1170,8 @@ def test_firstcoder_app_updates_topbar_when_activity_changes(monkeypatch) -> Non
 
     app._set_activity("waiting · permission")
 
-    assert activity.updates == ["waiting · permission"]
+    assert activity.updates[0].startswith("waiting · permission")
+    assert activity.updates[0].rstrip().endswith("0.0s · 0 tools")
     assert app._activity_text == "waiting · permission"
     assert "[#b28443]waiting · permission[/]" in topbar.updates[-1]
 
@@ -875,7 +1196,8 @@ def test_firstcoder_app_live_tool_events_filter_final_tool_summary(monkeypatch) 
     assert "正在调用工具：echo" in rendered
     assert "Tool call:" not in rendered
     assert "Tool result:" not in rendered
-    assert [type(widget).__name__ for widget in output.mounted] == ["Static", "Markdown"]
+    assert [type(widget).__name__ for widget in output.mounted] == ["Static", "FirstCoderMarkdown"]
+    assert output.mounted[1].allow_select is False
 
 
 def test_firstcoder_app_starts_new_stream_block_after_tool_event(monkeypatch) -> None:
@@ -899,10 +1221,12 @@ def test_firstcoder_app_starts_new_stream_block_after_tool_event(monkeypatch) ->
     app._restore_stream_event_handler(previous_stream_handler)
 
     mounted_types = [type(widget).__name__ for widget in output.mounted]
-    assert mounted_types == ["Markdown", "Static", "Markdown"]
+    assert mounted_types == ["FirstCoderMarkdown", "Static", "FirstCoderMarkdown"]
     first_markdown, _, second_markdown = output.mounted
-    assert getattr(first_markdown, "updates")[-1] == "FirstCoder:\n\n我先看看。"
-    assert getattr(second_markdown, "updates")[-1] == "FirstCoder:\n\n看完了。"
+    assert first_markdown.allow_select is False
+    assert second_markdown.allow_select is False
+    assert first_markdown.updates[-1] == "FirstCoder:\n\n我先看看。"
+    assert second_markdown.updates[-1] == "FirstCoder:\n\n看完了。"
 
 
 def test_permission_requested_tool_event_uses_permission_style() -> None:
@@ -965,6 +1289,37 @@ async def test_firstcoder_app_displays_live_tool_status_during_turn() -> None:
     assert runner.inputs == ["hello"]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_recalls_input_history_with_arrow_keys() -> None:
+    runner = FakeAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"first")
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press(*"second")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("up")
+        input_widget = app.query_one("#input")
+        assert input_widget.value == "second"
+
+        await pilot.press("up")
+        assert input_widget.value == "first"
+
+        await pilot.press("down")
+        assert input_widget.value == "second"
+
+        await pilot.press("down")
+        assert input_widget.value == ""
+
+    assert runner.inputs == ["first", "second"]
+
+
 def test_firstcoder_app_displays_pending_permission_prompt_immediately(monkeypatch) -> None:
     runner = FakePermissionWaitingRunner()
     output = FakeOutput()
@@ -984,6 +1339,7 @@ def test_firstcoder_app_displays_pending_permission_prompt_immediately(monkeypat
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_displays_chat_errors_from_worker() -> None:
     runner = FailingAsyncChatRunner()
     app = FirstCoderApp(chat_runner=runner)
@@ -998,6 +1354,7 @@ async def test_firstcoder_app_displays_chat_errors_from_worker() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_rejects_chat_input_while_turn_is_running() -> None:
     runner = BlockingAsyncChatRunner()
     app = FirstCoderApp(chat_runner=runner)
@@ -1018,6 +1375,7 @@ async def test_firstcoder_app_rejects_chat_input_while_turn_is_running() -> None
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_routes_permission_answer_to_resume() -> None:
     runner = FakePermissionResumeRunner()
     app = FirstCoderApp(chat_runner=runner)

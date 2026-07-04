@@ -94,6 +94,42 @@ def test_provider_capability_change_invalidates_system_prompt_fingerprint() -> N
     assert before != after
 
 
+def test_skill_catalog_change_invalidates_system_prompt_fingerprint() -> None:
+    builder = SystemPromptBuilder()
+
+    before = builder.fingerprint(_inputs(skill_catalog_summary="skills/brief.md - 简报"))
+    after = builder.fingerprint(_inputs(skill_catalog_summary="skills/review.md - 复核"))
+
+    assert before != after
+
+
+def test_system_prompt_includes_skill_protocol_catalog_and_loaded_skill() -> None:
+    entry = SystemPromptBuilder().build(
+        _inputs(
+            skill_protocol="被路由到 skill 时，必须先加载 skill。",
+            skill_catalog_summary=(
+                "- project:skills/global-family-office-news-brief.md - 全球家办资讯简报\n"
+                "- global:fetch-tweet/SKILL.md - 读取 X/Twitter 帖子"
+            ),
+            loaded_skill_context=(
+                "Loaded skill: skills/global-family-office-news-brief.md\n"
+                "# 全球家族办公室资讯简报\n"
+                "必须读取 docs/evidence-policy.md"
+            ),
+        )
+    )
+    content = entry.messages[0].content
+
+    assert "Project skill protocol" in content
+    assert "被路由到 skill 时，必须先加载 skill。" in content
+    assert "Available skills" in content
+    assert "project:skills/global-family-office-news-brief.md" in content
+    assert "global:fetch-tweet/SKILL.md" in content
+    assert "Loaded skills" in content
+    assert "# 全球家族办公室资讯简报" in content
+    assert "unrelated skill body" not in content
+
+
 def test_system_prompt_contains_readable_permission_policy_and_tool_schema() -> None:
     entry = SystemPromptBuilder().build(_inputs())
     content = entry.messages[0].content

@@ -39,6 +39,7 @@ def create_session_tool_registry(
     tools: list[Tool] | None = None,
     known_message_ids: Collection[str] | None = None,
     single_observation_basis_message_ids: Collection[str] = (),
+    task_boundary_required_stable_count: int = 2,
     permission_manager: PermissionManager | None = None,
 ) -> ToolRegistryLike:
     """创建单个会话专用的工具注册表。
@@ -49,6 +50,7 @@ def create_session_tool_registry(
 
     state = runtime_state or SessionRuntimeState(session_id=session_id)
     boundary_service = TaskBoundaryService(
+        required_stable_count=task_boundary_required_stable_count,
         known_message_ids=known_message_ids,
         policy=TaskBoundaryPolicy(single_observation_basis_message_ids=single_observation_basis_message_ids),
     )
