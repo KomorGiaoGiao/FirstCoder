@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -15,6 +16,7 @@ from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.events import Key
 from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static
 
@@ -23,6 +25,16 @@ from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript, T
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
+
+
+class FirstCoderMarkdown(Markdown):
+    """Markdown output that avoids Textual's fragile selection path."""
+
+    ALLOW_SELECT = False
+    BLOCKS = {
+        name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False})
+        for name, block in Markdown.BLOCKS.items()
+    }
 
 
 def _observe_markdown_update(update_result) -> None:
@@ -69,10 +81,16 @@ class FirstCoderApp(App[None]):
     """最小 TUI 外壳。"""
 
     CSS_PATH = "tui.tcss"
+    ALLOW_SELECT = False
     BINDINGS = [("ctrl+c", "quit", "Quit")]
-    STREAM_RENDER_INTERVAL_SECONDS = 0.03
+    STREAM_RENDER_INTERVAL_SECONDS = 0.2
     WORKING_ANIMATION_INTERVAL_SECONDS = 0.18
     WORKING_FRAMES = ("[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]")
+    ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
+    ACTIVITY_FRAMES = {
+        "running": ("[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"),
+        "streaming": ("[>   ]", "[>>  ]", "[>>> ]", "[ >>>]", "[  >>]", "[   >]"),
+    }
 
     def __init__(
         self,
@@ -101,9 +119,18 @@ class FirstCoderApp(App[None]):
         self._working_text = ""
         self._working_frame_index = 0
         self._working_timer: Timer | None = None
+        self._activity_animation_kind = ""
+        self._activity_animation_detail = ""
+        self._activity_frame_index = 0
+        self._activity_started_at = 0.0
+        self._activity_timer: Timer | None = None
+        self._turn_started_at = 0.0
+        self._turn_tool_count = 0
         self._live_tool_events_seen = False
         self._stream_segment_closed_for_tool = False
         self._activity_text = "idle · ready"
+        self._input_history: list[str] = []
+        self._input_history_index: int | None = None
         self.transcript = TuiTranscript()
 
     def compose(self) -> ComposeResult:
@@ -129,6 +156,7 @@ class FirstCoderApp(App[None]):
         event.input.value = ""
         if not text:
             return
+        self._record_input_history(text)
 
         self._write_line(f"> {text}", kind=TuiEntryKind.USER)
 
@@ -169,12 +197,52 @@ class FirstCoderApp(App[None]):
         self._chat_busy = True
         self.run_worker(self._run_chat_turn(text))
 
+    def on_key(self, event: Key) -> None:
+        if event.key not in {"up", "down"}:
+            return
+        focused = getattr(self, "focused", None)
+        if getattr(focused, "id", None) != "input":
+            return
+        input_widget = self.query_one("#input", Input)
+        recalled = self._recall_input_history(event.key)
+        if recalled is None:
+            return
+        event.stop()
+        event.prevent_default()
+        input_widget.value = recalled
+        input_widget.cursor_position = len(recalled)
+
+    def _record_input_history(self, text: str) -> None:
+        if not self._input_history or self._input_history[-1] != text:
+            self._input_history.append(text)
+        self._input_history_index = None
+
+    def _recall_input_history(self, direction: str) -> str | None:
+        if not self._input_history:
+            return None
+        if direction == "up":
+            if self._input_history_index is None:
+                self._input_history_index = len(self._input_history) - 1
+            else:
+                self._input_history_index = max(0, self._input_history_index - 1)
+            return self._input_history[self._input_history_index]
+        if direction == "down":
+            if self._input_history_index is None:
+                return None
+            if self._input_history_index >= len(self._input_history) - 1:
+                self._input_history_index = None
+                return ""
+            self._input_history_index += 1
+            return self._input_history[self._input_history_index]
+        return None
+
     async def _resume_permission_turn(self, request_id: str, answer: str) -> None:
         previous_stream_handler = None
         previous_tool_handler = None
         try:
             previous_stream_handler = self._install_stream_event_handler()
             previous_tool_handler = self._install_tool_event_handler()
+            self._start_turn_metrics()
             self._show_working_indicator("resuming with permission answer...")
             async_resume = getattr(self.chat_runner, "aresume_with_user_input", None)
             if async_resume is not None:
@@ -203,6 +271,7 @@ class FirstCoderApp(App[None]):
         try:
             previous_stream_handler = self._install_stream_event_handler()
             previous_tool_handler = self._install_tool_event_handler()
+            self._start_turn_metrics()
             self._show_working_indicator("planning next step...")
             async_runner = getattr(self.chat_runner, "arun_user_turn", None) if self.chat_runner else None
             if async_runner is not None:
@@ -238,7 +307,8 @@ class FirstCoderApp(App[None]):
             self._write_markdown_message(content or "[assistant response has no text content]")
         self._write_pending_input()
         if getattr(self.chat_runner, "last_pending_input", None) is None:
-            self._set_activity("idle · ready")
+            self._stop_activity_animation()
+            self._set_activity("done")
         self._refresh_session_subtitle()
 
     def _refresh_session_subtitle(self) -> None:
@@ -300,6 +370,7 @@ class FirstCoderApp(App[None]):
         self._stream_text_needs_newline = False
         self._stream_text_buffer = ""
         self._stream_text_widget = None
+        self._stream_markdown_finalized = False
         self._stream_text_entry = None
         self._stream_rendered_text = ""
         self._stream_flush_timer = None
@@ -376,6 +447,15 @@ class FirstCoderApp(App[None]):
             return callback(*args, **kwargs)
         return self.call_from_thread(callback, *args, **kwargs)
 
+    def _scroll_output_end_if_pinned(self, output) -> None:
+        if not hasattr(output, "scroll_end"):
+            return
+        scroll_y = float(getattr(output, "scroll_y", 0) or 0)
+        max_scroll_y = float(getattr(output, "max_scroll_y", 0) or 0)
+        if max_scroll_y and scroll_y < max_scroll_y - 1:
+            return
+        output.scroll_end(animate=False)
+
     def _write_line(
         self,
         text: str,
@@ -391,7 +471,7 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output")
         if hasattr(output, "mount"):
             output.mount(Static(rendered, classes=classes))
-            output.scroll_end(animate=False)
+            self._scroll_output_end_if_pinned(output)
             return entry
         if hasattr(output, "write_line"):
             output.write_line(rendered)
@@ -401,13 +481,18 @@ class FirstCoderApp(App[None]):
         tool_call = getattr(event, "tool_call", None)
         name = str(getattr(tool_call, "name", "") or "tool")
         status = _tool_event_status(event) or "unknown"
+        if status == "running":
+            self._turn_tool_count += 1
         summary = _tool_activity_summary(event)
         self.transcript.record_tool_activity(name, status, summary)
         if status == "success":
             self._show_working_indicator(_post_tool_reasoning_text(name))
             return
         self._stop_working_animation()
-        self._set_activity(_activity_line_text(name, status))
+        if status == "running":
+            self._show_activity_animation("running", name)
+            return
+        self._show_static_activity(_activity_line_text(name, status))
 
     def _refresh_todo_panel_from_tool_event(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
@@ -442,10 +527,10 @@ class FirstCoderApp(App[None]):
         text = _entry_markdown_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
-            markdown = Markdown(classes=classes)
+            markdown = FirstCoderMarkdown(classes=classes)
             output.mount(markdown)
             _observe_markdown_update(markdown.update(text))
-            output.scroll_end(animate=False)
+            self._scroll_output_end_if_pinned(output)
             return
         if hasattr(output, "write_line"):
             output.write_line(text)
@@ -468,12 +553,13 @@ class FirstCoderApp(App[None]):
         if hasattr(output, "mount"):
             entry = self.transcript.add(TuiEntryKind.REASONING, line)
             output.mount(Static(_entry_plain_text(entry), classes="message reasoning-message"))
-            output.scroll_end(animate=False)
+            self._scroll_output_end_if_pinned(output)
             return
         if hasattr(output, "write"):
             output.write(line)
 
     def _show_working_indicator(self, text: str) -> None:
+        self._stop_activity_animation()
         self._reasoning_buffer = text
         self._reasoning_is_fallback = True
         self._working_text = text
@@ -482,8 +568,10 @@ class FirstCoderApp(App[None]):
         self._start_working_animation()
 
     def _complete_working_indicator(self) -> None:
+        if self._activity_animation_kind == "streaming" and self._activity_animation_detail == "response":
+            return
         self._stop_working_animation()
-        self._set_activity("streaming · response")
+        self._show_activity_animation("streaming", "response")
 
     def _append_reasoning_text(self, text: str) -> None:
         if self._reasoning_is_fallback:
@@ -520,15 +608,88 @@ class FirstCoderApp(App[None]):
         text = self._working_text or self._reasoning_buffer
         self._set_activity(self._working_indicator_body(text))
 
+    def _show_activity_animation(self, kind: str, detail: str) -> None:
+        self._activity_animation_kind = kind
+        self._activity_animation_detail = detail
+        self._activity_frame_index = 0
+        self._activity_started_at = time.monotonic()
+        self._set_activity(self._activity_animation_body())
+        self._start_activity_animation()
+
+    def _show_static_activity(self, text: str) -> None:
+        self._activity_animation_kind = "static"
+        self._activity_animation_detail = text
+        self._activity_frame_index = 0
+        self._activity_started_at = time.monotonic()
+        self._set_activity(self._activity_animation_body())
+        self._start_activity_animation()
+
+    def _activity_animation_body(self) -> str:
+        if self._activity_animation_kind == "static":
+            return self._activity_animation_detail
+        frames = self.ACTIVITY_FRAMES.get(self._activity_animation_kind) or ("[....]",)
+        frame = frames[self._activity_frame_index % len(frames)]
+        return f"{self._activity_animation_kind} {frame} · {self._activity_animation_detail}"
+
+    def _start_turn_metrics(self) -> None:
+        self._turn_started_at = time.monotonic()
+        self._turn_tool_count = 0
+
+    def _turn_elapsed_seconds(self) -> float:
+        if not self._turn_started_at:
+            return 0.0
+        return max(0.0, time.monotonic() - self._turn_started_at)
+
+    def _start_activity_animation(self) -> None:
+        if self._activity_timer is not None:
+            return
+        if getattr(self, "_loop", None) is None:
+            return
+        self._activity_timer = self.set_interval(
+            self.ACTIVITY_ANIMATION_INTERVAL_SECONDS,
+            self._advance_activity_animation,
+            name="activity-indicator",
+        )
+
+    def _stop_activity_animation(self) -> None:
+        if self._activity_timer is None:
+            return
+        self._activity_timer.stop()
+        self._activity_timer = None
+        self._activity_animation_kind = ""
+        self._activity_animation_detail = ""
+
+    def _advance_activity_animation(self) -> None:
+        if not self._activity_animation_kind:
+            return
+        self._activity_frame_index += 1
+        self._set_activity(self._activity_animation_body())
+
     def _set_activity(self, text: str) -> None:
         self._activity_text = text
         activity = self.query_one("#activity")
+        rendered = self._activity_line_text(text, activity)
         if hasattr(activity, "update"):
-            activity.update(text)
+            activity.update(self._activity_renderable(rendered))
         if getattr(self, "is_mounted", False):
             topbar = self.query_one("#topbar")
             if hasattr(topbar, "update"):
                 topbar.update(self._topbar_text(width=self._topbar_width()))
+
+    def _activity_renderable(self, text: str) -> Text:
+        return Text(text, style="#527c3b")
+
+    def _activity_line_text(self, text: str, activity) -> str:
+        metrics = _turn_metrics_text(self._turn_elapsed_seconds(), self._turn_tool_count)
+        width = getattr(getattr(activity, "size", None), "width", None)
+        if not isinstance(width, int) or width <= 0:
+            return f"{text} · {metrics}" if text != "idle · ready" else text
+        if text == "idle · ready":
+            return text
+        if len(text) + len(metrics) + 1 > width:
+            available = max(1, width - len(metrics) - 1)
+            text = _truncate_activity_text(text, available)
+        return f"{text}{' ' * (width - len(text) - len(metrics))}{metrics}"
 
     def _append_stream_text(self, text: str) -> None:
         if self._stream_segment_closed_for_tool:
@@ -541,13 +702,12 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output")
         if hasattr(output, "mount"):
             if self._stream_text_widget is None:
-                self._stream_text_widget = Markdown(classes="message assistant-message streaming")
+                self._stream_text_widget = FirstCoderMarkdown(classes="message assistant-message streaming")
                 output.mount(self._stream_text_widget)
             if not self._stream_rendered_text:
                 self._flush_stream_text()
             else:
                 self._schedule_stream_flush()
-            output.scroll_end(animate=False)
             return
         if hasattr(output, "write"):
             prefix = "FirstCoder:\n" if self._stream_text_buffer == text else ""
@@ -578,17 +738,17 @@ class FirstCoderApp(App[None]):
             name="stream-markdown-flush",
         )
 
-    def _flush_stream_text(self) -> None:
+    def _flush_stream_text(self) -> bool:
         self._stream_flush_timer = None
         if self._stream_text_widget is None:
-            return
+            return False
         if self._stream_rendered_text == self._stream_text_buffer:
-            return
+            return False
         self._stream_rendered_text = self._stream_text_buffer
         _observe_markdown_update(self._stream_text_widget.update(f"FirstCoder:\n\n{self._stream_rendered_text}"))
         output = self.query_one("#output")
-        if hasattr(output, "scroll_end"):
-            output.scroll_end(animate=False)
+        self._scroll_output_end_if_pinned(output)
+        return True
 
 
 def _permission_choice_for_text(text: str, pending) -> str | None:
@@ -637,6 +797,30 @@ def _activity_markup(text: str) -> str:
     elif text.startswith("error"):
         color = "#c85f5f"
     return f"[{color}]{escape(text)}[/]"
+
+
+def _truncate_activity_text(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    return text[: width - 1] + "."
+
+
+def _turn_metrics_text(elapsed_seconds: float, tool_count: int) -> str:
+    elapsed = _format_elapsed_time(elapsed_seconds)
+    return f"{elapsed} · {tool_count} {'tool' if tool_count == 1 else 'tools'}"
+
+
+def _format_elapsed_time(elapsed_seconds: float) -> str:
+    if elapsed_seconds < 60:
+        return f"{max(0.0, elapsed_seconds):.1f}s"
+    total_seconds = int(max(0, elapsed_seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {seconds}s"
+    return f"{minutes}m {seconds}s"
 
 
 def _permission_options_text(pending) -> str:

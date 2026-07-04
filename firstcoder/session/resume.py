@@ -16,6 +16,7 @@ from firstcoder.permissions.grants import FilePermissionGrantStore
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError
 from firstcoder.session.models import ResumeResult
+from firstcoder.skills.discovery import discover_all_skills
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
@@ -44,6 +45,7 @@ class ResumeService:
             store=self.store,
             session_id=session_id,
             agents_md=read_agents_md(self.project_root),
+            skill_catalog=discover_all_skills(self.project_root),
             tools=self.tools,
             permission_manager=create_project_permission_manager(
                 self.project_root,

@@ -170,6 +170,14 @@ def test_default_loop_factory_keeps_session_outside_repo(tmp_path: Path):
     assert loop.session.mode == "bypass"
     assert "write" in loop.session.tool_registry.names()
     assert loop.limits == AgentLoopLimits.swe_lite()
+    message_id = loop.session.append_user_message("benchmark task")
+    result = loop.session.tool_registry.execute(
+        "task_boundary",
+        {"decision": "new", "basis_message_id": message_id},
+    )
+    assert result.ok is True
+    assert result.data["required_stable_count"] == 1
+    assert result.data["confirmed_change"] is True
 
 
 def test_default_loop_factory_uses_custom_limits(tmp_path: Path):

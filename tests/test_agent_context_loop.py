@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 import re
 import threading
+import time
 
 import pytest
 
@@ -326,6 +327,25 @@ def _echo_tool() -> Tool:
     )
 
 
+def _slow_named_tool(name: str, *, delay: float) -> Tool:
+    def execute(text: str) -> ToolResult:
+        time.sleep(delay)
+        return ToolResult(name=name, ok=True, content=f"{name}:{text}")
+
+    return Tool(
+        definition=ToolDefinition(
+            name=name,
+            description=f"slow {name}",
+            parameters={
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        ),
+        executor=execute,
+    )
+
+
 def _success_tool() -> Tool:
     definition = ToolDefinition(
         name="shell",
@@ -492,6 +512,86 @@ def test_agent_loop_executes_tool_call_and_appends_tool_result(tmp_path) -> None
     assert view.messages[0].parts[0].metadata["created_turn"] == 1
     assert view.messages[1].parts[0].metadata["created_turn"] == 1
     assert view.messages[2].parts[0].metadata["created_turn"] == 1
+
+
+def test_agent_loop_runs_readonly_tool_calls_in_parallel_and_appends_results_in_order(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_parallel_readonly", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(id="call_slow_first", name="view", arguments={"text": "first"}),
+                    ToolCall(id="call_slow_second", name="grep", arguments={"text": "second"}),
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+    tool_events: list[ToolExecutionEvent] = []
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        tools=[_slow_named_tool("view", delay=0.2), _slow_named_tool("grep", delay=0.2)],
+        tool_event_handler=tool_events.append,
+    )
+
+    started_at = time.perf_counter()
+    result = loop.run_user_turn("并发读")
+    elapsed = time.perf_counter() - started_at
+
+    assert result.content == "完成"
+    assert elapsed < 0.35
+    assert [event.kind for event in tool_events] == ["started", "started", "finished", "finished"]
+    view = store.rebuild_session_view("sess_parallel_readonly")
+    tool_messages = [message for message in view.messages if message.role == "tool"]
+    assert [message.parts[0].metadata["tool_call_id"] for message in tool_messages] == [
+        "call_slow_first",
+        "call_slow_second",
+    ]
+    assert [message.parts[0].content for message in tool_messages] == ["view:first", "grep:second"]
+
+
+def test_agent_loop_streaming_runs_readonly_tool_calls_in_parallel(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_parallel_readonly", agents_md="")
+    provider = StreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[
+                    ToolCall(id="call_slow_first", name="view", arguments={"text": "first"}),
+                    ToolCall(id="call_slow_second", name="grep", arguments={"text": "second"}),
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="完成"),
+        ]
+    )
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        tools=[_slow_named_tool("view", delay=0.2), _slow_named_tool("grep", delay=0.2)],
+    )
+
+    started_at = time.perf_counter()
+    result = loop.run_user_turn_streaming_sync("并发读")
+    elapsed = time.perf_counter() - started_at
+
+    assert result.content == "完成"
+    assert elapsed < 0.35
+    view = store.rebuild_session_view("sess_stream_parallel_readonly")
+    tool_messages = [message for message in view.messages if message.role == "tool"]
+    assert [message.parts[0].metadata["tool_call_id"] for message in tool_messages] == [
+        "call_slow_first",
+        "call_slow_second",
+    ]
 
 
 def test_agent_loop_streaming_text_persists_final_assistant_message(tmp_path) -> None:
@@ -772,7 +872,7 @@ def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> N
     assert provider.requests[0].tools == []
     system_message = provider.requests[0].messages[0].content
     assert '"tool_calling": false' in system_message
-    assert "可用工具:\n无" in system_message
+    assert "Available tools:\n无" in system_message
 
 
 def test_agent_loop_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:

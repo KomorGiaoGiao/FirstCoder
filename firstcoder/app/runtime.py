@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
+
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
@@ -182,7 +184,10 @@ class AgentChatRunner:
             self.loops.append(loop)
             self.last_display_lines = []
             self.last_stream_events = []
-            response = await loop.run_user_turn_streaming(content)
+            response = await anyio.to_thread.run_sync(
+                _run_coroutine_in_thread,
+                loop.run_user_turn_streaming(content),
+            )
             self.last_stream_events = list(loop.last_stream_events)
             raw_pending = response.raw.get("pending_input") if isinstance(response.raw, dict) else None
             self.last_pending_input = raw_pending if isinstance(raw_pending, UserInputRequest) else None
@@ -212,7 +217,10 @@ class AgentChatRunner:
             self.loops.append(loop)
             self.last_display_lines = []
             self.last_stream_events = []
-            result = await loop.resume_with_user_input_streaming(request_id, answer)
+            result = await anyio.to_thread.run_sync(
+                _run_coroutine_in_thread,
+                loop.resume_with_user_input_streaming(request_id, answer),
+            )
             self.last_stream_events = list(loop.last_stream_events)
             self.last_pending_input = result.pending_input
             after_view = self.current_session.rebuild_view()
@@ -252,6 +260,10 @@ def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:
         elif message.role == "tool":
             lines.extend(_tool_lines(message.parts))
     return lines
+
+
+def _run_coroutine_in_thread(coro):
+    return asyncio.run(coro)
 
 
 def _assistant_lines(parts: list[MessagePart]) -> list[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal
 from typing import Protocol
@@ -22,15 +23,33 @@ from firstcoder.agent.user_input import (
 from firstcoder.agent.verification import is_successful_verification_result
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
+from firstcoder.context.system_prompt import PromptPrefixCache
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.skills.loader import SkillLoadError, SkillLoader
+from firstcoder.skills.router import SkillRouter
+from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
 from firstcoder.tools.permission_results import make_permission_denied_result
 from firstcoder.tools.types import Tool, ToolResult, make_error_result
 
 
 _DEFAULT_MAX_TOOL_ROUNDS = object()
+_PARALLEL_READONLY_TOOL_NAMES = frozenset(
+    {
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "read_multi",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +115,7 @@ class AgentLoop:
         self.last_stream_events: list[ChatStreamEvent] = []
         self.stream_event_handler = stream_event_handler
         self.tool_event_handler = tool_event_handler
+        self._skills_prepared_for_turn: int | None = None
         # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
         # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
@@ -342,6 +362,7 @@ class AgentLoop:
         prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
         """
 
+        self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
@@ -375,6 +396,56 @@ class AgentLoop:
                 raise
             return self._complete_once(tool_choice=tool_choice)
 
+    def _prepare_skills_for_current_turn(self) -> None:
+        current_turn = self.session.current_turn
+        if self._skills_prepared_for_turn == current_turn:
+            return
+        self._skills_prepared_for_turn = current_turn
+        if not self.session.skill_catalog.skills:
+            return
+        user_message = self._current_user_message_content()
+        if not user_message:
+            return
+        decision = SkillRouter().route(
+            user_message,
+            agents_md=self.session.agents_md,
+            catalog=self.session.skill_catalog,
+        )
+        if decision.selected is None or decision.confidence != "high":
+            return
+        append_skill_selected(self.session.writer, decision)
+        loader = SkillLoader()
+        try:
+            loaded = loader.load(decision.selected)
+        except SkillLoadError:
+            return
+        required_files = []
+        for file_path in loaded.required_files:
+            try:
+                required = loader.load_required_file(loaded, file_path)
+            except SkillLoadError:
+                continue
+            required_files.append(required)
+        if required_files:
+            loaded = type(loaded)(
+                skill=loaded.skill,
+                content=loaded.content,
+                required_files=loaded.required_files,
+                required_file_contents=required_files,
+            )
+        self.session.loaded_skills.append(loaded)
+        append_skill_loaded(self.session.writer, loaded)
+        for required in required_files:
+            append_skill_required_file_loaded(self.session.writer, required)
+        self.session.prompt_cache = PromptPrefixCache()
+
+    def _current_user_message_content(self) -> str:
+        for message in reversed(self.session.rebuild_view().messages):
+            if message.role != "user":
+                continue
+            return "\n".join(part.content for part in message.parts if part.kind == "text")
+        return ""
+
     async def _stream_once(self, *, tool_choice="auto") -> ChatResponse:
         """消费一次 provider stream，最终仍返回完整 ChatResponse。
 
@@ -382,6 +453,7 @@ class AgentLoop:
         才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
         """
 
+        self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
@@ -525,7 +597,9 @@ class AgentLoop:
     def _execute_tool_calls_interactive(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
         task_hash_changed = False
         successful_verification = False
-        for index, tool_call in enumerate(tool_calls):
+        index = 0
+        while index < len(tool_calls):
+            tool_call = tool_calls[index]
             # 权限检查放在工具执行前，但具体“这个路径能不能写 / 这个命令能不能跑”
             # 的判断由 permissions 和 permission-aware tool wrapper 完成。AgentLoop 只关心
             # allow / deny / ask 三种结果该如何写回会话。
@@ -563,9 +637,15 @@ class AgentLoop:
                         pending_input=pending_input,
                     )
 
-            self._emit_tool_event("started", tool_call)
-            result = self.session.execute_tool_call(tool_call)
-            self._emit_tool_event("finished", tool_call, result=result)
+            if self._can_execute_in_parallel(tool_call):
+                batch_end = self._parallel_readonly_batch_end(tool_calls, index)
+                results = self._execute_parallel_readonly_batch(tool_calls[index:batch_end])
+                for batch_tool_call, result in zip(tool_calls[index:batch_end], results, strict=True):
+                    self.session.append_tool_result(tool_call=batch_tool_call, result=result)
+                index = batch_end
+                continue
+
+            result = self._execute_single_tool_call(tool_call)
             self.session.append_tool_result(tool_call=tool_call, result=result)
             if is_successful_verification_result(tool_call.name, result):
                 successful_verification = True
@@ -586,6 +666,7 @@ class AgentLoop:
                 # task_boundary 是一种“语义触发”：即使上下文还没超 token 阈值，确认任务切换
                 # 后也应该整理旧任务上下文，降低旧任务信息污染新任务的概率。
                 task_hash_changed = True
+            index += 1
         return _ToolExecutionState(
             task_hash_changed=task_hash_changed,
             successful_verification=successful_verification,
@@ -594,7 +675,9 @@ class AgentLoop:
     async def _execute_tool_calls_interactive_async(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
         task_hash_changed = False
         successful_verification = False
-        for index, tool_call in enumerate(tool_calls):
+        index = 0
+        while index < len(tool_calls):
+            tool_call = tool_calls[index]
             preflight = self.session.preflight_tool_call_permission(tool_call)
             if preflight is not None:
                 if preflight.decision.kind == PermissionDecisionKind.DENY:
@@ -627,9 +710,15 @@ class AgentLoop:
                         pending_input=pending_input,
                     )
 
-            self._emit_tool_event("started", tool_call)
-            result = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
-            self._emit_tool_event("finished", tool_call, result=result)
+            if self._can_execute_in_parallel(tool_call):
+                batch_end = self._parallel_readonly_batch_end(tool_calls, index)
+                results = await self._execute_parallel_readonly_batch_async(tool_calls[index:batch_end])
+                for batch_tool_call, result in zip(tool_calls[index:batch_end], results, strict=True):
+                    self.session.append_tool_result(tool_call=batch_tool_call, result=result)
+                index = batch_end
+                continue
+
+            result = await self._execute_single_tool_call_async(tool_call)
             self.session.append_tool_result(tool_call=tool_call, result=result)
             if is_successful_verification_result(tool_call.name, result):
                 successful_verification = True
@@ -646,10 +735,62 @@ class AgentLoop:
                 )
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
                 task_hash_changed = True
+            index += 1
         return _ToolExecutionState(
             task_hash_changed=task_hash_changed,
             successful_verification=successful_verification,
         )
+
+    def _parallel_readonly_batch_end(self, tool_calls: list[ToolCall], start: int) -> int:
+        end = start
+        while end < len(tool_calls) and self._can_execute_in_parallel(tool_calls[end]):
+            end += 1
+        return end
+
+    def _can_execute_in_parallel(self, tool_call: ToolCall) -> bool:
+        if tool_call.name not in _PARALLEL_READONLY_TOOL_NAMES:
+            return False
+        preflight = self.session.preflight_tool_call_permission(tool_call)
+        return preflight is None or preflight.decision.kind == PermissionDecisionKind.ALLOW
+
+    def _execute_single_tool_call(self, tool_call: ToolCall) -> ToolResult:
+        self._emit_tool_event("started", tool_call)
+        result = self.session.execute_tool_call(tool_call)
+        self._emit_tool_event("finished", tool_call, result=result)
+        return result
+
+    async def _execute_single_tool_call_async(self, tool_call: ToolCall) -> ToolResult:
+        self._emit_tool_event("started", tool_call)
+        result = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
+        self._emit_tool_event("finished", tool_call, result=result)
+        return result
+
+    def _execute_parallel_readonly_batch(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        for tool_call in tool_calls:
+            self._emit_tool_event("started", tool_call)
+        with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
+            results = list(executor.map(self.session.execute_tool_call, tool_calls))
+        for tool_call, result in zip(tool_calls, results, strict=True):
+            self._emit_tool_event("finished", tool_call, result=result)
+        return results
+
+    async def _execute_parallel_readonly_batch_async(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        results: list[ToolResult | None] = [None] * len(tool_calls)
+
+        async def run_one(index: int, tool_call: ToolCall) -> None:
+            results[index] = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
+
+        for tool_call in tool_calls:
+            self._emit_tool_event("started", tool_call)
+        async with anyio.create_task_group() as task_group:
+            for index, tool_call in enumerate(tool_calls):
+                task_group.start_soon(run_one, index, tool_call)
+        if any(result is None for result in results):
+            raise RuntimeError("parallel readonly tool batch finished without all results")
+        resolved = [result for result in results if result is not None]
+        for tool_call, result in zip(tool_calls, resolved, strict=True):
+            self._emit_tool_event("finished", tool_call, result=result)
+        return resolved
 
     def _store_pending_permission_request(
         self,

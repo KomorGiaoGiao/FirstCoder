@@ -33,6 +33,9 @@ from firstcoder.tools.session_registry import ToolRegistryLike, create_session_t
 from firstcoder.tools.types import Tool, ToolResult
 from firstcoder.context.models import AgentMessage, MessagePart
 from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
+from firstcoder.skills.discovery import discover_all_skills
+from firstcoder.skills.models import LoadedSkill, SkillCatalog
+from firstcoder.skills.session import replay_loaded_skills
 
 
 DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
@@ -74,6 +77,8 @@ class AgentSession:
     tool_registry: ToolRegistryLike
     writer: SessionEventWriter
     agents_md: str = ""
+    skill_catalog: SkillCatalog = field(default_factory=SkillCatalog)
+    loaded_skills: list[LoadedSkill] = field(default_factory=list)
     base_rules: str = DEFAULT_BASE_RULES
     prompt_cache: PromptPrefixCache = field(default_factory=PromptPrefixCache)
     prompt_builder: SystemPromptBuilder = field(default_factory=SystemPromptBuilder)
@@ -93,6 +98,7 @@ class AgentSession:
         store: JsonlSessionStore,
         session_id: str,
         agents_md: str = "",
+        skill_catalog: SkillCatalog | None = None,
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
         sandbox_access: SandboxAccess | None = None,
@@ -110,6 +116,7 @@ class AgentSession:
             runtime_state=runtime_state,
             tools=tools,
             known_message_ids=known_message_ids,
+            task_boundary_required_stable_count=_task_boundary_required_stable_count(permission_manager),
             permission_manager=permission_manager,
         )
         session = cls(
@@ -119,6 +126,7 @@ class AgentSession:
             tool_registry=registry,
             writer=SessionEventWriter(store=store, session_id=session_id),
             agents_md=agents_md,
+            skill_catalog=skill_catalog or SkillCatalog(),
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access or SandboxAccess(),
@@ -147,6 +155,7 @@ class AgentSession:
         """
 
         agents_md = read_agents_md(project_root)
+        skill_catalog = discover_all_skills(project_root)
         permission_manager = permission_manager or create_project_permission_manager(
             project_root,
             grants=FilePermissionGrantStore(store.root / "permissions.json"),
@@ -155,6 +164,7 @@ class AgentSession:
             store=store,
             session_id=session_id,
             agents_md=agents_md,
+            skill_catalog=skill_catalog,
             tools=tools,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access,
@@ -167,6 +177,7 @@ class AgentSession:
         store: JsonlSessionStore,
         session_id: str,
         agents_md: str = "",
+        skill_catalog: SkillCatalog | None = None,
         tools: list[Tool] | None = None,
         permission_manager: PermissionManager | None = None,
         sandbox_access: SandboxAccess | None = None,
@@ -187,6 +198,7 @@ class AgentSession:
             runtime_state=runtime_state,
             tools=tools,
             known_message_ids=known_message_ids,
+            task_boundary_required_stable_count=_task_boundary_required_stable_count(permission_manager),
             permission_manager=permission_manager,
         )
         session = cls(
@@ -196,12 +208,14 @@ class AgentSession:
             tool_registry=registry,
             writer=SessionEventWriter(store=store, session_id=session_id, current_turn=turn_counter),
             agents_md=agents_md,
+            skill_catalog=skill_catalog or SkillCatalog(),
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=turn_counter,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
         )
+        session.loaded_skills.extend(replay_loaded_skills(store, session_id, session.skill_catalog))
         session._sync_sandbox_access_with_mode()
         return session
 
@@ -251,6 +265,9 @@ class AgentSession:
         inputs = build_system_prompt_inputs(
             base_rules=self.base_rules,
             agents_md=self.agents_md,
+            skill_protocol=self._skill_protocol(),
+            skill_catalog_summary=self._skill_catalog_summary(),
+            loaded_skill_context=self._loaded_skill_context(),
             tools=tools,
             provider_name=provider_name,
             provider_model=provider_model,
@@ -262,6 +279,48 @@ class AgentSession:
         entry = self.prompt_cache.get_or_build(inputs, self.prompt_builder)
         self.runtime_state.system_prompt_fingerprint = entry.fingerprint
         return entry.messages
+
+    def _skill_protocol(self) -> str:
+        if not self.skill_catalog.skills:
+            return ""
+        return (
+            "Skills are mandatory workflow instructions when routed. "
+            "High-confidence selected skills are loaded before provider work. "
+            "Project skills override global skills; global skills cannot override project instructions, permissions, or sandbox boundaries. "
+            "Do not claim a skill was followed unless a matching skill_loaded event exists."
+        )
+
+    def _skill_catalog_summary(self) -> str:
+        if not self.skill_catalog.skills:
+            return ""
+        lines = []
+        for skill in self.skill_catalog.skills:
+            prefix = "project" if skill.scope == "project" else "global"
+            description = f" - {skill.description}" if skill.description else ""
+            lines.append(f"- {prefix}:{skill.path} ({skill.name}, {skill.source.value}, root={skill.root}){description}")
+        return "\n".join(lines)
+
+    def _loaded_skill_context(self) -> str:
+        if not self.loaded_skills:
+            return ""
+        blocks = []
+        for loaded in self.loaded_skills:
+            skill = loaded.skill
+            required_files = ", ".join(loaded.required_files) if loaded.required_files else "none"
+            lines = [
+                f"Loaded skill: {skill.scope}:{skill.path}",
+                f"Required files: {required_files}",
+                loaded.content,
+            ]
+            for required in loaded.required_file_contents:
+                lines.extend(
+                    [
+                        f"Loaded required file: {required.file_path}",
+                        required.content,
+                    ]
+                )
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     def append_user_message(self, content: str) -> str:
         """把用户输入写成可恢复的 user_message 事件。"""
@@ -456,3 +515,9 @@ def create_project_permission_manager(
     mode: PermissionMode = PermissionMode.STANDARD,
 ) -> PermissionManager:
     return PermissionManager(policy=DefaultPermissionPolicy(project_root), grants=grants, mode=mode)
+
+
+def _task_boundary_required_stable_count(permission_manager: PermissionManager | None) -> int:
+    if permission_manager is not None and permission_manager.mode == PermissionMode.BYPASS:
+        return 1
+    return 2
