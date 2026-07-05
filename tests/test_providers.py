@@ -624,6 +624,26 @@ def test_openai_compatible_provider_uses_capability_token_param_and_extra_body()
     assert client.completions.last_params["extra_body"] == {"preset": True, "request": True}
 
 
+def test_openai_compatible_provider_sends_parallel_tool_calls_when_supported():
+    client = _FakeOpenAIClient()
+    provider = OpenAICompatibleProvider(
+        name="test-openai",
+        model="test-model",
+        api_key="test-key",
+        client=client,
+        capabilities=ProviderCapabilities(supports_parallel_tool_calls=True),
+    )
+
+    provider.complete(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="读取文件")],
+            tools=[ToolDefinition(name="read_file", description="读取文件")],
+        )
+    )
+
+    assert client.completions.last_params["parallel_tool_calls"] is True
+
+
 def test_openai_compatible_provider_converts_forced_tool_choice():
     client = _FakeOpenAIClient()
     provider = OpenAICompatibleProvider(

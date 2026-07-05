@@ -215,6 +215,7 @@ def run_config_command(args: argparse.Namespace) -> int:
         print(f"provider: {config.provider_name}")
         print(f"model: {_effective_model(config)}")
         print(f"base_url: {_effective_base_url(config)}")
+        print(f"parallel_tool_calls: {_effective_parallel_tool_calls(config)}")
         print("config_files:")
         for path in config.loaded_config_paths:
             print(f"  - {path}")
@@ -233,6 +234,15 @@ def _effective_model(config) -> str:
 def _effective_base_url(config) -> str:
     base_url = config.get_provider_value("base_url", env="FIRSTCODER_BASE_URL")
     return base_url or "<provider default>"
+
+
+def _effective_parallel_tool_calls(config) -> str:
+    enabled = config.get_provider_bool(
+        "parallel_tool_calls",
+        env="FIRSTCODER_PARALLEL_TOOL_CALLS",
+        default=False,
+    )
+    return "true" if enabled else "false"
 
 
 def _benchmark_limits(max_tool_rounds: int | None) -> AgentLoopLimits:

@@ -7,6 +7,7 @@ from firstcoder.providers.anthropic_provider import AnthropicProvider
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.presets import PROVIDER_PRESETS
+from firstcoder.providers.types import ProviderCapabilities
 
 
 class ProviderConfigError(ValueError):
@@ -113,6 +114,20 @@ def _create_custom_openai_compatible(config: AppConfig) -> ChatProvider:
         model=model,
         api_key=api_key,
         base_url=config.get_provider_value("base_url", env="FIRSTCODER_BASE_URL", provider_name=provider_display_name),
+        capabilities=_openai_compatible_capabilities(config, provider_name=provider_display_name),
+    )
+
+
+def _openai_compatible_capabilities(config: AppConfig, *, provider_name: str) -> ProviderCapabilities:
+    supports_parallel_tool_calls = config.get_provider_bool(
+        "parallel_tool_calls",
+        env="FIRSTCODER_PARALLEL_TOOL_CALLS",
+        default=False,
+        provider_name=provider_name,
+    )
+    return ProviderCapabilities(
+        supports_streaming=True,
+        supports_parallel_tool_calls=bool(supports_parallel_tool_calls),
     )
 
 

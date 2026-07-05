@@ -87,11 +87,18 @@ def test_terminal_bench_setup_script_installs_git_when_missing() -> None:
     assert 'missing_packages+=("git")' in script
     assert 'AGENT_VENV="/opt/firstcoder-agent/.venv"' in script
     assert 'missing_packages+=("python3-venv")' in script
+    assert 'missing_packages+=("python3.11" "python3.11-venv")' in script
+    assert 'PYTHON_BIN="python3"' in script
+    assert 'PYTHON_BIN="python3.11"' in script
+    assert "python3-pip" not in script
+    assert "apt-get install -y --no-install-recommends" in script
     assert 'venv_probe="$(mktemp -d)"' in script
-    assert 'python3 -m venv "$venv_probe/test-venv"' in script
+    assert '"$PYTHON_BIN" -m venv "$venv_probe/test-venv"' in script
     assert '"$venv_probe/test-venv/bin/python" -m pip --version' in script
-    assert 'python3 -m venv "$AGENT_VENV"' in script
+    assert '"$PYTHON_BIN" - <<' in script
+    assert '"$PYTHON_BIN" -m venv "$AGENT_VENV"' in script
     assert 'fail "venv pip is unavailable"' in script
+    assert 'fail "python >=3.11 is required"' in script
     assert '"$AGENT_VENV/bin/python" -m pip install "$PACKAGE_SPEC"' in script
     assert 'fail "pip install failed"' in script
     assert "pip install --upgrade pip" not in script

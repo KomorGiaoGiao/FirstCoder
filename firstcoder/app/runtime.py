@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import anyio
 
+from firstcoder.agent.cancellation import CancellationToken
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
@@ -87,10 +89,44 @@ class AgentChatRunner:
     last_pending_input: UserInputRequest | None = None
     stream_event_handler: Callable[[ChatStreamEvent], None] | None = None
     tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None
+    pending_guidance: list[str] = field(default_factory=list)
+    _guidance_lock: threading.Lock = field(default_factory=threading.Lock)
+    _cancellation_lock: threading.Lock = field(default_factory=threading.Lock)
+    _active_cancellation_token: CancellationToken | None = None
+
+    def add_guidance(self, content: str) -> None:
+        text = content.strip()
+        if not text:
+            return
+        with self._guidance_lock:
+            self.pending_guidance.append(text)
+
+    def drain_guidance(self) -> list[str]:
+        with self._guidance_lock:
+            guidance = list(self.pending_guidance)
+            self.pending_guidance.clear()
+        return guidance
+
+    def cancel_current_turn(self) -> None:
+        with self._cancellation_lock:
+            if self._active_cancellation_token is not None:
+                self._active_cancellation_token.cancel()
+
+    def _begin_cancellable_turn(self) -> CancellationToken:
+        token = CancellationToken()
+        with self._cancellation_lock:
+            self._active_cancellation_token = token
+        return token
+
+    def _finish_cancellable_turn(self, token: CancellationToken) -> None:
+        with self._cancellation_lock:
+            if self._active_cancellation_token is token:
+                self._active_cancellation_token = None
 
     def run_user_turn(self, content: str) -> ChatResponse:
         before_count = len(self.current_session.rebuild_view().messages)
         self.last_pending_input = None
+        cancellation_token = self._begin_cancellable_turn()
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
@@ -99,10 +135,15 @@ class AgentChatRunner:
             context_manager=self.context_manager,
             limits=self.limits,
             tool_event_handler=self.tool_event_handler,
+            guidance_provider=self.drain_guidance,
+            cancellation_token=cancellation_token,
             **self._legacy_max_tool_rounds_kwargs(),
         )
         self.loops.append(loop)
-        result = loop.run_user_turn_interactive(content)
+        try:
+            result = loop.run_user_turn_interactive(content)
+        finally:
+            self._finish_cancellable_turn(cancellation_token)
         self.last_stream_events = []
         self.last_pending_input = result.pending_input
         after_view = self.current_session.rebuild_view()
@@ -129,6 +170,7 @@ class AgentChatRunner:
 
         before_count = len(self.current_session.rebuild_view().messages)
         self.last_pending_input = None
+        cancellation_token = self._begin_cancellable_turn()
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
@@ -137,10 +179,15 @@ class AgentChatRunner:
             context_manager=self.context_manager,
             limits=self.limits,
             tool_event_handler=self.tool_event_handler,
+            guidance_provider=self.drain_guidance,
+            cancellation_token=cancellation_token,
             **self._legacy_max_tool_rounds_kwargs(),
         )
         self.loops.append(loop)
-        result = loop.resume_with_user_input(request_id, answer)
+        try:
+            result = loop.resume_with_user_input(request_id, answer)
+        finally:
+            self._finish_cancellable_turn(cancellation_token)
         self.last_stream_events = []
         self.last_pending_input = result.pending_input
         after_view = self.current_session.rebuild_view()
@@ -170,6 +217,7 @@ class AgentChatRunner:
         if self.use_streaming:
             before_count = len(self.current_session.rebuild_view().messages)
             self.last_pending_input = None
+            cancellation_token = self._begin_cancellable_turn()
             loop = AgentLoop(
                 session=self.current_session.session,
                 provider=self.provider,
@@ -179,15 +227,20 @@ class AgentChatRunner:
                 limits=self.limits,
                 stream_event_handler=self.stream_event_handler,
                 tool_event_handler=self.tool_event_handler,
+                guidance_provider=self.drain_guidance,
+                cancellation_token=cancellation_token,
                 **self._legacy_max_tool_rounds_kwargs(),
             )
             self.loops.append(loop)
             self.last_display_lines = []
             self.last_stream_events = []
-            response = await anyio.to_thread.run_sync(
-                _run_coroutine_in_thread,
-                loop.run_user_turn_streaming(content),
-            )
+            try:
+                response = await anyio.to_thread.run_sync(
+                    _run_coroutine_in_thread,
+                    loop.run_user_turn_streaming(content),
+                )
+            finally:
+                self._finish_cancellable_turn(cancellation_token)
             self.last_stream_events = list(loop.last_stream_events)
             raw_pending = response.raw.get("pending_input") if isinstance(response.raw, dict) else None
             self.last_pending_input = raw_pending if isinstance(raw_pending, UserInputRequest) else None
@@ -203,6 +256,7 @@ class AgentChatRunner:
         if self.use_streaming:
             before_count = len(self.current_session.rebuild_view().messages)
             self.last_pending_input = None
+            cancellation_token = self._begin_cancellable_turn()
             loop = AgentLoop(
                 session=self.current_session.session,
                 provider=self.provider,
@@ -212,15 +266,20 @@ class AgentChatRunner:
                 limits=self.limits,
                 stream_event_handler=self.stream_event_handler,
                 tool_event_handler=self.tool_event_handler,
+                guidance_provider=self.drain_guidance,
+                cancellation_token=cancellation_token,
                 **self._legacy_max_tool_rounds_kwargs(),
             )
             self.loops.append(loop)
             self.last_display_lines = []
             self.last_stream_events = []
-            result = await anyio.to_thread.run_sync(
-                _run_coroutine_in_thread,
-                loop.resume_with_user_input_streaming(request_id, answer),
-            )
+            try:
+                result = await anyio.to_thread.run_sync(
+                    _run_coroutine_in_thread,
+                    loop.resume_with_user_input_streaming(request_id, answer),
+                )
+            finally:
+                self._finish_cancellable_turn(cancellation_token)
             self.last_stream_events = list(loop.last_stream_events)
             self.last_pending_input = result.pending_input
             after_view = self.current_session.rebuild_view()

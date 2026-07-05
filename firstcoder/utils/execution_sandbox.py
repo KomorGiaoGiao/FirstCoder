@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from firstcoder.agent.cancellation import current_cancellation_token
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import CommandResult, run_command
@@ -66,6 +67,7 @@ class ExecutionSandbox:
             max_output_chars=max_output_chars,
             shell=shell,
             env=self.build_env(extra_env),
+            cancellation_token=current_cancellation_token(),
         )
 
 

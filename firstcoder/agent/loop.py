@@ -12,6 +12,7 @@ from typing import Protocol
 
 import anyio
 
+from firstcoder.agent.cancellation import AgentCancelledError, CancellationToken, cancellation_context
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
 from firstcoder.agent.user_input import (
@@ -25,6 +26,7 @@ from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
 from firstcoder.context.system_prompt import PromptPrefixCache
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
+from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
@@ -50,6 +52,19 @@ _PARALLEL_READONLY_TOOL_NAMES = frozenset(
         "diagnostics",
     }
 )
+_BYPASS_PARALLEL_TOOL_NAMES = _PARALLEL_READONLY_TOOL_NAMES | frozenset(
+    {
+        "write",
+        "edit",
+        "delete",
+        "apply_patch",
+        "shell",
+        "python_exec",
+        "fetch",
+        "web_search",
+    }
+)
+_TODO_STALE_TOOL_RESULT_THRESHOLD = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +114,8 @@ class AgentLoop:
         clock=time.monotonic,
         stream_event_handler: Callable[[ChatStreamEvent], None] | None = None,
         tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None,
+        guidance_provider: Callable[[], list[str]] | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> None:
         self.session = session
         self.provider = provider
@@ -115,7 +132,10 @@ class AgentLoop:
         self.last_stream_events: list[ChatStreamEvent] = []
         self.stream_event_handler = stream_event_handler
         self.tool_event_handler = tool_event_handler
+        self.guidance_provider = guidance_provider
+        self.cancellation_token = cancellation_token
         self._skills_prepared_for_turn: int | None = None
+        self._last_todo_stale_reminder_count = 0
         # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
         # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
@@ -161,6 +181,7 @@ class AgentLoop:
             )
 
         self._begin_turn()
+        self._check_cancelled()
         self.session.append_user_message(content)
         # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
         # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
@@ -180,6 +201,7 @@ class AgentLoop:
         if result is not None:
             return result
         self._begin_turn()
+        self._check_cancelled()
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
     async def resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
@@ -189,6 +211,7 @@ class AgentLoop:
         if result is not None:
             return result
         self._begin_turn()
+        self._check_cancelled()
         return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
 
     async def run_user_turn_streaming(self, content: str) -> ChatResponse:
@@ -211,6 +234,7 @@ class AgentLoop:
             )
 
         self._begin_turn()
+        self._check_cancelled()
         self.session.append_user_message(content)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
@@ -282,7 +306,9 @@ class AgentLoop:
                 pending.tool_call,
                 permission_request=pending.permission_request,
             )
-            result = self.session.execute_tool_call_after_permission_confirmation(pending.tool_call)
+            self._check_cancelled()
+            with cancellation_context(self.cancellation_token):
+                result = self.session.execute_tool_call_after_permission_confirmation(pending.tool_call)
             self._emit_tool_event(
                 "finished",
                 pending.tool_call,
@@ -338,8 +364,9 @@ class AgentLoop:
                 pending.tool_call,
                 permission_request=pending.permission_request,
             )
+            self._check_cancelled()
             result = await anyio.to_thread.run_sync(
-                self.session.execute_tool_call_after_permission_confirmation,
+                self._execute_tool_call_after_permission_with_cancellation_context,
                 pending.tool_call,
             )
             self._emit_tool_event(
@@ -355,6 +382,11 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return None
 
+    def _execute_tool_call_after_permission_with_cancellation_context(self, tool_call: ToolCall) -> ToolResult:
+        self._check_cancelled()
+        with cancellation_context(self.cancellation_token):
+            return self.session.execute_tool_call_after_permission_confirmation(tool_call)
+
     def _complete_once(self, *, tool_choice="auto") -> ChatResponse:
         """构造一次 provider 请求并获得模型响应。
 
@@ -362,6 +394,8 @@ class AgentLoop:
         prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
         """
 
+        self._check_cancelled()
+        self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
@@ -376,6 +410,7 @@ class AgentLoop:
         )
         self._check_provider_call_limit()
         self._check_turn_timeout()
+        self._check_cancelled()
         self.provider_call_count += 1
         return self.provider.complete(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice))
 
@@ -453,6 +488,8 @@ class AgentLoop:
         才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
         """
 
+        self._check_cancelled()
+        self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
@@ -468,8 +505,10 @@ class AgentLoop:
         final_response: ChatResponse | None = None
         self._check_provider_call_limit()
         self._check_turn_timeout()
+        self._check_cancelled()
         self.provider_call_count += 1
         async for event in self.provider.astream(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice)):
+            self._check_cancelled()
             self.last_stream_events.append(event)
             if self.stream_event_handler is not None:
                 self.stream_event_handler(event)
@@ -515,37 +554,23 @@ class AgentLoop:
         try:
             response = self._drop_unsupported_tool_calls(complete_once())
             tool_rounds = 0
-            while response.tool_calls:
-                if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                    response = self._tool_round_limit_response(response)
-                    break
-
-                # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
-                # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
-                self.session.append_assistant_response(response)
-                execution = self._execute_tool_calls_interactive(response.tool_calls)
-                if execution.pending_input is not None:
-                    return AgentTurnResult(
-                        status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                        pending_input=execution.pending_input,
-                    )
-                if execution.task_hash_changed:
-                    self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
-                self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
-
-                if self.limits.successful_verification_stop and execution.successful_verification:
-                    response = self._drop_unsupported_tool_calls(complete_once(tool_choice="none"))
-                    break
-
-                tool_rounds += 1
-                if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                    response = self._tool_round_limit_response(response)
-                    break
-                # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
-                # 重新投影完整历史，让模型读取刚才的工具输出。
-                response = self._drop_unsupported_tool_calls(complete_once())
+            response, pending_input = self._continue_tool_loop_from_response(response, complete_once, tool_rounds)
+            if pending_input is not None:
+                return AgentTurnResult(
+                    status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
+                    pending_input=pending_input,
+                )
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
+        except AgentCancelledError:
+            response = self._interrupted_response()
+
+        if self._is_cancelled():
+            response = self._interrupted_response()
+            self.session.append_assistant_response(response)
+            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+            return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
+        response = self._run_todo_self_check_if_needed(response, complete_once)
 
         # 没有工具调用时，这条 response 就是最终 assistant 回复。命中轮次上限时也会写入
         # 一条纯文本说明，避免保存未执行的 tool_call。
@@ -559,37 +584,174 @@ class AgentLoop:
         try:
             response = self._drop_unsupported_tool_calls(await complete_once())
             tool_rounds = 0
-            while response.tool_calls:
-                if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                    response = self._tool_round_limit_response(response)
-                    break
-
-                self.session.append_assistant_response(response)
-                execution = await self._execute_tool_calls_interactive_async(response.tool_calls)
-                if execution.pending_input is not None:
-                    return AgentTurnResult(
-                        status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                        pending_input=execution.pending_input,
-                    )
-                if execution.task_hash_changed:
-                    self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
-                self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
-
-                if self.limits.successful_verification_stop and execution.successful_verification:
-                    response = self._drop_unsupported_tool_calls(await complete_once(tool_choice="none"))
-                    break
-
-                tool_rounds += 1
-                if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                    response = self._tool_round_limit_response(response)
-                    break
-                response = self._drop_unsupported_tool_calls(await complete_once())
+            response, pending_input = await self._continue_tool_loop_from_response_async(response, complete_once, tool_rounds)
+            if pending_input is not None:
+                return AgentTurnResult(
+                    status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
+                    pending_input=pending_input,
+                )
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
+        except AgentCancelledError:
+            response = self._interrupted_response()
+
+        if self._is_cancelled():
+            response = self._interrupted_response()
+            self.session.append_assistant_response(response)
+            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+            return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
+        response = await self._run_todo_self_check_if_needed_async(response, complete_once)
 
         self.session.append_assistant_response(response)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
+
+    def _continue_tool_loop_from_response(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None]:
+        while response.tool_calls:
+            self._check_cancelled()
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None
+
+            # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
+            # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
+            self.session.append_assistant_response(response)
+            execution = self._execute_tool_calls_interactive(response.tool_calls)
+            if execution.pending_input is not None:
+                return response, execution.pending_input
+            if execution.task_hash_changed:
+                self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
+            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
+            if self.limits.successful_verification_stop and execution.successful_verification:
+                return self._drop_unsupported_tool_calls(complete_once(tool_choice="none")), None
+
+            tool_rounds += 1
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None
+            # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
+            # 重新投影完整历史，让模型读取刚才的工具输出。
+            reminder = self._todo_progress_reminder_prompt()
+            if reminder:
+                self.session.append_user_message(reminder)
+            self._check_cancelled()
+            response = self._drop_unsupported_tool_calls(complete_once())
+        return response, None
+
+    def _run_todo_self_check_if_needed(self, response: ChatResponse, complete_once) -> ChatResponse:
+        prompt = self._todo_self_check_prompt()
+        if not prompt:
+            return response
+        self.session.append_user_message(prompt)
+        response = self._drop_unsupported_tool_calls(complete_once())
+        response, _ = self._continue_tool_loop_from_response(response, complete_once, 0)
+        return response
+
+    async def _run_todo_self_check_if_needed_async(self, response: ChatResponse, complete_once) -> ChatResponse:
+        prompt = self._todo_self_check_prompt()
+        if not prompt:
+            return response
+        self.session.append_user_message(prompt)
+        response = self._drop_unsupported_tool_calls(await complete_once())
+        response, _ = await self._continue_tool_loop_from_response_async(response, complete_once, 0)
+        return response
+
+    async def _continue_tool_loop_from_response_async(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None]:
+        while response.tool_calls:
+            self._check_cancelled()
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None
+
+            self.session.append_assistant_response(response)
+            execution = await self._execute_tool_calls_interactive_async(response.tool_calls)
+            if execution.pending_input is not None:
+                return response, execution.pending_input
+            if execution.task_hash_changed:
+                self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
+            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
+            if self.limits.successful_verification_stop and execution.successful_verification:
+                return self._drop_unsupported_tool_calls(await complete_once(tool_choice="none")), None
+
+            tool_rounds += 1
+            if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
+                return self._tool_round_limit_response(response), None
+            reminder = self._todo_progress_reminder_prompt()
+            if reminder:
+                self.session.append_user_message(reminder)
+            self._check_cancelled()
+            response = self._drop_unsupported_tool_calls(await complete_once())
+        return response, None
+
+    def _todo_self_check_prompt(self) -> str | None:
+        unfinished = self._latest_unfinished_todos()
+        if not unfinished:
+            return None
+        lines = [
+            "Self-check before final answer: there are unfinished todo items.",
+            "Continue the task or explicitly explain why these items no longer need action. Do not claim completion while they remain unresolved.",
+        ]
+        for item in unfinished:
+            lines.append(f"- [{item.get('status', 'pending')}] {item.get('content', '')}")
+        return "\n".join(lines)
+
+    def _todo_progress_reminder_prompt(self) -> str | None:
+        unfinished = self._latest_unfinished_todos()
+        if not unfinished:
+            return None
+        stale_count = self._non_todo_tool_results_since_latest_todo()
+        if stale_count < _TODO_STALE_TOOL_RESULT_THRESHOLD:
+            return None
+        if stale_count - self._last_todo_stale_reminder_count < _TODO_STALE_TOOL_RESULT_THRESHOLD:
+            return None
+        self._last_todo_stale_reminder_count = stale_count
+        lines = [
+            "Todo progress reminder: several tools have run since the todo list was last updated.",
+            "Update todo status if progress changed, or continue only if the current todo is still accurate.",
+        ]
+        for item in unfinished:
+            lines.append(f"- [{item.get('status', 'pending')}] {item.get('content', '')}")
+        return "\n".join(lines)
+
+    def _latest_unfinished_todos(self) -> list[dict[str, object]]:
+        latest: list[dict[str, object]] | None = None
+        for message in self.session.rebuild_view().messages:
+            if message.role != "tool":
+                continue
+            for part in message.parts:
+                if part.kind != "tool_result":
+                    continue
+                if part.metadata.get("tool_name") != "todo":
+                    continue
+                todos = part.metadata.get("data", {}).get("todos") if isinstance(part.metadata.get("data"), dict) else None
+                if isinstance(todos, list):
+                    latest = [item for item in todos if isinstance(item, dict)]
+        if not latest:
+            return []
+        return [item for item in latest if item.get("status") != "done"]
+
+    def _non_todo_tool_results_since_latest_todo(self) -> int:
+        count = 0
+        for message in self.session.rebuild_view().messages:
+            if message.role != "tool":
+                continue
+            for part in message.parts:
+                if part.kind != "tool_result":
+                    continue
+                if part.metadata.get("tool_name") == "todo":
+                    count = 0
+                    continue
+                count += 1
+        return count
 
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> bool:
         return self._execute_tool_calls_interactive(tool_calls).task_hash_changed
@@ -748,37 +910,50 @@ class AgentLoop:
         return end
 
     def _can_execute_in_parallel(self, tool_call: ToolCall) -> bool:
-        if tool_call.name not in _PARALLEL_READONLY_TOOL_NAMES:
+        if tool_call.name not in self._parallel_tool_names_for_current_mode():
             return False
         preflight = self.session.preflight_tool_call_permission(tool_call)
         return preflight is None or preflight.decision.kind == PermissionDecisionKind.ALLOW
 
+    def _parallel_tool_names_for_current_mode(self) -> frozenset[str]:
+        if self.session.permission_manager is not None and self.session.permission_manager.mode == PermissionMode.BYPASS:
+            return _BYPASS_PARALLEL_TOOL_NAMES
+        return _PARALLEL_READONLY_TOOL_NAMES
+
     def _execute_single_tool_call(self, tool_call: ToolCall) -> ToolResult:
+        self._check_cancelled()
         self._emit_tool_event("started", tool_call)
-        result = self.session.execute_tool_call(tool_call)
+        with cancellation_context(self.cancellation_token):
+            result = self.session.execute_tool_call(tool_call)
         self._emit_tool_event("finished", tool_call, result=result)
+        self._check_cancelled()
         return result
 
     async def _execute_single_tool_call_async(self, tool_call: ToolCall) -> ToolResult:
+        self._check_cancelled()
         self._emit_tool_event("started", tool_call)
-        result = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
+        result = await anyio.to_thread.run_sync(self._execute_tool_call_with_cancellation_context, tool_call)
         self._emit_tool_event("finished", tool_call, result=result)
+        self._check_cancelled()
         return result
 
     def _execute_parallel_readonly_batch(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        self._check_cancelled()
         for tool_call in tool_calls:
             self._emit_tool_event("started", tool_call)
         with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
-            results = list(executor.map(self.session.execute_tool_call, tool_calls))
+            results = list(executor.map(self._execute_tool_call_with_cancellation_context, tool_calls))
         for tool_call, result in zip(tool_calls, results, strict=True):
             self._emit_tool_event("finished", tool_call, result=result)
+        self._check_cancelled()
         return results
 
     async def _execute_parallel_readonly_batch_async(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        self._check_cancelled()
         results: list[ToolResult | None] = [None] * len(tool_calls)
 
         async def run_one(index: int, tool_call: ToolCall) -> None:
-            results[index] = await anyio.to_thread.run_sync(self.session.execute_tool_call, tool_call)
+            results[index] = await anyio.to_thread.run_sync(self._execute_tool_call_with_cancellation_context, tool_call)
 
         for tool_call in tool_calls:
             self._emit_tool_event("started", tool_call)
@@ -790,7 +965,13 @@ class AgentLoop:
         resolved = [result for result in results if result is not None]
         for tool_call, result in zip(tool_calls, resolved, strict=True):
             self._emit_tool_event("finished", tool_call, result=result)
+        self._check_cancelled()
         return resolved
+
+    def _execute_tool_call_with_cancellation_context(self, tool_call: ToolCall) -> ToolResult:
+        self._check_cancelled()
+        with cancellation_context(self.cancellation_token):
+            return self.session.execute_tool_call(tool_call)
 
     def _store_pending_permission_request(
         self,
@@ -896,6 +1077,15 @@ class AgentLoop:
         self.provider_call_count = 0
         self.turn_started_at = self.clock()
 
+    def _append_pending_guidance(self) -> None:
+        if self.guidance_provider is None:
+            return
+        guidance_items = self.guidance_provider()
+        for content in guidance_items:
+            text = content.strip()
+            if text:
+                self.session.append_user_message(text)
+
     def _check_provider_call_limit(self) -> None:
         limit = self.limits.max_provider_calls
         if limit is not None and self.provider_call_count >= limit:
@@ -907,6 +1097,13 @@ class AgentLoop:
             return
         if self.clock() - self.turn_started_at >= limit:
             raise _AgentLoopLimitReached(AgentLoopStopReason.TURN_TIMEOUT)
+
+    def _is_cancelled(self) -> bool:
+        return self.cancellation_token is not None and self.cancellation_token.is_cancelled
+
+    def _check_cancelled(self) -> None:
+        if self.cancellation_token is not None:
+            self.cancellation_token.raise_if_cancelled()
 
     def _drop_unsupported_tool_calls(self, response: ChatResponse) -> ChatResponse:
         """兜底保护：不支持工具的 provider 理论上不该返回 tool_calls。
@@ -966,6 +1163,16 @@ class AgentLoop:
             tool_calls=[],
             finish_reason=reason.value,
             raw=raw,
+        )
+
+    def _interrupted_response(self) -> ChatResponse:
+        return ChatResponse(
+            provider=self.provider.name,
+            model=self.provider.model,
+            content="当前任务已中断。",
+            tool_calls=[],
+            finish_reason="interrupted",
+            raw={"interrupted": True},
         )
 
 

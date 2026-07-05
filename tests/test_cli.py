@@ -156,6 +156,7 @@ def test_main_config_show_uses_project_config_without_leaking_key(tmp_path: Path
                 'name = "yurenapi"',
                 'base_url = "https://yurenapi.cn/v1"',
                 'api_key_env = "YURENAPI_API_KEY"',
+                "parallel_tool_calls = true",
             ]
         ),
         encoding="utf-8",
@@ -168,6 +169,7 @@ def test_main_config_show_uses_project_config_without_leaking_key(tmp_path: Path
     assert "provider: openai-compatible" in output
     assert "model: yurenapi/gpt-5.5" in output
     assert "base_url: https://yurenapi.cn/v1" in output
+    assert "parallel_tool_calls: true" in output
     assert "secret-key" not in output
 
 

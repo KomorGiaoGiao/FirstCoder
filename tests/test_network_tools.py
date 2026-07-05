@@ -155,3 +155,51 @@ def test_web_search_rejects_invalid_limits(tmp_path):
     assert results.error == "num_results 必须大于 0"
     assert chars.ok is False
     assert chars.error == "context_max_characters 必须大于 0"
+
+
+def test_web_search_definition_constrains_enum_parameters(tmp_path):
+    registry = create_builtin_registry(tmp_path, include_network_tools=True)
+    definition = {item.name: item for item in registry.definitions()}["web_search"]
+    properties = definition.parameters["properties"]
+
+    assert properties["search_type"]["enum"] == ["auto", "fast", "deep"]
+    assert properties["livecrawl"]["enum"] == ["fallback", "preferred"]
+
+
+def test_web_search_normalizes_common_model_boolean_livecrawl(monkeypatch, tmp_path):
+    payload = web_search_module.dumps_json(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": "search results"}]},
+        }
+    )
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return payload.encode("utf-8")
+
+        def getheaders(self):
+            return []
+
+    class FakeContext:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(req, timeout):
+        captured["body"] = req.data.decode("utf-8")
+        return FakeContext()
+
+    monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
+    registry = create_builtin_registry(tmp_path, include_network_tools=True)
+
+    result = registry.execute("web_search", {"query": "FirstCoder", "livecrawl": "false"})
+
+    assert result.ok is True
+    assert '"livecrawl":"fallback"' in captured["body"]

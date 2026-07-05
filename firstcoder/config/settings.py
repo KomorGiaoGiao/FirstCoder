@@ -64,6 +64,25 @@ class AppConfig:
             return value
         return default
 
+    def get_provider_bool(
+        self,
+        name: str,
+        *,
+        env: str | None = None,
+        default: bool | None = None,
+        provider_name: str | None = None,
+    ) -> bool | None:
+        """按配置优先级读取 provider 布尔字段。"""
+
+        if env:
+            env_value = self.get_env(env)
+            if env_value:
+                return _bool_value_from_raw(env_value)
+        value = self._provider_config_raw_value(name, provider_name=provider_name, prefer_project=True)
+        if value is not None:
+            return _bool_value_from_raw(value)
+        return default
+
     def get_config_value(self, name: str, *, default: str | None = None) -> str | None:
         """读取顶层配置字段，项目配置覆盖全局配置。"""
 
@@ -89,6 +108,20 @@ class AppConfig:
         configs = (self.project_config, self.global_config) if prefer_project else (self.global_config, self.project_config)
         for config in configs:
             value = _provider_value(config, name, provider_name=provider_name or self.provider_name)
+            if value is not None:
+                return value
+        return None
+
+    def _provider_config_raw_value(
+        self,
+        name: str,
+        *,
+        provider_name: str | None,
+        prefer_project: bool,
+    ) -> Any | None:
+        configs = (self.project_config, self.global_config) if prefer_project else (self.global_config, self.project_config)
+        for config in configs:
+            value = _provider_raw_value(config, name, provider_name=provider_name or self.provider_name)
             if value is not None:
                 return value
         return None
@@ -167,6 +200,7 @@ def render_default_config() -> str:
             'name = "yurenapi"',
             'base_url = "https://yurenapi.cn/v1"',
             'api_key_env = "YURENAPI_API_KEY"',
+            "parallel_tool_calls = true",
             "",
             "[permissions]",
             'mode = "ask"',
@@ -197,18 +231,25 @@ def _provider_name_from_config(config: dict[str, Any] | None) -> str | None:
 
 
 def _provider_value(config: dict[str, Any] | None, name: str, *, provider_name: str | None) -> str | None:
+    value = _provider_raw_value(config, name, provider_name=provider_name)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _provider_raw_value(config: dict[str, Any] | None, name: str, *, provider_name: str | None) -> Any | None:
     if not config:
         return None
     provider = config.get("provider")
     if not isinstance(provider, dict):
         return None
-    direct = _string_value(provider, name)
+    direct = provider.get(name)
     if direct is not None:
         return direct
     if provider_name:
         nested = provider.get(provider_name)
         if isinstance(nested, dict):
-            return _string_value(nested, name)
+            return nested.get(name)
     return None
 
 
@@ -219,3 +260,16 @@ def _string_value(config: dict[str, Any] | None, name: str) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _bool_value_from_raw(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"无法解析布尔配置值：{value}")

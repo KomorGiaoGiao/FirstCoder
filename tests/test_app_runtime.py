@@ -11,9 +11,11 @@ from firstcoder.agent.session import AgentSession
 from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.models import AgentMessage, MessagePart
+from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ProviderDiagnostics, ToolCall
 from firstcoder.tools.ask_user import create_ask_user_tool
+from firstcoder.tools.python_exec import create_python_exec_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import make_text_result, Tool
 
@@ -130,6 +132,67 @@ def test_agent_chat_runner_uses_current_session_and_can_follow_resume(tmp_path) 
         "第二轮",
         "second reply",
     ]
+
+
+def test_agent_chat_runner_cancel_current_turn_interrupts_running_python_exec(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    python_tool = create_python_exec_tool(tmp_path)
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_cancel_shell",
+        project_root=tmp_path,
+        tools=[python_tool],
+    )
+    session.set_permission_mode(PermissionMode.BYPASS)
+    state = CurrentSessionState(session)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_python",
+                        name="python_exec",
+                        arguments={"code": "import time; time.sleep(5)", "timeout_seconds": 10},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="should not continue"),
+        ]
+    )
+    runner = AgentChatRunner(current_session=state, provider=provider, tools=[python_tool])
+
+    async def run_and_cancel():
+        task = asyncio.create_task(runner.arun_user_turn("run slow shell"))
+        await asyncio.sleep(0.2)
+        started_at = time.perf_counter()
+        runner.cancel_current_turn()
+        response = await task
+        return response, time.perf_counter() - started_at
+
+    response, elapsed_after_cancel = asyncio.run(run_and_cancel())
+
+    assert response.finish_reason == "interrupted"
+    assert response.content == "当前任务已中断。"
+    assert elapsed_after_cancel < 2
+    assert len(provider.requests) == 1
+
+
+def test_agent_chat_runner_drains_pending_guidance_once(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(AgentSession.create(store=store, session_id="sess_unused", agents_md="")),
+        provider=FakeProvider([]),
+    )
+
+    runner.add_guidance("  先跑测试  ")
+    runner.add_guidance("")
+
+    assert runner.drain_guidance() == ["先跑测试"]
+    assert runner.drain_guidance() == []
 
 
 def test_chat_runner_passes_loop_limits_to_agent_loop(tmp_path) -> None:

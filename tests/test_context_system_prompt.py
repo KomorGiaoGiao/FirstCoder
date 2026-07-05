@@ -154,6 +154,8 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "# Communication style" in content
     assert "Call task_boundary before substantial work" in content
     assert "Never invent, guess, or display task hashes" in content
+    assert "issue multiple read-only tool calls in the same assistant response" in content
+    assert "Do not batch tools whose inputs depend on previous tool results" in content
     assert "Use todo for multi-step coding tasks" in content
     assert "After successful verification, stop calling tools" in content
 

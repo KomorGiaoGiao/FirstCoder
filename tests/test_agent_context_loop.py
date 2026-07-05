@@ -15,6 +15,7 @@ from firstcoder.agent.session import AgentSession
 from firstcoder.context.manager import ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.runtime_replay import replay_runtime_state
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import (
@@ -28,6 +29,7 @@ from firstcoder.providers.types import (
 )
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
+from firstcoder.tools.todo import create_todo_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import Tool, ToolResult
 
@@ -554,6 +556,53 @@ def test_agent_loop_runs_readonly_tool_calls_in_parallel_and_appends_results_in_
         "call_slow_second",
     ]
     assert [message.parts[0].content for message in tool_messages] == ["view:first", "grep:second"]
+
+
+def test_agent_loop_runs_bypass_allowed_tool_calls_in_parallel(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_parallel_bypass",
+        project_root=tmp_path,
+        tools=[_slow_named_tool("write", delay=0.2), _slow_named_tool("shell", delay=0.2)],
+    )
+    session.set_permission_mode(PermissionMode.BYPASS)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(id="call_write", name="write", arguments={"text": "first"}),
+                    ToolCall(id="call_shell", name="shell", arguments={"text": "second"}),
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+    tool_events: list[ToolExecutionEvent] = []
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        tool_event_handler=tool_events.append,
+    )
+
+    started_at = time.perf_counter()
+    result = loop.run_user_turn("bypass 并发")
+    elapsed = time.perf_counter() - started_at
+
+    assert result.content == "完成"
+    assert elapsed < 0.35
+    assert [event.kind for event in tool_events] == ["started", "started", "finished", "finished"]
+    view = store.rebuild_session_view("sess_parallel_bypass")
+    tool_messages = [message for message in view.messages if message.role == "tool"]
+    assert [message.parts[0].metadata["tool_call_id"] for message in tool_messages] == [
+        "call_write",
+        "call_shell",
+    ]
+    assert [message.parts[0].content for message in tool_messages] == ["write:first", "shell:second"]
 
 
 def test_agent_loop_streaming_runs_readonly_tool_calls_in_parallel(tmp_path) -> None:
@@ -1152,6 +1201,370 @@ def test_agent_loop_passes_tool_choice_none_for_final_only_completion(tmp_path) 
 
     assert response.content == "final"
     assert provider.requests[0].tool_choice == "none"
+
+
+def test_agent_loop_runs_todo_self_check_before_final_answer(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_self_check",
+        agents_md="",
+        tools=[create_todo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={
+                            "action": "set",
+                            "todos": [
+                                {"content": "读代码", "status": "done"},
+                                {"content": "跑测试", "status": "pending"},
+                            ],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="我完成了"),
+            ChatResponse(provider="fake", model="fake-model", content="还需要跑测试，我继续。"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "还需要跑测试，我继续。"
+    assert len(provider.requests) == 3
+    assert provider.requests[2].messages[-1].role == "user"
+    assert "unfinished todo" in provider.requests[2].messages[-1].content
+    assert "跑测试" in provider.requests[2].messages[-1].content
+
+
+def test_agent_loop_skips_todo_self_check_when_all_todos_done(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_self_check_done",
+        agents_md="",
+        tools=[create_todo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={
+                            "action": "set",
+                            "todos": [
+                                {"content": "读代码", "status": "done"},
+                                {"content": "跑测试", "status": "done"},
+                            ],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="我完成了"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "我完成了"
+    assert len(provider.requests) == 2
+
+
+def test_agent_loop_executes_tool_calls_after_todo_self_check(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_self_check_tools",
+        agents_md="",
+        tools=[create_todo_tool(), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={
+                            "action": "set",
+                            "todos": [{"content": "跑测试", "status": "pending"}],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="我完成了"),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo", name="echo", arguments={"text": "run tests"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_done",
+                        name="todo",
+                        arguments={"action": "update", "todo_id": "todo_1", "status": "done"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="现在完成了"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=10, max_provider_calls=10, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "现在完成了"
+    view = store.rebuild_session_view("sess_todo_self_check_tools")
+    tool_result_ids = [
+        part.metadata["tool_call_id"]
+        for message in view.messages
+        for part in message.parts
+        if part.kind == "tool_result"
+    ]
+    assert tool_result_ids == ["call_todo_set", "call_echo", "call_todo_done"]
+
+
+def test_agent_loop_reminds_model_when_todo_is_stale_during_tool_loop(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_stale_reminder",
+        agents_md="",
+        tools=[create_todo_tool(), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={"action": "set", "todos": [{"content": "跑测试", "status": "in_progress"}]},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_1", name="echo", arguments={"text": "1"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_2", name="echo", arguments={"text": "2"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_3", name="echo", arguments={"text": "3"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_done",
+                        name="todo",
+                        arguments={"action": "update", "todo_id": "todo_1", "status": "done"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=10, max_provider_calls=10, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "完成"
+    assert len(provider.requests) == 6
+    assert provider.requests[4].messages[-1].role == "user"
+    assert "Todo progress reminder" in provider.requests[4].messages[-1].content
+    assert "跑测试" in provider.requests[4].messages[-1].content
+
+
+def test_agent_loop_injects_guidance_before_next_provider_call(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_guidance", agents_md="", tools=[_echo_tool()])
+    guidance = ["先别总结，继续检查测试。"]
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo", name="echo", arguments={"text": "ok"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="收到，我继续检查测试。"),
+        ]
+    )
+    guidance_calls = 0
+
+    def drain_guidance() -> list[str]:
+        nonlocal guidance_calls
+        guidance_calls += 1
+        if guidance_calls == 1:
+            return []
+        return guidance.pop(0).splitlines() if guidance else []
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        tools=[_echo_tool()],
+        guidance_provider=drain_guidance,
+    ).run_user_turn("开始检查")
+
+    assert response.content == "收到，我继续检查测试。"
+    assert len(provider.requests) == 2
+    assert provider.requests[1].messages[-1].role == "user"
+    assert "先别总结，继续检查测试。" in provider.requests[1].messages[-1].content
+    assert guidance == []
+
+
+def test_agent_loop_resets_todo_stale_reminder_after_todo_update(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_stale_reset",
+        agents_md="",
+        tools=[create_todo_tool(), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={"action": "set", "todos": [{"content": "跑测试", "status": "in_progress"}]},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_1", name="echo", arguments={"text": "1"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_keep",
+                        name="todo",
+                        arguments={"action": "update", "todo_id": "todo_1", "status": "in_progress"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_2", name="echo", arguments={"text": "2"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_3", name="echo", arguments={"text": "3"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_4", name="echo", arguments={"text": "4"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_done",
+                        name="todo",
+                        arguments={"action": "update", "todo_id": "todo_1", "status": "done"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="收到提醒"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=10, max_provider_calls=10, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "收到提醒"
+    assert len(provider.requests) == 8
+    assert all("Todo progress reminder" not in request.messages[-1].content for request in provider.requests[:6])
+    assert "Todo progress reminder" in provider.requests[6].messages[-1].content
 
 
 def test_agent_loop_resets_provider_call_count_for_each_user_turn(tmp_path) -> None:

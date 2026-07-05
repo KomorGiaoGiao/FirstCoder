@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from rich.text import Text
 from textual.widgets import Markdown
 
 from firstcoder.agent.loop import ToolExecutionEvent
@@ -11,6 +12,7 @@ from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
+from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
 from firstcoder.app.tui import _turn_metrics_text
 from firstcoder.app.tui import _entry_classes, _tool_event_entry_kind, _tool_event_label, _tool_event_status
@@ -407,6 +409,32 @@ class FakePermissionResumeRunner(FakeChatRunner):
         return ChatResponse(provider="fake", model="fake", content="done")
 
 
+class FakePermissionMidTurnRunner(FakeChatRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_pending_input = None
+        self.resumes: list[tuple[str, str]] = []
+
+    async def arun_user_turn(self, content: str) -> ChatResponse:
+        self.inputs.append(content)
+        self.last_pending_input = UserInputRequest(
+            id="perm_write",
+            kind="permission_confirmation",
+            question="允许写 README 吗？",
+            options=[
+                UserInputOption(id="deny", label="Deny"),
+                UserInputOption(id="allow_once", label="Allow once"),
+            ],
+        )
+        return ChatResponse(provider="fake", model="fake", content="等待权限确认。")
+
+    async def aresume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
+        self.resumes.append((request_id, answer))
+        self.last_pending_input = None
+        self.last_display_lines = ["done"]
+        return ChatResponse(provider="fake", model="fake", content="done")
+
+
 class FakePermissionWaitingRunner(FakeChatRunner):
     def __init__(self) -> None:
         super().__init__()
@@ -440,6 +468,15 @@ class BlockingAsyncChatRunner(FakeChatRunner):
         self.started.set()
         await self.release.wait()
         return ChatResponse(provider="fake", model="fake", content="done")
+
+
+class BlockingGuidanceAsyncChatRunner(BlockingAsyncChatRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.guidance: list[str] = []
+
+    def add_guidance(self, content: str) -> None:
+        self.guidance.append(content)
 
 
 class UnhandledCommandHandler:
@@ -519,6 +556,52 @@ async def test_firstcoder_app_awaits_async_chat_runner_when_available() -> None:
 
     assert runner.inputs == ["hello"]
     assert runner.last_display_lines == ["async reply"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_queues_guidance_while_chat_is_running() -> None:
+    runner = BlockingGuidanceAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"start")
+        await pilot.press("enter")
+        await runner.started.wait()
+        await pilot.press(*"先别总结")
+        await pilot.press("enter")
+        await pilot.pause()
+        runner.release.set()
+
+    assert runner.inputs == ["start"]
+    assert runner.guidance == ["先别总结"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_double_escape_interrupts_running_chat() -> None:
+    runner = BlockingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"start")
+        await pilot.press("enter")
+        await runner.started.wait()
+        await pilot.press("escape")
+        assert app._chat_busy is True
+        await pilot.press("escape")
+        await pilot.pause()
+        output_text = "\n".join(
+            str(getattr(widget, "content", getattr(widget, "renderable", "")))
+            for widget in app.query_one("#output").query("Static")
+        )
+
+    assert runner.inputs == ["start"]
+    assert app._chat_busy is False
+    assert app._activity_text == "interrupted"
+    assert "Interrupted current turn." in output_text
 
 
 @pytest.mark.anyio
@@ -936,6 +1019,31 @@ def test_firstcoder_app_stops_post_tool_animation_when_next_tool_starts(monkeypa
     assert activity.updates[-1].rstrip().endswith("0.0s · 1 tool")
 
 
+def test_firstcoder_app_activity_line_summarizes_parallel_tool_events(monkeypatch) -> None:
+    runner = FakeToolEventAsyncChatRunner()
+    output = FakeOutput()
+    activity = FakeActivity()
+    timer = type("FakeTimer", (), {"stop": lambda self: None})()
+    app = FirstCoderApp(chat_runner=runner)
+
+    def query_one(selector, *args, **kwargs):
+        if selector == "#activity":
+            return activity
+        return output
+
+    monkeypatch.setattr(app, "query_one", query_one)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_interval", lambda *args, **kwargs: timer)
+
+    previous_handler = app._install_tool_event_handler()
+    runner.tool_event_handler(ToolExecutionEvent(kind="started", tool_call=ToolCall(id="call_view_1", name="view", arguments={})))
+    runner.tool_event_handler(ToolExecutionEvent(kind="started", tool_call=ToolCall(id="call_view_2", name="view", arguments={})))
+    app._restore_tool_event_handler(previous_handler)
+
+    assert activity.updates[-1].startswith("running [=   ] · 2 tools running")
+    assert activity.updates[-1].rstrip().endswith("0.0s · 2 tools")
+
+
 def test_firstcoder_app_animates_running_tool_status(monkeypatch) -> None:
     output = FakeOutput()
     activity = FakeActivity()
@@ -1267,6 +1375,19 @@ def test_tool_skipped_has_stable_gray_tool_class() -> None:
     )
 
 
+def test_plain_static_renders_tool_arguments_with_markup_characters_as_text() -> None:
+    content = (
+        'tool shell running\n'
+        '  正在调用工具：shell {"cmd": "python -m pytest tests/test_app_tui.py -q", "args": ["-q"]}'
+    )
+    widget = _plain_static(content, classes="message tool-message tool-running")
+
+    rendered = widget.render()
+    plain = rendered.plain if isinstance(rendered, Text) else str(rendered)
+
+    assert plain == content
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_displays_live_tool_status_during_turn() -> None:
@@ -1388,3 +1509,33 @@ async def test_firstcoder_app_routes_permission_answer_to_resume() -> None:
 
     assert runner.inputs == []
     assert runner.resumes == [("perm_write", "allow_once")]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_permission_resume_keeps_same_active_turn_metrics(monkeypatch) -> None:
+    runner = FakePermissionMidTurnRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"write readme")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        active_turn = app._active_chat_turn
+        assert active_turn is not None
+        assert app._chat_busy is False
+        started_at = app._turn_started_at
+        assert started_at > 0
+
+        app._turn_tool_count = 2
+        await pilot.press(*"allow once")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert runner.inputs == ["write readme"]
+    assert runner.resumes == [("perm_write", "allow_once")]
+    assert app._active_chat_turn is None
+    assert app._turn_started_at == started_at
+    assert app._turn_tool_count == 2

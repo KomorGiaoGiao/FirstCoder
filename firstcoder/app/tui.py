@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Protocol
+from uuid import uuid4
 
 from rich.markup import escape
 from rich.text import Text
@@ -27,6 +28,13 @@ from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript, T
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
 
 
+@dataclass(slots=True)
+class _ActiveChatTurn:
+    id: str
+    token: int
+    started_at: float
+
+
 class FirstCoderMarkdown(Markdown):
     """Markdown output that avoids Textual's fragile selection path."""
 
@@ -35,6 +43,11 @@ class FirstCoderMarkdown(Markdown):
         name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False})
         for name, block in Markdown.BLOCKS.items()
     }
+
+
+def _plain_static(content: object = "", *args, **kwargs) -> Static:
+    kwargs.setdefault("markup", False)
+    return Static(content, *args, **kwargs)
 
 
 def _observe_markdown_update(update_result) -> None:
@@ -86,6 +99,7 @@ class FirstCoderApp(App[None]):
     STREAM_RENDER_INTERVAL_SECONDS = 0.2
     WORKING_ANIMATION_INTERVAL_SECONDS = 0.18
     WORKING_FRAMES = ("[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]")
+    ESC_INTERRUPT_WINDOW_SECONDS = 1.0
     ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
     ACTIVITY_FRAMES = {
         "running": ("[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"),
@@ -106,6 +120,10 @@ class FirstCoderApp(App[None]):
         self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
         self._chat_busy = False
+        self._chat_worker = None
+        self._chat_turn_token = 0
+        self._active_chat_turn: _ActiveChatTurn | None = None
+        self._last_escape_at = 0.0
         self._stream_reasoning_started = False
         self._stream_text_started = False
         self._stream_text_needs_newline = False
@@ -126,6 +144,7 @@ class FirstCoderApp(App[None]):
         self._activity_timer: Timer | None = None
         self._turn_started_at = 0.0
         self._turn_tool_count = 0
+        self._running_tool_call_ids: set[str] = set()
         self._live_tool_events_seen = False
         self._stream_segment_closed_for_tool = False
         self._activity_text = "idle · ready"
@@ -178,10 +197,16 @@ class FirstCoderApp(App[None]):
             return
 
         if self._chat_busy:
-            self._write_line(
-                "Chat is still running. Please wait for the current turn to finish.",
-                kind=TuiEntryKind.SYSTEM,
-            )
+            add_guidance = getattr(self.chat_runner, "add_guidance", None)
+            if add_guidance is None:
+                self._write_line(
+                    "Chat is still running. Please wait for the current turn to finish.",
+                    kind=TuiEntryKind.SYSTEM,
+                )
+                return
+            add_guidance(text)
+            self._write_line("Guidance queued for the running turn.", kind=TuiEntryKind.SYSTEM)
+            self._set_activity("running · guidance queued")
             return
 
         pending = getattr(self.chat_runner, "last_pending_input", None)
@@ -191,13 +216,20 @@ class FirstCoderApp(App[None]):
                 self._write_line(_permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
                 return
             self._chat_busy = True
-            self.run_worker(self._resume_permission_turn(pending.id, choice))
+            token = self._resume_active_chat_turn()
+            self._chat_worker = self.run_worker(self._resume_permission_turn(pending.id, choice, token))
             return
 
         self._chat_busy = True
-        self.run_worker(self._run_chat_turn(text))
+        token = self._begin_active_chat_turn()
+        self._chat_worker = self.run_worker(self._run_chat_turn(text, token))
 
     def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            if self._handle_escape_interrupt():
+                event.stop()
+                event.prevent_default()
+            return
         if event.key not in {"up", "down"}:
             return
         focused = getattr(self, "focused", None)
@@ -211,6 +243,69 @@ class FirstCoderApp(App[None]):
         event.prevent_default()
         input_widget.value = recalled
         input_widget.cursor_position = len(recalled)
+
+    def _next_chat_turn_token(self) -> int:
+        self._chat_turn_token += 1
+        return self._chat_turn_token
+
+    def _begin_active_chat_turn(self) -> int:
+        token = self._next_chat_turn_token()
+        self._active_chat_turn = _ActiveChatTurn(
+            id=uuid4().hex,
+            token=token,
+            started_at=self._start_turn_metrics(),
+        )
+        return token
+
+    def _resume_active_chat_turn(self) -> int:
+        active_turn = self._active_chat_turn
+        if active_turn is not None:
+            token = self._next_chat_turn_token()
+            active_turn.token = token
+            self._preserve_turn_metrics()
+            return token
+        return self._begin_active_chat_turn()
+
+    def _is_current_chat_turn(self, token: int) -> bool:
+        return token == self._chat_turn_token
+
+    def _finish_chat_turn(self, token: int) -> None:
+        if not self._is_current_chat_turn(token):
+            return
+        self._chat_busy = False
+        self._chat_worker = None
+        if getattr(self.chat_runner, "last_pending_input", None) is None:
+            self._active_chat_turn = None
+
+    def _handle_escape_interrupt(self) -> bool:
+        if not self._chat_busy:
+            self._last_escape_at = 0.0
+            return False
+        now = time.monotonic()
+        if now - self._last_escape_at > self.ESC_INTERRUPT_WINDOW_SECONDS:
+            self._last_escape_at = now
+            self._set_activity("running · press Esc again to interrupt")
+            return True
+        self._last_escape_at = 0.0
+        self._interrupt_chat_turn()
+        return True
+
+    def _interrupt_chat_turn(self) -> None:
+        self._chat_turn_token += 1
+        cancel_current_turn = getattr(self.chat_runner, "cancel_current_turn", None)
+        if cancel_current_turn is not None:
+            cancel_current_turn()
+        worker = self._chat_worker
+        self._chat_worker = None
+        if worker is not None and hasattr(worker, "cancel"):
+            worker.cancel()
+        self._chat_busy = False
+        self._active_chat_turn = None
+        self._running_tool_call_ids.clear()
+        self._stop_working_animation()
+        self._stop_activity_animation()
+        self._set_activity("interrupted")
+        self._write_line("Interrupted current turn.", kind=TuiEntryKind.SYSTEM)
 
     def _record_input_history(self, text: str) -> None:
         if not self._input_history or self._input_history[-1] != text:
@@ -236,58 +331,73 @@ class FirstCoderApp(App[None]):
             return self._input_history[self._input_history_index]
         return None
 
-    async def _resume_permission_turn(self, request_id: str, answer: str) -> None:
+    async def _resume_permission_turn(self, request_id: str, answer: str, token: int) -> None:
         previous_stream_handler = None
         previous_tool_handler = None
         try:
-            previous_stream_handler = self._install_stream_event_handler()
-            previous_tool_handler = self._install_tool_event_handler()
-            self._start_turn_metrics()
+            previous_stream_handler = self._install_stream_event_handler(token)
+            previous_tool_handler = self._install_tool_event_handler(token)
+            self._preserve_turn_metrics()
             self._show_working_indicator("resuming with permission answer...")
             async_resume = getattr(self.chat_runner, "aresume_with_user_input", None)
             if async_resume is not None:
                 response = await async_resume(request_id, answer)
-                self._write_chat_response(response)
+                if self._is_current_chat_turn(token):
+                    self._write_chat_response(response)
                 return
             resume = getattr(self.chat_runner, "resume_with_user_input", None)
             if resume is None:
-                self._write_line("Permission resume is not configured.", kind=TuiEntryKind.ERROR)
+                if self._is_current_chat_turn(token):
+                    self._write_line("Permission resume is not configured.", kind=TuiEntryKind.ERROR)
                 return
             response = resume(request_id, answer)
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
-            self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
-            self._refresh_session_subtitle()
+            if self._is_current_chat_turn(token):
+                self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
+                self._refresh_session_subtitle()
             return
         finally:
             self._restore_tool_event_handler(previous_tool_handler)
             self._restore_stream_event_handler(previous_stream_handler)
-            self._chat_busy = False
+            self._finish_chat_turn(token)
 
-        self._write_chat_response(response)
+        if self._is_current_chat_turn(token):
+            self._write_chat_response(response)
 
-    async def _run_chat_turn(self, text: str) -> None:
+    async def _run_chat_turn(self, text: str, token: int) -> None:
         previous_stream_handler = None
         previous_tool_handler = None
         try:
-            previous_stream_handler = self._install_stream_event_handler()
-            previous_tool_handler = self._install_tool_event_handler()
-            self._start_turn_metrics()
+            previous_stream_handler = self._install_stream_event_handler(token)
+            previous_tool_handler = self._install_tool_event_handler(token)
+            if self._active_chat_turn is None:
+                self._active_chat_turn = _ActiveChatTurn(
+                    id=uuid4().hex,
+                    token=token,
+                    started_at=self._start_turn_metrics(),
+                )
             self._show_working_indicator("planning next step...")
             async_runner = getattr(self.chat_runner, "arun_user_turn", None) if self.chat_runner else None
             if async_runner is not None:
                 response = await async_runner(text)
             else:
                 response = self.chat_runner.run_user_turn(text)
+        except asyncio.CancelledError:
+            return
         except Exception as exc:
-            self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
-            self._refresh_session_subtitle()
+            if self._is_current_chat_turn(token):
+                self._write_line(f"Chat error: {exc}", kind=TuiEntryKind.ERROR)
+                self._refresh_session_subtitle()
             return
         finally:
             self._restore_tool_event_handler(previous_tool_handler)
             self._restore_stream_event_handler(previous_stream_handler)
-            self._chat_busy = False
+            self._finish_chat_turn(token)
 
-        self._write_chat_response(response)
+        if self._is_current_chat_turn(token):
+            self._write_chat_response(response)
 
     def _write_chat_response(self, response) -> None:
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
@@ -361,7 +471,7 @@ class FirstCoderApp(App[None]):
             left_gap = width - _markup_width(brand) - _markup_width(status) - _markup_width(metadata) - right_gap
         return f"{brand}{' ' * left_gap}{status}{' ' * right_gap}{metadata}"
 
-    def _install_stream_event_handler(self):
+    def _install_stream_event_handler(self, token: int | None = None):
         if self.chat_runner is None or not hasattr(self.chat_runner, "stream_event_handler"):
             return None
         previous_handler = getattr(self.chat_runner, "stream_event_handler", None)
@@ -384,6 +494,8 @@ class FirstCoderApp(App[None]):
         def handle_event(event) -> None:
             if previous_handler is not None:
                 previous_handler(event)
+            if token is not None and not self._is_current_chat_turn(token):
+                return
             kind = getattr(event, "kind", None)
             text = getattr(event, "text", "") or ""
             if not text:
@@ -404,7 +516,7 @@ class FirstCoderApp(App[None]):
         if self.chat_runner is not None and hasattr(self.chat_runner, "stream_event_handler"):
             setattr(self.chat_runner, "stream_event_handler", previous_handler)
 
-    def _install_tool_event_handler(self):
+    def _install_tool_event_handler(self, token: int | None = None):
         if self.chat_runner is None or not hasattr(self.chat_runner, "tool_event_handler"):
             return None
         previous_handler = getattr(self.chat_runner, "tool_event_handler", None)
@@ -413,6 +525,8 @@ class FirstCoderApp(App[None]):
         def handle_event(event) -> None:
             if previous_handler is not None:
                 previous_handler(event)
+            if token is not None and not self._is_current_chat_turn(token):
+                return
             tool_call = getattr(event, "tool_call", None)
             tool_name = str(getattr(tool_call, "name", "") or "tool")
             if tool_name in _HIDDEN_TOOL_STATUS_NAMES:
@@ -470,7 +584,7 @@ class FirstCoderApp(App[None]):
         rendered = _entry_plain_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
-            output.mount(Static(rendered, classes=classes))
+            output.mount(_plain_static(rendered, classes=classes))
             self._scroll_output_end_if_pinned(output)
             return entry
         if hasattr(output, "write_line"):
@@ -481,8 +595,13 @@ class FirstCoderApp(App[None]):
         tool_call = getattr(event, "tool_call", None)
         name = str(getattr(tool_call, "name", "") or "tool")
         status = _tool_event_status(event) or "unknown"
+        tool_call_id = str(getattr(tool_call, "id", "") or "")
         if status == "running":
             self._turn_tool_count += 1
+            if tool_call_id:
+                self._running_tool_call_ids.add(tool_call_id)
+        elif tool_call_id:
+            self._running_tool_call_ids.discard(tool_call_id)
         summary = _tool_activity_summary(event)
         self.transcript.record_tool_activity(name, status, summary)
         if status == "success":
@@ -490,7 +609,7 @@ class FirstCoderApp(App[None]):
             return
         self._stop_working_animation()
         if status == "running":
-            self._show_activity_animation("running", name)
+            self._show_activity_animation("running", self._running_tools_activity_detail(name))
             return
         self._show_static_activity(_activity_line_text(name, status))
 
@@ -552,7 +671,7 @@ class FirstCoderApp(App[None]):
         line = f"{label}: {text}" if include_label else text
         if hasattr(output, "mount"):
             entry = self.transcript.add(TuiEntryKind.REASONING, line)
-            output.mount(Static(_entry_plain_text(entry), classes="message reasoning-message"))
+            output.mount(_plain_static(_entry_plain_text(entry), classes="message reasoning-message"))
             self._scroll_output_end_if_pinned(output)
             return
         if hasattr(output, "write"):
@@ -631,9 +750,21 @@ class FirstCoderApp(App[None]):
         frame = frames[self._activity_frame_index % len(frames)]
         return f"{self._activity_animation_kind} {frame} · {self._activity_animation_detail}"
 
-    def _start_turn_metrics(self) -> None:
+    def _start_turn_metrics(self) -> float:
         self._turn_started_at = time.monotonic()
         self._turn_tool_count = 0
+        self._running_tool_call_ids = set()
+        return self._turn_started_at
+
+    def _preserve_turn_metrics(self) -> None:
+        if not self._turn_started_at:
+            self._start_turn_metrics()
+
+    def _running_tools_activity_detail(self, fallback_name: str) -> str:
+        running_count = len(self._running_tool_call_ids)
+        if running_count > 1:
+            return f"{running_count} tools running"
+        return fallback_name
 
     def _turn_elapsed_seconds(self) -> float:
         if not self._turn_started_at:

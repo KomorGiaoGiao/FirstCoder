@@ -38,6 +38,7 @@ def create_web_search_tool() -> Tool:
             return make_error_result("web_search", "context_max_characters 必须大于 0")
         if timeout_seconds <= 0:
             return make_error_result("web_search", "timeout_seconds 必须大于 0")
+        livecrawl = _normalize_livecrawl(livecrawl)
         if search_type not in ("auto", "fast", "deep"):
             return make_error_result("web_search", "search_type 只能是 auto、fast 或 deep")
         if livecrawl not in ("fallback", "preferred"):
@@ -96,12 +97,23 @@ def create_web_search_tool() -> Tool:
         )
 
     tool = tool_from_function(web_search)
+    tool.definition.parameters["properties"]["search_type"]["enum"] = ["auto", "fast", "deep"]
+    tool.definition.parameters["properties"]["livecrawl"]["enum"] = ["fallback", "preferred"]
     tool.permission = ToolPermissionSpec(
         action=PermissionAction.NETWORK_REQUEST,
         target_value=EXA_MCP_URL,
         reason="网页搜索需要网络请求权限。",
     )
     return tool
+
+
+def _normalize_livecrawl(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized in {"false", "0", "no", "off"}:
+        return "fallback"
+    if normalized in {"true", "1", "yes", "on"}:
+        return "preferred"
+    return value
 
 
 def _exa_mcp_url() -> str:

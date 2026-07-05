@@ -11,8 +11,9 @@ from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.presets import PROVIDER_PRESETS
 
 
-def test_load_config_defaults_to_openai(monkeypatch):
+def test_load_config_defaults_to_openai(tmp_path, monkeypatch):
     monkeypatch.delenv("FIRSTCODER_PROVIDER", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
     config = load_config(env={})
 
@@ -129,6 +130,27 @@ def test_create_provider_from_config_supports_toml_openai_compatible():
     assert provider.base_url == "https://yurenapi.cn/v1"
 
 
+def test_create_provider_from_config_reads_parallel_tool_calls_capability():
+    config = AppConfig(
+        provider_name="openai-compatible",
+        env={"YURENAPI_API_KEY": "test-key"},
+        project_config={
+            "model": "yurenapi/gpt-5.5",
+            "provider": {
+                "type": "openai-compatible",
+                "name": "yurenapi",
+                "base_url": "https://yurenapi.cn/v1",
+                "api_key_env": "YURENAPI_API_KEY",
+                "parallel_tool_calls": True,
+            },
+        },
+    )
+
+    provider = create_provider_from_config(config)
+
+    assert provider.capabilities.supports_parallel_tool_calls is True
+
+
 def test_create_provider_from_config_project_overrides_global_model():
     config = AppConfig(
         provider_name="openai-compatible",
@@ -161,6 +183,7 @@ def test_render_default_config_uses_api_key_env_not_plain_secret():
 
     assert "api_key_env" in content
     assert "api_key =" not in content
+    assert "parallel_tool_calls = true" in content
 
 
 def test_default_global_config_path_respects_xdg_config_home(tmp_path, monkeypatch):

@@ -14,20 +14,33 @@ PACKAGE_SPEC="{{ package }}"
 {% endif %}
 
 AGENT_VENV="/opt/firstcoder-agent/.venv"
+PYTHON_BIN="python3"
 missing_packages=()
 
 if ! command -v python3 >/dev/null 2>&1; then
   missing_packages+=("python3")
 fi
 
-if ! python3 -m pip --version >/dev/null 2>&1; then
-  missing_packages+=("python3-pip")
+if command -v python3 >/dev/null 2>&1 && ! python3 - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+then
+  missing_packages+=("python3.11" "python3.11-venv")
+fi
+
+if command -v python3.11 >/dev/null 2>&1; then
+  PYTHON_BIN="python3.11"
 fi
 
 venv_probe="$(mktemp -d)"
-if ! python3 -m venv "$venv_probe/test-venv" >/dev/null 2>&1 || \
+if ! "$PYTHON_BIN" -m venv "$venv_probe/test-venv" >/dev/null 2>&1 || \
    ! "$venv_probe/test-venv/bin/python" -m pip --version >/dev/null 2>&1; then
-  missing_packages+=("python3-venv")
+  if [ "$PYTHON_BIN" = "python3.11" ]; then
+    missing_packages+=("python3.11-venv")
+  else
+    missing_packages+=("python3-venv")
+  fi
 fi
 rm -rf "$venv_probe"
 
@@ -37,10 +50,19 @@ fi
 
 if [ "${missing_packages[*]}" != "" ]; then
   apt-get update
-  apt-get install -y "${missing_packages[@]}" || fail "apt-get install failed"
+  apt-get install -y --no-install-recommends "${missing_packages[@]}" || fail "apt-get install failed"
 fi
 
-python3 -m venv "$AGENT_VENV" || fail "venv creation failed"
+if command -v python3.11 >/dev/null 2>&1; then
+  PYTHON_BIN="python3.11"
+fi
+
+"$PYTHON_BIN" - <<'PY' || fail "python >=3.11 is required"
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+
+"$PYTHON_BIN" -m venv "$AGENT_VENV" || fail "venv creation failed"
 "$AGENT_VENV/bin/python" -m pip --version >/dev/null 2>&1 || fail "venv pip is unavailable"
 "$AGENT_VENV/bin/python" -m pip install "$PACKAGE_SPEC" || fail "pip install failed"
 

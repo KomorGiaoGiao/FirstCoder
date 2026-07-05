@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
+from firstcoder.agent.cancellation import CancellationToken
 from firstcoder.utils.subprocess import CommandResult, run_command
 
 
@@ -123,3 +127,24 @@ class TestRunCommand:
         run_command(["echo"], cwd=tmp_path, env={"PATH": "/bin", "CUSTOM": "1"})
 
         assert called["env"] == {"PATH": "/bin", "CUSTOM": "1"}
+
+    def test_cancellation_terminates_running_process(self, tmp_path):
+        token = CancellationToken()
+        thread = threading.Thread(
+            target=lambda: (time.sleep(0.2), token.cancel()),
+            daemon=True,
+        )
+        thread.start()
+
+        started_at = time.perf_counter()
+        result = run_command(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            cancellation_token=token,
+        )
+        elapsed = time.perf_counter() - started_at
+
+        assert result.ok is False
+        assert result.error == "命令已中断"
+        assert elapsed < 2
