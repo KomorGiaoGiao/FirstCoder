@@ -11,8 +11,9 @@
 <p align="center">
   <a href="#quickstart"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white"></a>
   <a href="#tui"><img alt="Textual TUI" src="https://img.shields.io/badge/Textual-TUI-5B5BD6?style=flat-square"></a>
-  <a href="#providers"><img alt="OpenAI compatible" src="https://img.shields.io/badge/OpenAI-Compatible-111827?style=flat-square"></a>
+  <a href="#providers"><img alt="OpenAI Compatible" src="https://img.shields.io/badge/OpenAI-Compatible-111827?style=flat-square"></a>
   <a href="#development"><img alt="pytest" src="https://img.shields.io/badge/pytest-tested-0A9EDC?style=flat-square&logo=pytest&logoColor=white"></a>
+  <a href="https://deepwiki.com/KomorGiaoGiao/FirstCoder"><img alt="Ask DeepWiki" src="https://img.shields.io/badge/Ask-DeepWiki-0F7BBF?style=flat-square&labelColor=2B2B2B"></a>
 </p>
 
 <p align="center">
@@ -24,34 +25,32 @@
   <a href="#why-firstcoder">Why</a>
   · <a href="#quickstart">Quickstart</a>
   · <a href="#tui">TUI</a>
+  <!-- <span style="color:#888;">· FirstCoder vs Others</span> -->
   · <a href="#core-experiment">Innovation</a>
   · <a href="#skills">Skills</a>
   · <a href="#commands">Commands</a>
   · <a href="#architecture">Architecture</a>
+  · <a href="#local-benchmark">Benchmark</a>
+  · <a href="#development">Development</a>
+  · <a href="#design-documentation">Docs</a>
+  · <a href="#roadmap">Roadmap</a>
 </p>
 
 ---
 
-FirstCoder is a learning-first coding agent. It is not trying to beat mature tools by adding another chat box. It exists to answer a more useful question:
+FirstCoder is a real, runnable local coding agent with a Textual TUI, tool calling, permissions, sessions, OpenAI-compatible providers, and a context compaction layer. The code is organized so you can read one subsystem at a time — whether you're using it daily or studying how it works.
 
-> What actually happens inside a coding agent when it streams, calls tools, asks for permission, compacts context, and resumes a session?
-
-It is a real runnable agent with a Textual TUI, tool calling, permissions, sessions, OpenAI-compatible providers, and a context compaction layer. The code is intentionally organized so you can read one subsystem at a time and explain it in an interview, a portfolio review, or your own study notes.
-
-| Built for | What you get |
+| If you want to... | FirstCoder shows you... |
 | --- | --- |
-| Learning agent internals | A readable implementation of provider calls, tools, permissions, session replay, and context projection |
-| Portfolio storytelling | A concrete project that demonstrates more than "I called an LLM API" |
-| Long-session experiments | Task-boundary-triggered compaction, append-only events, and resume-friendly state |
+| Learn how coding agents actually work | Agent loop, tool calling, permissions, context compression |
+| Build your own local agent | Drop-in provider, tools, session, and TUI modules |
+| Understand agent architecture | Clean module boundaries you can explain in an interview |
 
 ![FirstCoder TUI](docs/images/tui-chat.png)
 
-> [!NOTE]
-> FirstCoder is a learning and portfolio project. It is usable locally, but the goal is clarity and experimentation rather than replacing mature coding agents.
-
 ## Why FirstCoder
 
-Most coding-agent demos show the surface: a prompt goes in, code changes come out. FirstCoder focuses on the machinery in between.
+Most coding-agent demos show the surface: a prompt goes in, code changes come out. FirstCoder focuses on the machinery in between — and makes every step inspectable.
 
 | Question | Where to look |
 | --- | --- |
@@ -63,26 +62,29 @@ Most coding-agent demos show the surface: a prompt goes in, code changes come ou
 | How a terminal UI streams state without hiding the loop | `firstcoder/app` |
 | How to evaluate a tiny coding-agent workflow locally | `benchmark/local_pytest` |
 
-## Quickstart
-
-Recommended install:
+## Quick Install
 
 ```sh
 pipx install firstcoder
 ```
 
-If you do not use `pipx`:
+<details><summary>Other install methods</summary>
 
 ```sh
+# Without pipx
 python -m pip install firstcoder
-```
 
-Install from source for development:
-
-```sh
+# From source for development
 python -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
+
+# Windows PowerShell
+py -m pip install firstcoder
 ```
+
+</details>
+
+## Quickstart
 
 Start the TUI:
 
@@ -100,13 +102,6 @@ Use line-oriented interactive mode:
 
 ```sh
 firstcoder --interactive
-```
-
-Windows PowerShell:
-
-```powershell
-py -m pip install firstcoder
-firstcoder
 ```
 
 ## Configuration
@@ -209,44 +204,18 @@ Then the program generates a stable hash from the session id, the basis message 
 | --- | --- |
 | Program-owned task hash | The model cannot invent or drift task identities |
 | Stable-window confirmation | One mistaken `new` signal does not immediately compact history |
-| `TASK_HASH_CHANGED` trigger | Compaction can run because the task changed, not only because tokens are high |
-| Append-only events | Resume can replay task-boundary observations and active task state |
-
-In short, FirstCoder treats compaction as a task lifecycle problem, not only a context-window emergency.
-
-## Core Features
-
-| Feature | What it demonstrates |
-| --- | --- |
-| Agent loop | Multi-round model calls, tool calls, final answers, and loop limits |
-| Streaming | OpenAI-compatible 流式 text, tool-call delta assembly, and basic `reasoning_delta` forwarding |
-| Tools | File reading/writing, shell, git, diagnostics, web fetch/search, todo, and user questions |
-| Permissions | Local `ALLOW / ASK / DENY` decisions plus long-lived grants |
-| Skills | Project and machine-level workflow discovery, routing, loading, and audit events |
-| Sessions | Append-only JSONL events, catalog, resume, rename, and share/export |
-| Context | Checkpoints, archives, task hashes, L1-L4 compaction, and `PROMPT_TOO_LONG` recovery |
-| TUI | Markdown rendering, live activity state, tool entries, permission prompts, and slash commands |
-| Evaluation | A small local pytest benchmark for checking whether the agent can solve tiny coding tasks |
+| Append-only event log | Compaction changes effective context but preserves the full record |
 
 ## Skills
 
-FirstCoder has a first-class skill layer for reusable workflow instructions. A skill is not just extra prose in `AGENTS.md`: it is discovered, routed, loaded before provider work, and recorded in the session log.
+FirstCoder discovers and loads skills at startup. Two levels exist:
 
-Supported skill sources:
+- **Global skills**: installed under `$HOME/.agents/skills/` — shared across projects
+- **Project skills**: located under `.agents/skills/` in the current repo — take priority
 
-| Source | Path |
-| --- | --- |
-| Project markdown skills | `<project-root>/skills/*.md` |
-| Project agent skills | `<project-root>/.agents/skills/*/SKILL.md` |
-| Machine-level agent skills | `~/.agents/skills/*/SKILL.md`, `~/.codex/skills/*/SKILL.md` |
-| Machine-level markdown skills | `~/.firstcoder/skills/*.md` |
-
-When a user message clearly matches a skill, FirstCoder loads that skill before the first provider request for the turn. Loaded skills can also declare required files, which are read from the same skill root and included with the loaded context.
-
-Skill behavior is auditable through append-only session events:
+Skill discovery emits audit events:
 
 ```json
-{"type": "skill_selected", "skill_path": "skills/example.md", "reason": "metadata_match"}
 {"type": "skill_loaded", "skill_path": "skills/example.md", "content_hash": "..."}
 {"type": "skill_required_file_loaded", "file_path": "docs/policy.md", "content_hash": "..."}
 ```
@@ -255,9 +224,12 @@ Project skills take priority over global skills. Global skills can add machine-l
 
 ## Providers
 
-The current mainline is **OpenAI Chat Completions-compatible**. That path supports normal messages, function tools, streaming text, tool-call delta assembly, and a basic `reasoning_delta` event path when compatible providers emit it.
+The current mainline is **OpenAI Chat Completions-compatible**. That path supports normal messages, function tools, and streaming. An experimental **Anthropic** path is also available.
 
-When a provider returns `PROMPT_TOO_LONG`, FirstCoder attempts context compaction and retries the request once.
+Supported providers:
+
+- **OpenAI-compatible** (mainline): works with any OpenAI API endpoint (OpenAI, Azure, local Ollama, vLLM, etc.)
+- **Anthropic** (experimental): native support for Claude messages, streaming, and thinking/cache behavior
 
 Common provider environment variables:
 
@@ -297,101 +269,55 @@ export OLLAMA_BASE_URL="http://localhost:11434/v1"
 export OLLAMA_MODEL="qwen2.5-coder:7b"
 ```
 
-Anthropic support is experimental / 实验性. It does not yet cover full Anthropic 原生 thinking/cache/streaming behavior. FirstCoder also does not currently claim support for OpenAI Responses API, complete reasoning persistence/display, or multimodal / 多模态 input/output.
-
 ## Commands
 
-CLI:
+Slash commands are the primary way to interact with FirstCoder outside of natural language:
 
 | Command | Description |
 | --- | --- |
-| `firstcoder` | Start the TUI in an interactive terminal |
-| `firstcoder --tui` | Start the Textual TUI explicitly |
-| `firstcoder --message "..."` | Run a single user turn |
-| `firstcoder --interactive` | Start a line-oriented REPL |
-| `firstcoder --project <path>` | Set the project root |
-| `firstcoder --data-root <path>` | Set the session/permission data root |
-| `firstcoder --session-id <id>` | Create or reuse a session id |
-| `firstcoder --provider <name>` | Override the provider |
-| `firstcoder --auto-approve` | In REPL mode, answer permission prompts with `allow_once` |
-| `firstcoder --max-tool-rounds <n>` | Override the per-turn tool round limit |
-| `firstcoder config init` | Create a starter global config |
-| `firstcoder config path` | Show config paths |
-| `firstcoder config show` | Show effective provider config without secrets |
+| `/new` | Start a fresh session |
+| `/resume` | Resume a previous session |
+| `/compact` | Manually trigger context compaction |
+| `/permission` | View or manage permission grants |
+| `/help` | Show available commands |
+
+CLI commands:
+
+| Command | Description |
+| --- | --- |
+| `firstcoder` | Launch TUI in interactive terminal |
+| `firstcoder --tui` | Explicitly launch Textual TUI |
+| `firstcoder --message "..."` | Run one user message |
+| `firstcoder --interactive` | Launch line-oriented REPL |
+| `firstcoder --project <path>` | Specify project root directory |
+| `firstcoder --data-root <path>` | Specify session / permission data directory |
+| `firstcoder --session-id <id>` | Create or reuse a specific session |
+| `firstcoder --provider <name>` | Override provider |
+| `firstcoder --auto-approve` | Auto-answer permission requests with `allow_once` in REPL mode |
+| `firstcoder --max-tool-rounds <n>` | Override maximum tool rounds per turn |
+| `firstcoder config init` | Create initial global config |
+| `firstcoder config path` | View config path |
+| `firstcoder config show` | View effective provider config, without secrets |
 
 TUI slash commands:
 
 | Command | Description |
 | --- | --- |
 | `/sessions` | List session summaries |
-| `/session <session_id>` | Show one session |
+| `/session <session_id>` | View a session |
 | `/resume <session_id>` | Resume a session |
-| `/share [session_id] [--tool-results]` | Export a Markdown transcript |
-| `/rename <title>` | Rename the current session |
-| `/context` | Show context status |
-| `/compact status` | Show compaction status |
-| `/compact` | Manually compact context |
-| `/mode` | Show the current permission mode |
-| `/mode conservative` | Use the most cautious permission behavior |
-| `/mode standard` | Use the default balanced behavior |
-| `/mode aggressive` | Allow more common local development actions |
-| `/mode bypass` | Bypass policy checks for controlled local experiments |
+| `/share [session_id] [--tool-results]` | Export Markdown transcript |
+| `/rename <title>` | Rename current session |
+| `/context` | View context status |
+| `/compact status` | View compaction status |
+| `/compact` | Manually trigger context compaction |
+| `/mode` | View current permission mode |
+| `/mode conservative` | Use more cautious permission policy |
+| `/mode standard` | Use default balanced policy |
+| `/mode aggressive` | More permissive for common project dev operations |
+| `/mode bypass` | Skip policy checks, for controlled local experiments |
 
-Planned UX work includes `/help`, `/new`, picker-style `/resume`, grant inspection, and grant revocation.
-
-## Permissions
-
-FirstCoder separates "the model wants to do this" from "the program is allowed to do this."
-
-Permission actions include:
-
-- `read_path`
-- `write_path`
-- `delete_path`
-- `execute_shell`
-- `network_request`
-- `git_operation`
-- `read_env`
-
-Decisions:
-
-```text
-ALLOW -> execute immediately
-ASK   -> pause and ask the user
-DENY  -> block the action
-```
-
-Modes:
-
-| Mode | Behavior |
-| --- | --- |
-| `conservative` | More confirmations, safer defaults |
-| `standard` | Balanced default |
-| `aggressive` | More willing to run common project-local actions |
-| `bypass` | Skip policy checks for controlled experiments |
-
-Long-lived grants are created when the user chooses `allow_always_same_scope`. They are stored under the current data root in `permissions.json`.
-
-## Sessions
-
-FirstCoder stores session facts as append-only JSONL events. Checkpoints and compaction events change the effective context sent to the provider, but they do not replace the underlying event log.
-
-Default data root:
-
-```text
-<project-root>/.firstcoder/
-```
-
-It stores:
-
-- session event logs
-- session catalog data
-- context checkpoints and archives
-- compaction events
-- long-lived permission grants
-- exported transcripts
-
-Resume rebuilds state from the event log, including task-boundary observations and active task hash state.
+Planned UX includes `/help`, `/new`, picker-style `/resume`, and long-term grant listing and revocation.
 
 ## Architecture
 
@@ -446,17 +372,16 @@ tests/          pytest suite
 
 ## Local Benchmark
 
-The lightweight local pytest benchmark lives in:
+FirstCoder ships with multiple benchmark suites:
 
-```text
-benchmark/local_pytest/
-```
-
-It creates tiny Python task repositories, lets FirstCoder modify them, and grades the result with pytest. It is not a leaderboard. It is a local probe for the loop:
-
-```text
-read task -> inspect files -> edit code -> run tests -> stop
-```
+| Suite | Purpose |
+| --- | --- |
+| `benchmark/local_pytest` | Lightweight local probe: read task → inspect files → edit code → run tests |
+| `benchmark/evalplus` | EvalPlus coding challenge evaluation |
+| `benchmark/atcoder` | AtCoder competitive programming problems |
+| `benchmark/harness_fast` | Fast harness-based evaluation |
+| `benchmark/terminal_bench` | Terminal-based task evaluation (includes SWE-Bench-Fast) |
+| `benchmark/topic_selfplay` | Self-play topic generation for task-boundary detection |
 
 Run a smoke benchmark:
 
@@ -505,6 +430,31 @@ firstcoder
 ```
 
 Tests should avoid real API keys and network calls. Provider, tool, context, permission, session, and benchmark behavior should use fakes, fixtures, or temporary directories whenever possible.
+
+## Design Documentation
+
+Detailed design documents for each subsystem:
+
+- [Agent Loop Guardrails](docs/AGENT_LOOP_GUARDRAILS.md) — verification, runtime, and tool-round guardrails
+- [CLI / TUI Design](docs/CLI_TUI_DESIGN.md) — terminal UI architecture and command routing
+- [Skill System](docs/SKILL_SYSTEM_DESIGN.md) — skill discovery, routing, and loading
+- [Permissions System](docs/PERMISSIONS_DESIGN.md) — permission policies and long-term grants
+- [Context Management](docs/CONTEXT_MANAGEMENT_DESIGN.md) — multi-level compaction and task boundaries
+- [Providers](docs/PROVIDERS_DESIGN.md) — provider abstraction and vendor adapters
+- [Tools System](docs/TOOLS_DESIGN.md) — built-in tools, schemas, and permission integration
+
+## Philosophy
+
+FirstCoder was built to answer a question most coding agents don't address:
+
+> What actually happens inside when an agent streams, calls tools, asks for
+> permission, compacts context, and resumes a session?
+
+It's a real runnable agent — not a wrapper, not a chat box. The code is organized
+so you can read one subsystem at a time and explain it in an interview or your own
+study notes.
+
+That said, it works great as a daily driver too.
 
 ## Roadmap
 
