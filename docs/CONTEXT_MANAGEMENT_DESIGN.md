@@ -1,257 +1,158 @@
 # Context Management Design
 
-## 概述
+[中文版本](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)
 
-上下文管理系统负责管理 agent 与 LLM 交互时的 token 窗口。它提供**多层压缩策略**，从简单的截断到基于任务的智能摘要，确保 agent 能在有限的 token 预算内保持有效的对话历史。
+## Overview
 
-## 核心组件
+FirstCoder's context management is built around an append-only JSONL session log plus runtime replay. Context compaction does not mutate history in place. Instead, the runtime records compaction facts, checkpoints, and task-boundary observations, then rebuilds the effective session view from those events.
 
-### ContextManager
+The current system has two distinct layers:
 
-```python
-class ContextManager:
-    """上下文窗口管理器，协调所有压缩操作"""
-    def __init__(self, session, config):
-        self.session = session
-        self.config = config
-        self.pipeline = CompactionPipeline()
-```
+- durable session facts rebuilt into `SessionView`
+- runtime-only state rebuilt into `SessionRuntimeState`
 
-**职责**：
-- 跟踪当前 token 使用情况
-- 决定何时触发压缩
-- 协调不同压缩级别的操作
+## Key Files
 
-### CompactionPipeline
+- `firstcoder/context/store.py`: JSONL persistence and session-view rebuild
+- `firstcoder/context/writer.py`: structured event-writing helpers
+- `firstcoder/context/context_builder.py`: provider-visible message projection
+- `firstcoder/context/manager.py`: `ContextWindowManager`
+- `firstcoder/context/compaction.py`: deterministic L1-L3 compaction pipeline
+- `firstcoder/context/llm_compact.py`: provider-backed L4 checkpoint summarization
+- `firstcoder/context/checkpoint.py`: checkpoint model
+- `firstcoder/context/archive.py`: archived tool-result storage
+- `firstcoder/context/triggers.py`: compaction trigger logic
+- `firstcoder/context/runtime_state.py`: runtime-only state
+- `firstcoder/context/runtime_replay.py`: replay of runtime state from session events
 
-```python
-class CompactionPipeline:
-    """压缩流水线，按顺序执行 L1-L3 压缩"""
-    def execute(request: CompactionRequest) -> CompactionResponse:
-        """1. 尝试 L1 压缩（简单截断）
-           2. 如果不够，尝试 L2 压缩（摘要）
-           3. 如果还不够，尝试 L3 压缩（更智能的摘要）
-           4. 返回压缩结果"""
-```
+## Durable View And Runtime State
 
-## 压缩级别
+The durable replayed view is `SessionView`. It contains:
 
-### L1: 简单截断
+- messages
+- checkpoints
+- metadata
 
-```python
-def l1_compact(messages):
-    """移除最早的对话轮次，保留最近的 N 条消息"""
-    return messages[-N:]
-```
+This is the conversation state the runtime can rebuild from the append-only log.
 
-**适用场景**：
-- Token 轻微超标
-- 需要快速响应
-- 对话历史不太重要
+The runtime-only replayed state is `SessionRuntimeState`. It tracks things such as:
 
-### L2: 基础摘要
+- active task hash
+- task-boundary candidate stability
+- latest checkpoint id
+- auto-compaction failure counters
+- circuit-breaker state
+- recent compaction history
 
-```python
-def l2_compact(messages):
-    """对早期消息进行 LLM 摘要，保留摘要和最近消息"""
-    early_messages = messages[:-RECENT_COUNT]
-    summary = llm.summarize(early_messages)
-    return [summary] + messages[-RECENT_COUNT:]
-```
+This split is important: not every runtime fact is modeled as a visible conversation message.
 
-**适用场景**：
-- Token 中度超标
-- 需要保留对话概要
-- 早期消息的具体内容不那么重要
+## Context Projection
 
-### L3: 智能压缩
+The agent does not send the raw JSONL log to the provider. `ContextBuilder` projects the rebuilt session state into provider-visible messages.
 
-```python
-def l3_compact(messages):
-    """基于任务边界的智能压缩，保留任务上下文"""
-    task_groups = group_by_task_boundary(messages)
-    compressed = []
-    for group in task_groups:
-        if group.is_completed:
-            compressed.append(llm.summarize(group.messages))
-        else:
-            compressed.extend(group.messages)
-    return compressed
-```
+Checkpoints change projection, not history deletion:
 
-**适用场景**：
-- Token 严重超标
-- 需要保留任务相关的上下文
-- 对话包含多个独立任务
+- the raw event history remains on disk
+- provider-visible context may use checkpoint summaries plus the raw tail after a boundary
 
-### L4: Checkpoint 摘要
+This means compaction is fundamentally a projection strategy backed by durable facts.
 
-```python
-def l4_checkpoint(messages):
-    """创建会话 checkpoint，保存完整历史到磁盘"""
-    checkpoint = Checkpoint(
-        messages=messages,
-        timestamp=datetime.now(),
-        summary=llm.summarize(messages)
-    )
-    store.save_checkpoint(checkpoint)
-    return [checkpoint.summary]
-```
+## Compaction Layers
 
-**适用场景**：
-- 需要长时间保存会话状态
-- 后续可能需要恢复完整历史
-- 作为其他压缩策略的后备
+The current implementation is not a generic “truncate, summarize, summarize harder” pipeline.
 
-## 任务边界检测
+It is structured into:
 
-### TaskBoundaryDetector
+- L1-L3: deterministic programmatic compaction
+- L4: provider-backed checkpoint summarization
 
-```python
-class TaskBoundaryDetector:
-    def detect_boundary(user_message: str, context: Context) -> TaskBoundarySignal:
-        """检测用户消息是否表示任务切换"""
-```
+### L1-L3
 
-**检测信号**：
-```json
-{
-  "decision": "same | new | uncertain",
-  "basis_message_id": "msg_xxx"
-}
-```
+These are implemented in the programmatic compaction pipeline and do not require a model call.
 
-### 任务边界处理流程
+Current behavior includes:
 
-```
-用户消息到达
-    |
-    v
-模型调用 task_boundary(decision, basis_message_id)
-    |
-    v
-程序生成 candidate task_hash
-    |
-    v
-稳定窗口确认任务切换
-    |
-    v
-TASK_HASH_CHANGED 触发压缩
-    |
-    v
-旧任务内容被 micro-compact
-    |
-    v
-session event 保留这次切换，方便 resume
-```
+- task-aware compaction of older task material
+- archiving oversized tool results to disk and replacing them with placeholders
+- route-based compression of cold or force-routed content, such as diff output, HTML, JSON, or search results
 
-**关键设计**：
-- 模型不直接生成 task hash，只提交结构化信号
-- 程序根据 session id、basis message id 和策略版本生成稳定 hash
-- 稳定窗口防止模型误判导致过早压缩
+This is content-aware and structure-aware compaction, not just generic summary text generation.
 
-## 压缩触发条件
+### L4
 
-### 自动触发
+L4 is handled by `LlmCompactService`.
 
-| 条件 | 压缩级别 | 说明 |
-|------|----------|------|
-| token 使用量 > 80% | L1 | 预防性压缩 |
-| token 使用量 > 90% | L2 | 紧急压缩 |
-| token 使用量 > 95% | L3 | 深度压缩 |
-| 任务边界检测 | L3 | 基于语义的压缩 |
+It creates provider-backed checkpoint summaries when deterministic compaction is not enough.
 
-### 手动触发
+Important properties:
 
-用户可以通过以下方式手动触发压缩：
-- CLI 命令：`/compact`
-- TUI 命令：点击压缩按钮
-- API 调用：`context.compact()`
+- the summary is stored as a checkpoint event
+- checkpoint boundaries are validated so tool-call / tool-result ordering remains legal
+- after L4 writes its checkpoint, the runtime rebuilds the session view again from disk
 
-## Session 集成
+## Trigger Model
 
-### Append-Only 事件日志
+Trigger evaluation lives in `firstcoder/context/triggers.py`.
 
-所有压缩操作都会记录到 session 事件中：
+The current system uses multiple heuristics, including:
 
-```json
-{"type": "compaction_started", "level": "L2", "reason": "token_budget"}
-{"type": "compaction_completed", "level": "L2", "messages_removed": 15, "tokens_saved": 2048}
-{"type": "task_boundary_detected", "decision": "new", "basis_message_id": "msg_123"}
-```
+- estimated total tokens
+- oversized tool results
+- too many tool-result tokens in one turn
+- too many tail messages
+- too many tail tokens
 
-### Checkpoint 和 Archive
+The trigger names used by `ContextWindowManager` include:
 
-```python
-class Checkpoint:
-    """会话检查点，保存完整状态"""
-    message_history: List[Message]
-    context_state: ContextState
-    timestamp: datetime
-    task_hash: str
+- `AUTO`
+- `TASK_HASH_CHANGED`
+- `PROMPT_TOO_LONG`
+- `MANUAL`
 
-class Archive:
-    """归档存储，保存旧的压缩结果"""
-    checkpoints: List[Checkpoint]
-    compressed_segments: List[CompressedSegment]
-```
+The thresholds are currently implemented as concrete token-oriented numbers, not simple percentages.
 
-## 配置
+## Task-Boundary Integration
 
-### 压缩策略配置
+Task-aware compaction is tied to a stable task-boundary flow.
 
-```toml
-[context]
-# 压缩触发阈值（百分比）
-compression_threshold = 80
-emergency_threshold = 90
-critical_threshold = 95
+The runtime does not trust the model to invent task identities. Instead:
 
-# 压缩级别偏好
-preferred_level = "L2"  # L1, L2, L3, L4
+1. the model/tool emits only a structured task-boundary signal
+2. the runtime computes a candidate hash
+3. stability is enforced over a window
+4. once confirmed, a task-boundary event is recorded
+5. the context manager can then compact old-task material under `TASK_HASH_CHANGED`
 
-# 任务边界检测
-task_boundary_detection = true
-stable_window_size = 3  # 稳定窗口大小
-```
+This makes task-aware compaction a program-owned mechanism rather than a free-form model behavior.
 
-### Token 预算
+## Fallback And Circuit Breaking
 
-```python
-class TokenBudget:
-    total_limit: int = 128000  # 总 token 限制
-    safety_margin: float = 0.1  # 安全边际 10%
-    
-    def calculate_available(self, current_usage: int) -> int:
-        return int(self.total_limit * (1 - self.safety_margin)) - current_usage
-```
+If L4 fails, the manager can apply fallback policy at the manager layer rather than hiding all retry behavior inside the L4 service.
 
-## 扩展性
+Current fallback behavior includes:
 
-### 添加新的压缩算法
+- stronger deterministic compaction before another L4 attempt
+- failure recording into runtime state
+- auto-compaction circuit breaking after repeated failures
 
-1. 实现 `CompressionAlgorithm` 协议
-2. 注册到 CompactionPipeline
-3. 更新配置以支持新算法
+This matters because auto compaction should not repeatedly trigger expensive or broken L4 attempts on every turn.
 
-### 自定义触发条件
+## Event Model
 
-1. 实现 `TriggerCondition` 协议
-2. 添加到触发条件检查列表
-3. 测试条件评估逻辑
+Compaction-related state is persisted as session events rather than hidden mutable state.
 
-### 集成新的存储后端
+Important event types include:
 
-1. 实现 `StorageBackend` 协议
-2. 更新 Checkpoint 和 Archive 的存储逻辑
-3. 测试数据持久化和恢复
+- `task_boundary_observed`
+- `compaction_completed`
+- `llm_compaction_completed`
+- `checkpoint_created`
 
-## 设计决策记录
+These events are replayed later into both `SessionView` and `SessionRuntimeState`.
 
-| 决策 | 理由 |
-|------|------|
-| 多层压缩策略 | 平衡压缩效果和性能，不同场景使用不同级别 |
-| 任务边界检测 | 语义感知的压缩比单纯基于 token 数量更有效 |
-| Append-Only 日志 | 保证会话历史的完整性和可追溯性 |
-| 稳定窗口机制 | 防止模型误判导致的上下文丢失 |
-| 可配置的触发阈值 | 适应不同模型和场景的需求 |
+## Design Notes
+
+- Context management is event-backed and replay-driven, not in-place history mutation.
+- Programmatic compaction is the normal path; L4 is the expensive escalation path.
+- Checkpoints alter provider projection, not the existence of raw historical facts.
+- Task-aware compaction is runtime-owned and stabilized before it affects history projection.

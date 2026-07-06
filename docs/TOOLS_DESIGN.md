@@ -1,234 +1,145 @@
 # Tools Design
 
-## 概述
+[中文版本](TOOLS_DESIGN.zh-CN.md)
 
-工具系统是 FirstCoder 的核心能力之一，允许 agent 与外部环境交互（文件系统、shell、git、网络等）。所有工具都通过 `ToolRegistry` 统一管理，并在执行前经过权限检查。
+## Overview
 
-## 核心组件
+The tools layer gives the agent controlled access to the local environment. Tools are registered as concrete local executors, exposed to the model as normalized schemas, and optionally wrapped with permission preflight.
 
-### Tool 协议
+The runtime intentionally separates three concerns:
 
-```python
-class Tool(Protocol):
-    """所有工具必须实现的统一接口"""
-    
-    @property
-    def name(self) -> str:
-        """工具的唯一名称"""
-    
-    @property
-    def description(self) -> str:
-        """工具的功能描述，用于模型理解"""
-    
-    @property
-    def parameters(self) -> Dict[str, Any]:
-        """工具的参数 schema（JSON Schema 格式）"""
-    
-    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
-        """执行工具调用，返回结果"""
-```
+- model-visible tool definitions
+- local execution functions
+- program-side permission requirements
 
-### ToolRegistry
+## Key Files
 
-```python
-class ToolRegistry:
-    """工具注册表，管理所有可用工具"""
-    
-    def __init__(self):
-        self._tools: Dict[str, Tool] = {}
-    
-    def register(self, tool: Tool):
-        """注册一个新工具"""
-        self._tools[tool.name] = tool
-    
-    def get_tool(self, name: str) -> Optional[Tool]:
-        """根据名称获取工具"""
-        return self._tools.get(name)
-    
-    def list_tools(self) -> List[ToolDefinition]:
-        """返回所有工具的定義列表（用于 provider 请求）"""
-        return [ToolDefinition.from_tool(tool) for tool in self._tools.values()]
-```
+- `firstcoder/tools/types.py`: `Tool`, `ToolResult`, `ToolPermissionSpec`
+- `firstcoder/tools/registry.py`: base `ToolRegistry`
+- `firstcoder/tools/permission_registry.py`: `PermissionAwareToolRegistry`
+- `firstcoder/tools/builtin.py`: builtin tool assembly
+- `firstcoder/tools/session_registry.py`: session-scoped wrapping and injection
+- `firstcoder/tools/descriptions.py`: curated model-facing descriptions
+- `firstcoder/utils/introspection.py`: function-to-tool schema generation
 
-### ToolResult
+Representative tool implementations:
 
-```python
-@dataclass
-class ToolResult:
-    content: str
-    is_error: bool = False
-    metadata: Dict[str, Any] = None
-```
+- file tools: `view.py`, `write.py`, `edit.py`, `delete.py`, `apply_patch.py`
+- search and inspection tools: `ls.py`, `tree.py`, `glob.py`, `grep.py`, `read_multi.py`
+- execution tools: `shell.py`, `python_exec.py`, `diagnostics.py`
+- git tools: `git_status.py`, `git_diff.py`, `git_log.py`
+- network tools: `fetch.py`, `web_search.py`
+- interaction tools: `ask_user.py`, `todo.py`, `think.py`, `task_boundary.py`
 
-## 内置工具
+## Core Data Model
 
-### 文件操作工具
+`Tool` is a concrete dataclass, not a protocol. It contains:
 
-| 工具 | 说明 | 权限要求 |
-|------|------|---------|
-| `view` | 读取文件内容 | `read_path` |
-| `write` | 写入文件内容 | `write_path` |
-| `edit` | 编辑文件特定内容 | `write_path` |
-| `delete` | 删除文件或目录 | `delete_path` |
-| `ls` | 列出目录内容 | `read_path` |
-| `glob` | 文件模式匹配 | `read_path` |
+- `definition`: the model-visible `ToolDefinition`
+- `executor`: a local callable returning `ToolResult`
+- `permission`: optional `ToolPermissionSpec`
 
-### 代码执行工具
+`ToolResult` is the normalized execution result returned by all tools:
 
-| 工具 | 说明 | 权限要求 |
-|------|------|---------|
-| `python_exec` | 执行 Python 代码 | `execute_shell` |
-| `shell` | 执行 Shell 命令 | `execute_shell` |
-| `diagnostics` | 运行项目验证命令 | `execute_shell` |
+- `name`
+- `ok`
+- `content`
+- `data`
+- `error`
 
-### Git 工具
+This result is later converted into a tool message for the provider-facing conversation history.
 
-| 工具 | 说明 | 权限要求 |
-|------|------|---------|
-| `git_status` | 查看 git 状态 | `git_operation` |
-| `git_diff` | 查看 git 差异 | `git_operation` |
-| `git_log` | 查看 git 日志 | `git_operation` |
+## Registry Model
 
-### 搜索工具
+The base registry in `firstcoder/tools/registry.py` is intentionally simple.
 
-| 工具 | 说明 | 权限要求 |
-|------|------|---------|
-| `grep` | 文本内容搜索 | `read_path` |
-| `web_search` | 网络搜索 | `network_request` |
-| `fetch` | 获取 URL 内容 | `network_request` |
+Responsibilities:
 
-### 交互工具
+- store tool objects by unique name
+- expose model-visible `ToolDefinition` values
+- dispatch execution by tool name
+- convert runtime failures into structured `ToolResult` errors instead of raising through the loop
 
-| 工具 | 说明 | 权限要求 |
-|------|------|---------|
-| `ask_user` | 向用户提问 | 无 |
-| `todo` | 管理待办事项 | 无 |
-| `think` | 记录推理过程 | 无 |
-| `task_boundary` | 检测任务边界 | 无 |
+This keeps the agent loop resilient: unknown tools, bad argument shapes, and executor failures all come back as model-visible tool errors.
 
-## 权限集成
+## Builtin Tool Assembly
 
-### PermissionRegistry
+Builtin tools are assembled in `firstcoder/tools/builtin.py` through `create_builtin_registry(...)`.
 
-```python
-class PermissionRegistry:
-    """工具权限注册表"""
-    
-    TOOL_PERMISSION_MAP = {
-        "view": "read_path",
-        "write": "write_path",
-        "shell": "execute_shell",
-        "git_diff": "git_operation",
-        # ... 其他映射
-    }
-    
-    def check_permission(tool_name: str) -> Optional[PermissionAction]:
-        """检查工具执行所需的权限类型"""
-        return cls.TOOL_PERMISSION_MAP.get(tool_name)
-```
+The base registry is composed in categories:
 
-### 权限检查流程
+- readonly filesystem and inspection tools
+- optional mutation tools
+- optional execution tools
+- optional network tools
 
-```
-工具调用请求
-    |
-    v
-PermissionRegistry 检查所需权限
-    |
-    v
-权限系统评估（策略 + 用户决策）
-    |
-    v
-允许执行 --> 工具执行
-    |
-拒绝 --> 返回错误结果
-```
+After tools are created, they are passed through `apply_agent_tool_description(...)` so the model sees curated descriptions rather than raw Python docstrings.
 
-## 工具执行流程
+This description rewrite is important: schema generation comes from Python signatures, but the final tool descriptions are tuned for model use.
 
-### 在 Agent Loop 中的位置
+## Session-Scoped Wrapping
 
-```python
-class AgentLoop:
-    async def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
-        """1. 从 registry 获取工具
-           2. 检查权限
-           3. 验证参数
-           4. 执行工具
-           5. 返回结果"""
-        
-        tool = self.registry.get_tool(tool_call.name)
-        if not tool:
-            return ToolResult(content=f"Unknown tool: {tool_call.name}", is_error=True)
-        
-        # 权限检查
-        permission_action = PermissionRegistry.check_permission(tool_call.name)
-        if permission_action and not await self.permissions.check(permission_action):
-            return ToolResult(content="Permission denied", is_error=True)
-        
-        # 执行工具
-        try:
-            result = await tool.execute(tool_call.arguments)
-            return ToolResult(content=result.content, is_error=result.is_error)
-        except Exception as e:
-            return ToolResult(content=f"Tool execution error: {str(e)}", is_error=True)
-```
+The agent does not expose the raw builtin registry directly. `create_session_tool_registry(...)` in `firstcoder/tools/session_registry.py` performs session-level wrapping.
 
-## 错误处理
+Current behavior:
 
-### 工具错误类型
+- inject the session-scoped `task_boundary` tool if needed
+- wrap the registry with `PermissionAwareToolRegistry` when a `PermissionManager` is available
 
-| 错误类型 | 说明 | 处理策略 |
-|---------|------|---------|
-| `PermissionDenied` | 权限被拒绝 | 返回错误结果，记录审计日志 |
-| `ValidationError` | 参数验证失败 | 返回格式错误的提示 |
-| `ExecutionError` | 工具执行失败 | 返回具体错误信息 |
-| `TimeoutError` | 执行超时 | 中断执行，返回超时提示 |
+This means the final registry used by the loop is session-aware rather than purely static.
 
-### 错误响应格式
+## Permission Coupling
 
-```json
-{
-  "content": "Error: permission denied for write_path",
-  "is_error": true,
-  "metadata": {
-    "tool_name": "write",
-    "error_type": "PermissionDenied",
-    "timestamp": "2024-01-01T00:00:00Z"
-  }
-}
-```
+Permissions are not implemented as a global static mapping. Each tool can carry a `ToolPermissionSpec` that describes how to build a `PermissionRequest` from runtime arguments.
 
-## 扩展性
+`ToolPermissionSpec` supports:
 
-### 添加新工具
+- a fixed `PermissionAction`
+- target extraction from an argument name
+- a fixed target value
+- a custom target builder
+- optional cwd extraction
+- policy hints such as `allow_always` and `allow_auto`
 
-1. 实现 `Tool` 协议
-2. 在 `ToolRegistry` 中注册
-3. 添加权限映射到 `PermissionRegistry`
-4. 编写工具描述供模型理解
+`PermissionAwareToolRegistry` uses this information to:
 
-### 自定义工具行为
+1. build a `PermissionRequest`
+2. ask the `PermissionManager` for a preflight decision
+3. either:
+   - allow execution
+   - return a denied tool result
+   - return a structured confirmation result that pauses the turn
 
-1. 继承现有工具实现
-2. 覆盖特定的方法
-3. 添加自定义的参数验证
+This pause/resume behavior is a core part of the tool execution model.
 
-### 工具监控
+## Tool Execution Flow
 
-```python
-class ToolMonitor:
-    def record_execution(tool_name: str, duration: float, success: bool):
-        """记录工具执行统计信息"""
-        # 用于性能分析和故障排查
-```
+The real flow through the runtime is:
 
-## 设计决策记录
+1. provider returns normalized `ToolCall` values
+2. agent loop appends the assistant tool-call message to the session log
+3. session tool registry performs permission preflight
+4. if permission is required, the turn pauses and pending execution is stored
+5. otherwise the executor runs locally and returns `ToolResult`
+6. the loop appends the final tool result to the session log
+7. the next provider call continues from the updated history
 
-| 决策 | 理由 |
-|------|------|
-| 统一 Tool 协议 | 简化工具开发和集成 |
-| 权限系统集成 | 确保安全执行，防止越权操作 |
-| 集中错误处理 | 提供一致的用户体验 |
-| 可扩展的注册机制 | 支持自定义工具和第三方集成 |
-| 工具描述标准化 | 帮助模型理解工具用途和参数 |
+The loop also guarantees that every assistant tool call is matched by a tool result, including permission-denied and skipped cases. This keeps provider-visible message sequences valid.
+
+## Special Tools
+
+Some tools are not simple environment adapters:
+
+- `todo` updates a session-visible todo model used by the TUI
+- `think` records structured reasoning text without changing the environment
+- `task_boundary` is injected per session and participates in task-aware context compaction
+- `web_search` is a concrete backend-specific search tool, not a generic abstract search interface
+
+These tools matter because they feed runtime behavior, not just local file or shell execution.
+
+## Design Notes
+
+- Tool schemas are derived from Python functions, but model-facing descriptions are curated afterward.
+- Permission logic is attached per tool and enforced by a wrapper, not scattered across executors.
+- Tool failures are converted into structured results so the loop can continue safely.
+- Session-scoped wrapping lets the runtime inject context-sensitive tools and behaviors without polluting the global registry.

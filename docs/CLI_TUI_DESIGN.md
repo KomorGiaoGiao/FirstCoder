@@ -1,237 +1,149 @@
 # CLI / TUI Design
 
-## 概述
+[中文版本](CLI_TUI_DESIGN.zh-CN.md)
 
-FirstCoder 提供两种交互方式：
-1. **Textual TUI** — 交互式终端界面，展示完整的 agent 状态
-2. **CLI** — 命令行接口，适合脚本化和自动化
+## Overview
 
-TUI 和 CLI 共享相同的底层 agent 运行时，区别仅在于用户界面和交互模式。
+FirstCoder exposes the same agent runtime through three user-facing modes:
 
-## 核心组件
+- Textual TUI for interactive terminal use
+- line-oriented interactive CLI (`--interactive`)
+- single-turn CLI (`--message` or stdin)
 
-### App Factory
+The entrypoint is `firstcoder/cli.py`. The TUI and CLI share the same core runtime pieces, but they do not use identical control paths. The TUI uses async streaming through `AgentChatRunner`, while the single-turn CLI path is synchronous.
 
-```python
-class AppFactory:
-    def create_app(config, runner, session_manager, skill_loader):
-        """创建 Textual TUI 应用实例"""
-        return FirstCoderApp(...)
-    
-    def create_cli(config, runner, session_manager, skill_loader):
-        """创建 CLI 入口"""
-        return FirstCoderCLI(...)
-```
+## Key Files
 
-**职责**：集中创建应用实例，解耦配置和运行时依赖。
+- `firstcoder/cli.py`: top-level CLI parser, mode routing, config commands, REPL, single-turn execution
+- `firstcoder/app/factory.py`: assembles the runtime graph for the app
+- `firstcoder/app/runtime.py`: `CurrentSessionState` and `AgentChatRunner`
+- `firstcoder/app/tui.py`: `FirstCoderApp` Textual application
+- `firstcoder/app/tui_state.py`: transcript-oriented TUI state model
+- `firstcoder/app/commands.py`: slash command handling contracts
+- `firstcoder/app/session_commands.py`: session-related slash commands
+- `firstcoder/app/permission_commands.py`: permission mode slash commands
+- `firstcoder/app/router.py`: command composition helpers
+- `firstcoder/config/settings.py`: config loading and precedence
 
-### Runtime Assembly
+## Runtime Assembly
 
-```python
-class RuntimeAssembly:
-    def assemble(config) -> AgentChatRunner:
-        """组装完整的 agent 运行时"""
-        provider = self._create_provider(config)
-        tools = self._create_tools(config)
-        permissions = self._create_permissions(config)
-        skills = self._create_skills(config)
-        session = self._create_session(config)
-        context = self._create_context(session)
-        loop = self._create_agent_loop(provider, tools, permissions, skills, context, session)
-        return AgentChatRunner(loop)
-```
+There is no `AppFactory` or `RuntimeAssembly` class in the current implementation. Runtime assembly is function-based.
 
-**关键设计**：
-- 所有组件通过依赖注入组装
-- 配置优先级：CLI 参数 > 环境变量 > 项目配置 > 全局配置 > 默认值
-- 每个组件都有对应的 factory 方法，便于测试和扩展
+`create_firstcoder_app(...)` in `firstcoder/app/factory.py` builds the main object graph:
 
-### TUI State Management
+1. create the JSONL-backed session store
+2. create sandbox access and builtin tool registry
+3. create the provider
+4. create the permission grant store and project permission manager
+5. create or resume `AgentSession`
+6. create `CurrentSessionState`
+7. create context compaction services
+8. create session catalog, resume, and share services
+9. create slash command handlers
+10. create `AgentChatRunner`
+11. create `FirstCoderApp`
 
-```python
-class TUIState:
-    session_id: str
-    provider_name: str
-    permission_mode: str
-    activity_state: ActivityState
-    current_tool_calls: List[ToolCall]
-    permission_requests: List[PermissionRequest]
-    stream_buffer: str
-```
+This makes the TUI a thin shell around a pre-assembled runtime instead of a place where subsystems are created lazily.
 
-**Activity 状态机**：
-```
-IDLE -> THINKING -> STREAMING -> TOOL_CALL -> WAITING_PERMISSION -> TOOL_RESULT -> STREAMING -> IDLE
-```
+## CLI Modes
 
-## TUI 架构
+`firstcoder/cli.py` currently routes into these modes:
 
-### 界面布局
+- `config` commands:
+  - `firstcoder config path`
+  - `firstcoder config show`
+  - `firstcoder config init`
+- TUI mode:
+  - `firstcoder`
+  - `firstcoder --tui`
+- line REPL:
+  - `firstcoder --interactive`
+- single-turn execution:
+  - `firstcoder --message "..."`
+  - stdin when no explicit message is provided
+- benchmark mode:
+  - `firstcoder --benchmark`
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Session: default    Provider: openai    Mode: ask           │
-├─────────────────────────────────────────────────────────────┤
-│ Activity: [● THINKING]                                      │
-├─────────────────────────────────────────────────────────────┤
-│ User: 帮我修复这个 bug                                       │
-│                                                             │
-│ Assistant:                                                  │
-│   🔧 正在读取文件...                                        │
-│   🛠️  工具调用: read_path(path="bug.py")                   │
-│   💭 分析中...                                              │
-│   ✅ 已修复 (2 处更改)                                     │
-│                                                             │
-│ User: 看起来不错，提交吧                                     │
-├─────────────────────────────────────────────────────────────┤
-│ /sessions  /resume  /compact  /permission  /help            │
-└─────────────────────────────────────────────────────────────┘
-```
+Important runtime override flags include:
 
-### 关键 Widget
+- `--project`
+- `--data-root`
+- `--session-id`
+- `--provider`
+- `--auto-approve`
+- `--max-tool-rounds`
 
-| Widget | 职责 | 位置 |
-|--------|------|------|
-| `SessionHeader` | 显示当前 session、provider、权限模式 | 顶部 |
-| `ActivityIndicator` | 显示 agent 当前活动状态 | 顶部 |
-| `ConversationLog` | 展示对话历史和工具调用 | 中央 |
-| `PermissionPrompt` | 暂停 agent 等待用户决策 | 底部 |
-| `CommandInput` | 接收用户输入或 slash commands | 底部 |
-| `StreamBuffer` | 缓冲流式输出，避免频繁刷新 | 内部 |
+## TUI Structure
 
-### 流式输出处理
+The Textual app is implemented mainly inside `FirstCoderApp` in `firstcoder/app/tui.py`.
 
-```python
-class StreamHandler:
-    def handle_stream(chunk: str):
-        """处理来自 provider 的流式响应"""
-        # 1. 累积到 buffer
-        self.stream_buffer += chunk
-        
-        # 2. 定期刷新 UI（避免每毫秒刷新）
-        if time.time() - self.last_refresh > 0.1:
-            self._refresh_ui()
-            self.last_refresh = time.time()
-    
-    def _refresh_ui():
-        """刷新对话日志显示"""
-        # 使用 Rich 的 Markup 处理工具调用和权限请求的格式化
-        conversation_log.update(self._format_conversation())
-```
+The UI is built from a small set of concrete widgets rather than a hierarchy of subsystem-specific classes. The main layout includes:
 
-## CLI 架构
+- a top bar for session and provider state
+- a scrollable transcript area
+- a todo panel
+- an activity line
+- an input widget
 
-### 命令路由
+The actual TUI state model is transcript-oriented and lives in `firstcoder/app/tui_state.py`:
 
-```python
-class CLIRouter:
-    def route_command(command: str, args: list):
-        """路由 CLI 命令到对应的 handler"""
-        if command == "config":
-            return self._handle_config(args)
-        elif command == "session":
-            return self._handle_session(args)
-        elif command == "permission":
-            return self._handle_permission(args)
-        elif command == "compact":
-            return self._handle_compact(args)
-        else:
-            # 默认：作为用户消息发送给 agent
-            return self._send_to_agent(command)
-```
+- `TuiTranscript`
+- `TuiTranscriptEntry`
+- `TuiToolActivity`
+- `TuiTodoItem`
+- `TuiEntryKind`
 
-### CLI 命令分类
+This is more concrete than the older conceptual `TUIState` model that appeared in previous docs.
 
-| 类别 | 命令 | 说明 |
-|------|------|------|
-| 启动 | `firstcoder` | 启动 TUI |
-| 启动 | `firstcoder --tui` | 显式启动 TUI |
-| 启动 | `firstcoder --interactive` | 启动行式 REPL |
-| 消息 | `firstcoder --message "..."` | 跑一轮用户消息 |
-| 项目 | `firstcoder --project <path>` | 指定项目根目录 |
-| 数据 | `firstcoder --data-root <path>` | 指定数据目录 |
-| Session | `firstcoder --session-id <id>` | 创建或复用 session |
-| Provider | `firstcoder --provider <name>` | 覆盖 provider |
-| 权限 | `firstcoder --auto-approve` | 自动批准权限请求 |
-| 限制 | `firstcoder --max-tool-rounds <n>` | 覆盖工具轮数限制 |
+## Streaming And User Input
 
-## 配置系统
+The TUI path uses async streaming methods on `AgentChatRunner`:
 
-### 配置层级
+- `arun_user_turn(...)`
+- `aresume_with_user_input(...)`
 
-```
-CLI --provider
-> 环境变量 / .env
-> 项目 firstcoder.toml
-> 全局 ~/.config/firstcoder/config.toml
-> 默认值
-```
+Streaming behavior is implemented in `firstcoder/app/tui.py` through app methods that:
 
-### 配置文件结构
+- install stream event handlers
+- buffer text deltas
+- flush the stream periodically into the transcript
+- interleave tool activity and final assistant text
 
-```toml
-# 项目级配置 (firstcoder.toml)
-model = "yurenapi/gpt-5.5"
+When a tool execution pauses for permission or user input, the loop returns a `pending_input` request. The TUI surfaces that request and later resumes the turn with `aresume_with_user_input(...)`.
 
-[provider]
-type = "openai-compatible"
-name = "yurenapi"
-base_url = "https://example.com/v1"
-api_key_env = "FIRSTCODER_API_KEY"
+## Slash Commands
 
-[permissions]
-mode = "ask"
+The current TUI command surface is assembled from dedicated handlers and includes:
 
-[ui]
-theme = "default"
+- `/sessions`
+- `/session <session_id>`
+- `/resume <session_id>`
+- `/share [session_id] [--tool-results]`
+- `/rename <title>`
+- `/context`
+- `/compact status`
+- `/compact`
+- `/mode`
+- `/mode <conservative|standard|aggressive|bypass>`
 
-[loop_limits]
-max_tool_rounds = 30
-max_runtime_seconds = 300
-max_verifications = 5
-```
+These are real handlers, not just help text.
 
-### 环境变量
+## Config Precedence
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `FIRSTCODER_API_KEY` | Provider API 密钥 | - |
-| `FIRSTCODER_PROVIDER` | Provider 名称 | "openai-compatible" |
-| `FIRSTCODER_BASE_URL` | Provider 基础 URL | - |
-| `FIRSTCODER_MODEL` | 模型名称 | - |
-| `OPENAI_API_KEY` | OpenAI 密钥 | - |
-| `DEEPSEEK_API_KEY` | DeepSeek 密钥 | - |
-| `ANTHROPIC_API_KEY` | Anthropic 密钥 | - |
+Config loading is implemented in `firstcoder/config/settings.py`.
 
-## 扩展性
+The precedence is field-specific rather than a universal “CLI beats everything” rule.
 
-### 添加新的 TUI Widget
+Examples:
 
-1. 继承 `textual.widget.Widget`
-2. 实现 `compose()` 方法定义子组件
-3. 实现 `on_mount()` 处理初始化
-4. 在 `ConversationLog` 中注册新的显示类型
+- provider selection prefers explicit CLI override, then `FIRSTCODER_PROVIDER`, then project config, then global config, then defaults
+- provider credentials and base URL prefer environment variables where mapped
+- top-level values like `model` are mostly resolved from project config, then global config, then defaults
 
-### 添加新的 CLI 命令
+This behavior is important because the current code does not implement a single generic merge layer for all CLI flags.
 
-1. 在 `CLIRouter` 中添加新的路由分支
-2. 实现对应的 handler 方法
-3. 更新 `--help` 输出
-4. 添加相应的 argparse 参数
+## Design Notes
 
-### 添加新的 Provider
-
-1. 实现 `ChatProvider` 协议
-2. 在 `ProviderFactory` 中注册
-3. 添加相应的环境变量和配置选项
-4. 测试流式输出和工具调用支持
-
-## 设计决策记录
-
-| 决策 | 理由 |
-|------|------|
-| TUI 和 CLI 共享运行时 | 避免代码重复，确保行为一致 |
-| 流式输出使用 buffer | 减少 UI 刷新频率，提升性能 |
-| Activity 状态机 | 明确展示 agent 当前工作状态，增强透明度 |
-| 配置分层 | 支持项目级个性化，同时保持全局默认值 |
-| Rich Markup 格式化 | 利用 Rich 的富文本支持，提供更好的视觉效果 |
+- TUI and CLI share the same session, provider, tools, permissions, and context machinery.
+- The TUI path is more capable than the single-turn CLI path because it supports async streaming, interruption, and permission resumption.
+- Runtime assembly is intentionally centralized in factory functions, which keeps tests and alternate entrypoints simpler.
