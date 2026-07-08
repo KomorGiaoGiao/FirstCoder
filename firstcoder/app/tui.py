@@ -10,9 +10,10 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
+from rich.align import Align
 from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -22,10 +23,71 @@ from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static
 
 from firstcoder.app.commands import CommandResult
+from firstcoder.app.session_commands import SESSION_LIST_VISIBLE_LIMIT
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript, TuiTranscriptEntry
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
+
+_WELCOME_LOGO_PALETTE = {
+    "M": "#81e8bb",
+    "C": "#18cfcb",
+    "T": "#1ba59e",
+    "W": "#f5fcfa",
+    "O": "#002630",
+    "P": "#b8ffdf",
+    "Q": "#45e6df",
+}
+
+_WELCOME_LOGO_PIXELS = (
+    ".................M..CCT",
+    "..................CCCTT",
+    ".................CCCTCT",
+    "......CTTCT......CTCTT",
+    ".......TCCTT....TTTTTC",
+    ".......CTCTTT...TTTT",
+    ".........TTTT...TC",
+    "",
+    "...............M",
+    "...............M",
+    "",
+    "............WWWWWWWW",
+    ".........MWWWWWWWWWWWM",
+    "........WWWWWWWWWWWWMMM",
+    "......MWWWWWWWWWWWWWMMMC",
+    ".....MWWWWWWWWWWWWWMMMMCC",
+    "....MMWWWWWWWWWWWMMMMMMMCC",
+    "....MMMMWWWWWWWMMMMMMMMMCC",
+    "...MMMMMMMMMMMMMMMMMMMMMCCC",
+    "..MMMMMMMMMMMMMMMMMMMMMMCCC",
+    "..MMMMMMMMMMMMMMMMMMMMMMMCC",
+    ".MMMWWMMMMMMMMMWWMMMMMMMMCCC",
+    ".MMMWWMMMMMMMMMWWMMMMMMMMCCC",
+    ".MMMWWMMMMMMMMMWWMMMMMMMMCCT",
+    "MMMMMMMMMWWWWMMMMMMMMMMMMCCC",
+    "MMMMMMMMMMMMMMMMMMMMMMMMMCCC",
+    "MMMMMMMMMMMMMMMMMMMMMMMMMCCC",
+    "MMMMMMMMMMMMWMMMMMMMMMMMMCCC",
+    "MMMMMMWWMMMWWMWMMMMMMMMMCCCC",
+    "MMMMMWWMMMMWMMMWWMMMMMMMCCCC",
+    "MMMMWWMMMMMWMMMMWWMMMMMMCCC",
+    "MMMMWWMMMMWMMMMMWWMMMMMMCCC",
+    ".MMMMWWMMMWMMMMWWMMMMMMCCCC",
+    ".MMMMMWWMMWMMMWWMMMMMMMCCC.M",
+    "..MMMMMMMWMMMMMMMMMMMMCCC",
+    "..MMMMMMMMMMMMMMMMMMMMCCC",
+    "...MMMMMMMMMMMMMMMMMMCCC",
+    ".....MMMMMMMMMMMMMMMCT",
+    "......MMMMMMMMMMMMMCC",
+    ".....M...MMMMMMMMM...M",
+)
+
+_WELCOME_PARTICLE_FRAMES = (
+    ((6, 3, "P"), (11, 26, "Q"), (25, 29, "P"), (37, 4, "P")),
+    ((5, 5, "Q"), (14, 1, "P"), (28, 30, "Q"), (38, 23, "P")),
+    ((4, 2, "P"), (10, 24, "P"), (21, 31, "Q"), (35, 28, "P")),
+    ((7, 1, "Q"), (16, 29, "P"), (31, 2, "P"), (39, 18, "Q")),
+)
 
 
 @dataclass(slots=True)
@@ -33,6 +95,12 @@ class _ActiveChatTurn:
     id: str
     token: int
     started_at: float
+
+
+@dataclass(slots=True)
+class _ResumePickerState:
+    sessions: list[dict[str, object]]
+    selected_index: int = 0
 
 
 class FirstCoderMarkdown(Markdown):
@@ -48,6 +116,26 @@ class FirstCoderMarkdown(Markdown):
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
     kwargs.setdefault("markup", False)
     return Static(content, *args, **kwargs)
+
+
+def _visible_session_window(
+    sessions: list[dict[str, object]], *, selected_index: int, limit: int = SESSION_LIST_VISIBLE_LIMIT
+) -> tuple[int, list[dict[str, object]]]:
+    if not sessions:
+        return 0, []
+    selected_index = max(0, min(selected_index, len(sessions) - 1))
+    limit = max(1, limit)
+    if len(sessions) <= limit:
+        return 0, sessions
+    window_start = min(max(0, selected_index - limit + 1), len(sessions) - limit)
+    return window_start, sessions[window_start : window_start + limit]
+
+
+def _resume_picker_header(window_start: int, visible_count: int, total_count: int) -> str:
+    if total_count <= visible_count:
+        return "Select a session:"
+    window_end = window_start + visible_count
+    return f"Select a session: Showing {window_start + 1}-{window_end} of {total_count} sessions"
 
 
 def _observe_markdown_update(update_result) -> None:
@@ -66,6 +154,28 @@ def _observe_markdown_update(update_result) -> None:
             raise exception
 
     future.add_done_callback(observe_cancelled_update)
+
+
+def _welcome_renderable(*, particle_frame: int = 0) -> Align:
+    rows = [list(row) for row in _WELCOME_LOGO_PIXELS]
+    frame = _WELCOME_PARTICLE_FRAMES[particle_frame % len(_WELCOME_PARTICLE_FRAMES)]
+    for row_index, column_index, pixel in frame:
+        if not 0 <= row_index < len(rows):
+            continue
+        row = rows[row_index]
+        if column_index >= len(row):
+            row.extend("." for _ in range(column_index - len(row) + 1))
+        if row[column_index] == ".":
+            row[column_index] = pixel
+
+    text = Text()
+    for row_index, row in enumerate(rows):
+        if row_index:
+            text.append("\n")
+        for pixel in row:
+            color = _WELCOME_LOGO_PALETTE.get(pixel)
+            text.append("██" if color else "  ", style=color)
+    return Align.center(text)
 
 
 class CommandHandlerLike(Protocol):
@@ -101,6 +211,7 @@ class FirstCoderApp(App[None]):
     WORKING_FRAMES = ("[.  ]", "[.. ]", "[...]", "[ ..]", "[  .]")
     ESC_INTERRUPT_WINDOW_SECONDS = 1.0
     ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
+    WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85
     ACTIVITY_FRAMES = {
         "running": ("[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"),
         "streaming": ("[>   ]", "[>>  ]", "[>>> ]", "[ >>>]", "[  >>]", "[   >]"),
@@ -150,6 +261,10 @@ class FirstCoderApp(App[None]):
         self._activity_text = "idle · ready"
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
+        self._resume_picker: _ResumePickerState | None = None
+        self._welcome_widget: Static | None = None
+        self._welcome_particle_timer: Timer | None = None
+        self._welcome_particle_frame = 0
         self.transcript = TuiTranscript()
 
     def compose(self) -> ComposeResult:
@@ -164,18 +279,22 @@ class FirstCoderApp(App[None]):
     def on_mount(self) -> None:
         self.title = self.config.title
         self._refresh_session_subtitle()
-        self._write_line(
-            "FirstCoder ready. Commands: /sessions, /session, /resume, /share, /rename, "
-            "/context, /compact status, /compact",
-            classes="message system-message",
-        )
+        self._show_welcome()
+
+    def on_unmount(self) -> None:
+        self._stop_welcome_particles()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
         if not text:
             return
+        self._dismiss_welcome()
         self._record_input_history(text)
+
+        if self._resume_picker is not None and text.isdigit():
+            if self._resume_picker_select_number(int(text)):
+                return
 
         self._write_line(f"> {text}", kind=TuiEntryKind.USER)
 
@@ -187,6 +306,7 @@ class FirstCoderApp(App[None]):
             result = self.command_handler.handle(text)
             if result.handled:
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
+                self._handle_command_action(result.action)
                 self._refresh_session_subtitle()
                 return
             self._write_line(f"Unknown command: {text}", kind=TuiEntryKind.ERROR)
@@ -225,6 +345,10 @@ class FirstCoderApp(App[None]):
         self._chat_worker = self.run_worker(self._run_chat_turn(text, token))
 
     def on_key(self, event: Key) -> None:
+        if self._resume_picker is not None and self._handle_resume_picker_key(event):
+            event.stop()
+            event.prevent_default()
+            return
         if event.key == "escape":
             if self._handle_escape_interrupt():
                 event.stop()
@@ -331,6 +455,137 @@ class FirstCoderApp(App[None]):
             return self._input_history[self._input_history_index]
         return None
 
+    def _handle_command_action(self, action: dict[str, Any] | None) -> None:
+        if not action:
+            return
+        action_type = action.get("type")
+        if action_type == "resume_picker":
+            self._resume_picker = _ResumePickerState(
+                sessions=[item for item in action.get("sessions", []) if isinstance(item, dict)],
+                selected_index=int(action.get("selected_index") or 0),
+            )
+            self._render_resume_picker()
+            return
+        if action_type == "replay_session":
+            self._resume_picker = None
+            self._replay_current_session()
+
+    def _handle_resume_picker_key(self, event: Key) -> bool:
+        picker = self._resume_picker
+        if picker is None:
+            return False
+        if event.key == "up":
+            picker.selected_index = max(0, picker.selected_index - 1)
+            self._render_resume_picker()
+            return True
+        if event.key == "down":
+            picker.selected_index = min(len(picker.sessions) - 1, picker.selected_index + 1)
+            self._render_resume_picker()
+            return True
+        if event.key == "enter":
+            self._resume_picker_select_index(picker.selected_index)
+            return True
+        if event.key == "escape":
+            self._resume_picker = None
+            self._write_line("Resume cancelled.", kind=TuiEntryKind.COMMAND)
+            return True
+        return False
+
+    def _resume_picker_select_number(self, number: int) -> bool:
+        picker = self._resume_picker
+        if picker is None:
+            return False
+        index = number - 1
+        if index < 0 or index >= len(picker.sessions):
+            self._write_line("Invalid session selection.", kind=TuiEntryKind.ERROR)
+            return True
+        self._resume_picker_select_index(index)
+        return True
+
+    def _resume_picker_select_index(self, index: int) -> None:
+        picker = self._resume_picker
+        if picker is None or self.command_handler is None:
+            return
+        if index < 0 or index >= len(picker.sessions):
+            return
+        session_id = str(picker.sessions[index].get("session_id") or "")
+        if not session_id:
+            return
+        result = self.command_handler.handle(f"/resume {session_id}")
+        if result.output:
+            self._write_line(result.output, kind=TuiEntryKind.COMMAND)
+        self._handle_command_action(result.action)
+        self._refresh_session_subtitle()
+
+    def _render_resume_picker(self) -> None:
+        picker = self._resume_picker
+        if picker is None:
+            return
+        window_start, visible_sessions = _visible_session_window(picker.sessions, selected_index=picker.selected_index)
+        lines = [_resume_picker_header(window_start, len(visible_sessions), len(picker.sessions))]
+        for offset, item in enumerate(visible_sessions):
+            index = window_start + offset
+            marker = ">" if index == picker.selected_index else " "
+            lines.append(
+                f"{marker} {index + 1}. {item.get('session_id')} {item.get('title')} "
+                f"messages={item.get('message_count')}"
+            )
+        lines.append("Use up/down and enter to resume, or type a number.")
+        self._replace_last_command_output("\n".join(lines))
+
+    def _replace_last_command_output(self, text: str) -> None:
+        for entry in reversed(self.transcript.entries):
+            if entry.kind == TuiEntryKind.COMMAND:
+                entry.body = text
+                self._rerender_transcript()
+                return
+        self._write_line(text, kind=TuiEntryKind.COMMAND)
+
+    def _clear_output(self) -> None:
+        self.transcript = TuiTranscript()
+        self._remove_output_children()
+
+    def _rerender_transcript(self) -> None:
+        entries = list(self.transcript.entries)
+        self.transcript = TuiTranscript()
+        self._remove_output_children()
+        for entry in entries:
+            if entry.kind == TuiEntryKind.ASSISTANT:
+                self._write_markdown_message(entry.body)
+            else:
+                self._write_line(entry.body, kind=entry.kind, label=entry.label, status=entry.status)
+
+    def _remove_output_children(self) -> None:
+        output = self.query_one("#output")
+        if hasattr(output, "remove_children"):
+            output.remove_children()
+            return
+        if hasattr(output, "children"):
+            for child in list(output.children):
+                remove = getattr(child, "remove", None)
+                if remove is not None:
+                    remove()
+
+    def _replay_current_session(self) -> None:
+        current_session = self.current_session
+        if current_session is None:
+            return
+        rebuild_view = getattr(current_session, "rebuild_view", None)
+        if rebuild_view is None:
+            return
+        view = rebuild_view()
+        self._clear_output()
+        for message in getattr(view, "messages", []):
+            content = "\n".join(part.content for part in message.parts if getattr(part, "content", ""))
+            if not content:
+                continue
+            if message.role == "user":
+                self._write_line(f"> {content}", kind=TuiEntryKind.USER)
+            elif message.role == "assistant":
+                self._write_markdown_message(content)
+            else:
+                self._write_line(content, kind=TuiEntryKind.TOOL)
+
     async def _resume_permission_turn(self, request_id: str, answer: str, token: int) -> None:
         previous_stream_handler = None
         previous_tool_handler = None
@@ -403,7 +658,16 @@ class FirstCoderApp(App[None]):
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
         content = getattr(response, "content", "")
         if self._stream_text_started:
-            display_lines = [line for line in display_lines if _looks_like_tool_display_line(line)]
+            if content and _normalize_stream_text(content) != _normalize_stream_text(self._stream_text_buffer):
+                self._stream_text_buffer = content
+                if self._stream_text_entry is not None:
+                    self._stream_text_entry.body = content
+            display_lines = [
+                line
+                for line in display_lines
+                if _looks_like_tool_display_line(line)
+                or _normalize_stream_text(line) != _normalize_stream_text(self._stream_text_buffer)
+            ]
             self._flush_stream_text()
         if self._live_tool_events_seen:
             display_lines = [line for line in display_lines if not _looks_like_tool_display_line(line)]
@@ -590,6 +854,48 @@ class FirstCoderApp(App[None]):
         if hasattr(output, "write_line"):
             output.write_line(rendered)
         return entry
+
+    def _show_welcome(self) -> None:
+        output = self.query_one("#output")
+        if not hasattr(output, "mount"):
+            return
+        self._welcome_widget = _plain_static(_welcome_renderable(), id="welcome", classes="welcome")
+        output.mount(self._welcome_widget)
+        self._start_welcome_particles()
+
+    def _dismiss_welcome(self) -> None:
+        self._stop_welcome_particles()
+        widget = self._welcome_widget
+        self._welcome_widget = None
+        if widget is None:
+            return
+        remove = getattr(widget, "remove", None)
+        if remove is not None:
+            remove()
+
+    def _start_welcome_particles(self) -> None:
+        if self._welcome_particle_timer is not None:
+            return
+        if getattr(self, "_loop", None) is None:
+            return
+        self._welcome_particle_timer = self.set_interval(
+            self.WELCOME_PARTICLE_INTERVAL_SECONDS,
+            self._advance_welcome_particles,
+            name="welcome-particles",
+        )
+
+    def _stop_welcome_particles(self) -> None:
+        if self._welcome_particle_timer is None:
+            return
+        self._welcome_particle_timer.stop()
+        self._welcome_particle_timer = None
+
+    def _advance_welcome_particles(self) -> None:
+        if self._welcome_widget is None:
+            self._stop_welcome_particles()
+            return
+        self._welcome_particle_frame += 1
+        self._welcome_widget.update(_welcome_renderable(particle_frame=self._welcome_particle_frame))
 
     def _record_tool_activity(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
@@ -1012,6 +1318,10 @@ def _looks_like_markdown_response(line: str) -> bool:
 
 def _looks_like_tool_display_line(line: str) -> bool:
     return line.startswith(("Tool call:", "Tool result:"))
+
+
+def _normalize_stream_text(text: str) -> str:
+    return text.strip()
 
 
 def _display_line_kind(line: str) -> TuiEntryKind:

@@ -5,6 +5,7 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import AgentChatRunner
+from firstcoder.config.settings import AppConfig
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.providers.base import ChatProvider
@@ -48,9 +49,37 @@ def test_create_firstcoder_app_wires_session_commands_context_and_chat(tmp_path:
     assert (tmp_path / ".firstcoder" / "sessions" / "sess_test.jsonl").exists()
     assert "Session: sess_test" in app.command_handler.handle("/context").output
     assert "Sessions:" in app.command_handler.handle("/sessions").output
+    assert "/resume" in app.command_handler.handle("/help").output
     response = app.chat_runner.run_user_turn("你好")
     assert response.content == "收到"
     assert "项目规则" in provider.requests[0].messages[0].content
+
+
+def test_create_firstcoder_app_wires_new_fork_and_skill_commands(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "brief.md").write_text("# Brief\n", encoding="utf-8")
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        provider=FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")]),
+        session_id="sess_test",
+        tools=[],
+    )
+
+    new_result = app.command_handler.handle("/new 新会话")
+    assert new_result.output.startswith("New session: sess_")
+    new_session_id = app.current_session.session.session_id
+    assert new_session_id != "sess_test"
+
+    fork_result = app.command_handler.handle("/fork 分支")
+    assert fork_result.output.startswith(f"Forked session: {new_session_id} -> sess_")
+    assert app.current_session.session.session_id != new_session_id
+
+    skills_result = app.command_handler.handle("/skills")
+    assert "brief project skills/brief.md" in skills_result.output
+    skill_result = app.command_handler.handle("/skill brief")
+    assert "Skill: brief" in skill_result.output
 
 
 def test_create_firstcoder_app_enables_streaming_for_capable_provider(tmp_path: Path) -> None:
@@ -68,6 +97,29 @@ def test_create_firstcoder_app_enables_streaming_for_capable_provider(tmp_path: 
     )
 
     assert app.chat_runner.use_streaming is True
+
+
+def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) -> None:
+    provider = FakeProvider(
+        responses=[ChatResponse(provider="fake", model="fake-model", content="ok")],
+        capabilities=ProviderCapabilities(supports_streaming=True),
+    )
+    config = AppConfig(
+        provider_name="fake",
+        env={},
+        project_config={"provider": {"streaming": False}},
+    )
+
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        provider=provider,
+        session_id="sess_test",
+        tools=[],
+        app_config=config,
+    )
+
+    assert app.chat_runner.use_streaming is False
 
 
 def test_app_factory_configures_default_loop_limits(tmp_path: Path) -> None:

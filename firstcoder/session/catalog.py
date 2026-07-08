@@ -37,8 +37,9 @@ class SessionCatalog:
         if not self.sessions_dir.exists():
             return []
 
-        records = [self._record_from_path(path) for path in self.sessions_dir.glob("*.jsonl")]
-        return sorted(records, key=_sort_key, reverse=True)
+        from firstcoder.session.index import SessionIndex
+
+        return SessionIndex(self.root).list_records()
 
     def get_session(self, session_id: str) -> SessionRecord:
         _validate_session_id(session_id)
@@ -53,21 +54,25 @@ class SessionCatalog:
         return (self.sessions_dir / f"{session_id}.jsonl").exists()
 
     def _record_from_path(self, path: Path) -> SessionRecord:
-        session_id = path.stem
-        try:
-            events = _load_events(path)
-        except Exception as exc:  # noqa: BLE001 - catalog 需要隔离单个损坏 session。
-            return SessionRecord(
-                session_id=session_id,
-                title=session_id,
-                status="corrupt",
-                error=str(exc),
-            )
+        return _record_from_path(path)
 
-        if not events:
-            return SessionRecord(session_id=session_id, title=session_id, status="empty")
 
-        return _build_record(session_id=session_id, events=events)
+def _record_from_path(path: Path) -> SessionRecord:
+    session_id = path.stem
+    try:
+        events = _load_events(path)
+    except Exception as exc:  # noqa: BLE001 - catalog 需要隔离单个损坏 session。
+        return SessionRecord(
+            session_id=session_id,
+            title=session_id,
+            status="corrupt",
+            error=str(exc),
+        )
+
+    if not events:
+        return SessionRecord(session_id=session_id, title=session_id, status="empty")
+
+    return _build_record_from_events(session_id=session_id, events=events)
 
 
 def _load_events(path: Path) -> list[SessionEvent]:
@@ -94,7 +99,7 @@ def _validate_session_id(session_id: str) -> None:
         raise SessionInvalidIdError(f"invalid session_id: {session_id!r}")
 
 
-def _build_record(*, session_id: str, events: list[SessionEvent]) -> SessionRecord:
+def _build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> SessionRecord:
     metadata: dict[str, Any] = {}
     message_count = 0
     user_turn_count = 0

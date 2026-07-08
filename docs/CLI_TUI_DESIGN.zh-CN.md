@@ -117,9 +117,14 @@ TUI 路径通过 `AgentChatRunner` 的异步接口工作：
 
 - `/sessions`
 - `/session <session_id>`
+- `/new [title]`
+- `/fork [title]`
+- `/help`
 - `/resume <session_id>`
 - `/share [session_id] [--tool-results]`
 - `/rename <title>`
+- `/skills`
+- `/skill <name>`
 - `/context`
 - `/compact status`
 - `/compact`

@@ -117,9 +117,14 @@ The current TUI command surface is assembled from dedicated handlers and include
 
 - `/sessions`
 - `/session <session_id>`
+- `/new [title]`
+- `/fork [title]`
+- `/help`
 - `/resume <session_id>`
 - `/share [session_id] [--tool-results]`
 - `/rename <title>`
+- `/skills`
+- `/skill <name>`
 - `/context`
 - `/compact status`
 - `/compact`

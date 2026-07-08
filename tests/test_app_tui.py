@@ -9,17 +9,24 @@ from firstcoder.app.commands import CommandResult
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.agent.user_input import UserInputOption, UserInputRequest
 from firstcoder.app.router import CompositeCommandHandler
+from firstcoder.app.runtime import CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
 from firstcoder.app.tui import _turn_metrics_text
+from firstcoder.app.tui import _welcome_renderable
 from firstcoder.app.tui import _entry_classes, _tool_event_entry_kind, _tool_event_label, _tool_event_status
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript
 from firstcoder.app.tui_state import TuiTranscriptEntry
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.writer import SessionEventWriter
+from firstcoder.agent.session import AgentSession
+from firstcoder.session.catalog import SessionCatalog
+from firstcoder.session.resume import ResumeService
 from firstcoder.providers.types import ChatResponse, ChatStreamEvent, TokenUsage, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -56,6 +63,18 @@ class FakeOutput:
     def scroll_end(self, animate: bool = False) -> None:
         self.scroll_end_calls += 1
         return None
+
+
+def _static_output_text(app: FirstCoderApp) -> str:
+    static_text = "\n".join(
+        str(getattr(widget, "content", getattr(widget, "renderable", "")))
+        for widget in app.query_one("#output").query("Static")
+    )
+    markdown_text = "\n".join(
+        str(getattr(widget, "source", "") or "\n".join(getattr(widget, "updates", []) or []))
+        for widget in app.query_one("#output").query("FirstCoderMarkdown")
+    )
+    return "\n".join(part for part in [static_text, markdown_text] if part)
 
 
 class FakeMarkdownUpdateResult:
@@ -200,6 +219,61 @@ def test_firstcoder_markdown_does_not_enter_textual_selection_path() -> None:
 def test_firstcoder_markdown_blocks_do_not_enter_textual_selection_path() -> None:
     assert FirstCoderMarkdown.BLOCKS
     assert all(block.ALLOW_SELECT is False for block in FirstCoderMarkdown.BLOCKS.values())
+
+
+def test_welcome_renderable_uses_colored_full_block_pixels() -> None:
+    renderable = _welcome_renderable()
+    text = renderable.renderable
+    next_text = _welcome_renderable(particle_frame=1).renderable
+
+    assert renderable.align == "center"
+    assert "██" in text.plain
+    assert "▀" not in text.plain
+    assert "FirstCoder" not in text.plain
+    assert "Commands:" not in text.plain
+    assert any(span.style == "#81e8bb" for span in text.spans)
+    assert any(span.style == "#18cfcb" for span in text.spans)
+    assert any(span.style == "#f5fcfa" for span in text.spans)
+    assert any(span.style == "#b8ffdf" for span in text.spans)
+    assert text.plain != next_text.plain
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_shows_welcome_until_first_input() -> None:
+    runner = FakeAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        welcome = app.query_one("#welcome")
+        content = welcome.content
+        plain = getattr(getattr(content, "renderable", content), "plain", str(content))
+        assert "██" in plain
+        assert "Commands:" not in plain
+
+        await pilot.click("#input")
+        await pilot.press(*"hello")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not app.query("#welcome")
+        assert app._welcome_particle_timer is None
+
+    assert runner.inputs == ["hello"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_welcome_particles_animate_between_frames() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test():
+        welcome = app.query_one("#welcome")
+        before = welcome.content
+        app._advance_welcome_particles()
+        after = welcome.content
+
+    assert before != after
 
 
 def test_firstcoder_app_topbar_uses_spacious_two_sided_layout_when_width_is_known() -> None:
@@ -580,6 +654,92 @@ async def test_firstcoder_app_queues_guidance_while_chat_is_running() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_resume_picker_replays_selected_session_history(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    writer_one = SessionEventWriter(store=store, session_id="sess_one")
+    writer_one.append_session_created(title="第一个")
+    writer_one.append_user_message("旧问题")
+    writer_one.append_assistant_response(ChatResponse(provider="fake", model="fake", content="旧回答"))
+    writer_two = SessionEventWriter(store=store, session_id="sess_two")
+    writer_two.append_session_created(title="第二个")
+    writer_two.append_user_message("新问题")
+    current = AgentSession.resume(store=store, session_id="sess_one", agents_md="")
+    state = CurrentSessionState(current)
+    handler = SessionCommandHandler(
+        catalog=SessionCatalog(tmp_path),
+        current_session=state.session,
+        resume_service=ResumeService(store=store, project_root=tmp_path),
+        on_resume=state.set_session,
+    )
+    app = FirstCoderApp(command_handler=handler, current_session=state)
+    markdown_rendered = False
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/resume")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        assert "Select a session" in output_text
+        assert "第二个" in output_text
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        markdown_rendered = bool(app.query_one("#output").query("FirstCoderMarkdown"))
+
+    assert state.session.session_id == "sess_one"
+    assert "旧问题" in output_text
+    assert any(entry.body == "旧回答" for entry in app.transcript.entries)
+    assert markdown_rendered
+    assert "Select a session" not in output_text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_resume_picker_renders_twenty_visible_rows_and_scrolls(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    for index in range(25):
+        writer = SessionEventWriter(store=store, session_id=f"sess_{index:02d}")
+        writer.append_session_created(title=f"标题{index:02d}")
+        writer.append_user_message(f"问题{index:02d}")
+    current = AgentSession.resume(store=store, session_id="sess_00", agents_md="")
+    state = CurrentSessionState(current)
+    handler = SessionCommandHandler(
+        catalog=SessionCatalog(tmp_path),
+        current_session=state.session,
+        resume_service=ResumeService(store=store, project_root=tmp_path),
+        on_resume=state.set_session,
+    )
+    app = FirstCoderApp(command_handler=handler, current_session=state)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/resume")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        assert "Showing 1-20 of 25 sessions" in output_text
+        assert "sess_24" in output_text
+        assert "sess_05" in output_text
+        assert "sess_04" not in output_text
+
+        for _ in range(20):
+            await pilot.press("down")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        assert "Showing 2-21 of 25 sessions" in output_text
+        assert "sess_24" not in output_text
+        assert "sess_04" in output_text
+        assert "> 21. sess_04" in output_text
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert state.session.session_id == "sess_04"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_firstcoder_app_double_escape_interrupts_running_chat() -> None:
     runner = BlockingAsyncChatRunner()
     app = FirstCoderApp(chat_runner=runner)
@@ -867,6 +1027,23 @@ def test_firstcoder_app_streaming_final_response_skips_assistant_display_line(mo
     assert sum(isinstance(widget, Markdown) for widget in output.mounted) == 1
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown", "Static"]
     assert output.mounted[0].allow_select is False
+
+
+def test_firstcoder_app_replaces_partial_stream_when_final_response_differs(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    runner.last_display_lines = ["complete ok"]
+    output = FakeOutput()
+    app = FirstCoderApp(chat_runner=runner)
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+
+    previous_handler = app._install_stream_event_handler()
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="partial"))
+    app._write_chat_response(ChatResponse(provider="fake", model="fake", content="complete ok"))
+    app._restore_stream_event_handler(previous_handler)
+
+    assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
+    assert output.mounted[0].updates[-1] == "FirstCoder:\n\ncomplete ok"
+    assert app._stream_text_buffer == "complete ok"
 
 
 def test_firstcoder_app_stops_streaming_status_after_final_response(monkeypatch) -> None:

@@ -36,6 +36,9 @@ class JsonlSessionStore:
         with path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True))
             file.write("\n")
+        from firstcoder.session.index import SessionIndex
+
+        SessionIndex(self.root).update_event(event)
 
     def list_events(self, session_id: str) -> list[SessionEvent]:
         path = self._session_path(session_id)
@@ -70,6 +73,10 @@ class JsonlSessionStore:
 
         if event.type == "compaction_completed":
             _apply_compaction_replacements(view, event)
+            return
+
+        if event.type == "message_part_metadata_updated":
+            _apply_message_part_metadata_update(view, event)
             return
 
         role = EVENT_ROLE_MAP.get(event.type)
@@ -139,3 +146,18 @@ def _apply_compaction_replacements(view: SessionView, event: SessionEvent) -> No
         replacement_data = dict(replacement_part)
         replacement_data.setdefault("message_id", message_id)
         message.parts[index] = MessagePart.from_dict(replacement_data)
+
+
+def _apply_message_part_metadata_update(view: SessionView, event: SessionEvent) -> None:
+    message_id = str(event.payload.get("message_id") or "")
+    part_id = str(event.payload.get("part_id") or "")
+    metadata = event.payload.get("metadata")
+    if not message_id or not part_id or not isinstance(metadata, dict):
+        return
+    for message in view.messages:
+        if message.id != message_id:
+            continue
+        for part in message.parts:
+            if part.id == part_id:
+                part.metadata.update(metadata)
+                return

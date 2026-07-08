@@ -7,11 +7,14 @@ from pathlib import Path
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession, create_project_permission_manager
 from firstcoder.app.commands import ContextCommandHandler
+from firstcoder.app.help_commands import HelpCommandHandler
 from firstcoder.app.permission_commands import PermissionCommandHandler
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
+from firstcoder.app.skill_commands import SkillCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
+from firstcoder.config.settings import AppConfig, load_config
 from firstcoder.context.identity import new_session_id
 from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.context.manager import ContextWindowManager
@@ -21,8 +24,11 @@ from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import create_provider
 from firstcoder.permissions.grants import FilePermissionGrantStore
 from firstcoder.session.catalog import SessionCatalog
+from firstcoder.session.fork import ForkSessionService
+from firstcoder.session.new import NewSessionService
 from firstcoder.session.resume import ResumeService
 from firstcoder.session.share import SessionShareService
+from firstcoder.skills.discovery import discover_all_skills
 from firstcoder.tools.builtin import create_builtin_registry
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -36,6 +42,7 @@ def create_firstcoder_app(
     session_id: str | None = None,
     tools: list[Tool] | None = None,
     config: FirstCoderTuiConfig | None = None,
+    app_config: AppConfig | None = None,
 ) -> FirstCoderApp:
     """组装可运行的 FirstCoder TUI。
 
@@ -45,6 +52,7 @@ def create_firstcoder_app(
 
     project_path = Path(project_root)
     resolved_data_root = Path(data_root) if data_root is not None else project_path / ".firstcoder"
+    resolved_app_config = app_config or load_config(project_root=project_path)
     store = JsonlSessionStore(resolved_data_root)
     sandbox_access = SandboxAccess()
     resolved_tools = tools if tools is not None else create_builtin_registry(
@@ -82,9 +90,26 @@ def create_firstcoder_app(
         sandbox_access=sandbox_access,
         catalog=catalog,
     )
+    new_service = NewSessionService(
+        store=store,
+        project_root=project_path,
+        data_root=resolved_data_root,
+        tools=resolved_tools,
+        sandbox_access=sandbox_access,
+    )
+    fork_service = ForkSessionService(
+        store=store,
+        project_root=project_path,
+        data_root=resolved_data_root,
+        tools=resolved_tools,
+        sandbox_access=sandbox_access,
+        catalog=catalog,
+    )
     session_handler = SessionCommandHandler(
         catalog=catalog,
         current_session=current.session,
+        new_service=new_service,
+        fork_service=fork_service,
         resume_service=resume_service,
         share_service=SessionShareService(store),
         store=store,
@@ -92,14 +117,17 @@ def create_firstcoder_app(
     )
     context_handler = ContextCommandHandler(session=current, context_manager=context_manager)
     permission_handler = PermissionCommandHandler(session=current)
-    command_handler = CompositeCommandHandler([session_handler, context_handler, permission_handler])
+    skill_handler = SkillCommandHandler(catalog_provider=lambda: discover_all_skills(project_path))
+    command_handler = CompositeCommandHandler(
+        [HelpCommandHandler(), session_handler, context_handler, permission_handler, skill_handler]
+    )
     chat_runner = AgentChatRunner(
         current_session=current,
         provider=resolved_provider,
         tools=resolved_tools,
         context_manager=context_manager,
         limits=AgentLoopLimits.default(),
-        use_streaming=bool(getattr(getattr(resolved_provider, "capabilities", None), "supports_streaming", False)),
+        use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
     )
     return FirstCoderApp(
         command_handler=command_handler,
@@ -112,3 +140,12 @@ def create_firstcoder_app(
             project_name=project_path.resolve().name,
         ),
     )
+
+
+def _should_use_streaming(provider: ChatProvider, config: AppConfig) -> bool:
+    if not bool(getattr(getattr(provider, "capabilities", None), "supports_streaming", False)):
+        return False
+    configured = config.get_provider_bool("streaming", env="FIRSTCODER_STREAMING", provider_name=provider.name)
+    if configured is None:
+        return True
+    return configured

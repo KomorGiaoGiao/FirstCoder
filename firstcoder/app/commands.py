@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from firstcoder.context.inspector import ContextInspectionReport, ContextInspector
 from firstcoder.context.manager import ContextCompactRequest, ContextCompactResult, ContextWindowTrigger
@@ -34,6 +34,7 @@ class ContextManagerLike(Protocol):
 class CommandResult:
     handled: bool
     output: str = ""
+    action: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
