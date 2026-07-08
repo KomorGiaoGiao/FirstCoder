@@ -306,7 +306,7 @@ class FirstCoderApp(App[None]):
             result = self.command_handler.handle(text)
             if result.handled:
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
-                self._handle_command_action(result.action)
+                self._handle_command_action(result.action, output=result.output)
                 self._refresh_session_subtitle()
                 return
             self._write_line(f"Unknown command: {text}", kind=TuiEntryKind.ERROR)
@@ -455,10 +455,16 @@ class FirstCoderApp(App[None]):
             return self._input_history[self._input_history_index]
         return None
 
-    def _handle_command_action(self, action: dict[str, Any] | None) -> None:
+    def _handle_command_action(self, action: dict[str, Any] | None, *, output: str = "") -> None:
         if not action:
             return
         action_type = action.get("type")
+        if action_type == "new_session":
+            self._resume_picker = None
+            self._clear_output()
+            if output:
+                self._write_line(output, kind=TuiEntryKind.COMMAND)
+            return
         if action_type == "resume_picker":
             self._resume_picker = _ResumePickerState(
                 sessions=[item for item in action.get("sessions", []) if isinstance(item, dict)],

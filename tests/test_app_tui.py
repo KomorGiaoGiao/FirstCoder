@@ -26,6 +26,7 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.agent.session import AgentSession
 from firstcoder.session.catalog import SessionCatalog
+from firstcoder.session.new import NewSessionService
 from firstcoder.session.resume import ResumeService
 from firstcoder.providers.types import ChatResponse, ChatStreamEvent, TokenUsage, ToolCall
 from firstcoder.tools.types import ToolResult
@@ -736,6 +737,40 @@ async def test_firstcoder_app_resume_picker_renders_twenty_visible_rows_and_scro
         await pilot.pause()
 
     assert state.session.session_id == "sess_04"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_new_command_clears_previous_output(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    writer = SessionEventWriter(store=store, session_id="sess_old")
+    writer.append_session_created(title="旧会话")
+    writer.append_user_message("旧问题")
+    current = AgentSession.resume(store=store, session_id="sess_old", agents_md="")
+    state = CurrentSessionState(current)
+    handler = SessionCommandHandler(
+        catalog=SessionCatalog(tmp_path),
+        current_session=state.session,
+        new_service=NewSessionService(store=store, project_root=tmp_path),
+        on_resume=state.set_session,
+    )
+    app = FirstCoderApp(command_handler=handler, current_session=state)
+
+    async with app.run_test() as pilot:
+        app._write_line("> 旧问题", kind=TuiEntryKind.USER)
+        app._write_markdown_message("旧回答")
+        await pilot.click("#input")
+        await pilot.press(*"/new 新会话")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+
+    assert state.session.session_id != "sess_old"
+    assert "New session:" in output_text
+    assert "新会话" in output_text
+    assert "旧问题" not in output_text
+    assert "旧回答" not in output_text
+    assert [entry.kind for entry in app.transcript.entries] == [TuiEntryKind.COMMAND]
 
 
 @pytest.mark.anyio

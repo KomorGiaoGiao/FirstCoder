@@ -53,7 +53,8 @@ class SessionCommandHandler:
 
         try:
             if name == "/new":
-                return CommandResult(handled=True, output=self._new(args))
+                output = self._new(args)
+                return CommandResult(handled=True, output=output, action={"type": "new_session"})
             if name == "/fork":
                 return CommandResult(handled=True, output=self._fork(args))
             if name == "/sessions":
