@@ -127,7 +127,11 @@ class ContextWindowManager:
                 after_tokens=before_tokens,
             )
 
-        if mode == ContextCompactMode.AUTO and auto_compact_circuit_is_open(request.runtime_state):
+        if (
+            trigger == ContextWindowTrigger.AUTO
+            and mode == ContextCompactMode.AUTO
+            and auto_compact_circuit_is_open(request.runtime_state)
+        ):
             # 连续失败后自动压缩会短暂熔断，避免每一轮对话都重复触发昂贵且失败的 L4。
             # 手动 compact 不受这个限制，方便用户主动排查。
             return ContextCompactResult(
@@ -149,6 +153,7 @@ class ContextWindowManager:
                 target_tokens=target_tokens,
                 current_turn=request.current_turn,
                 force_route_current_text=force_route_current_text,
+                force_old_task_compaction=trigger == ContextWindowTrigger.TASK_HASH_CHANGED,
             )
         )
         self._record_programmatic_event(

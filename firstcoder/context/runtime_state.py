@@ -76,6 +76,7 @@ class SessionRuntimeState:
     session_id: str
     active_task_hash: str | None = None
     candidate_task_hash: str | None = None
+    candidate_task_basis_message_id: str | None = None
     task_hash_stable_count: int = 0
     latest_checkpoint_id: str | None = None
     auto_compact_failure_count: int = 0
@@ -99,6 +100,7 @@ class SessionRuntimeState:
 
         if candidate_hash == self.active_task_hash:
             self.candidate_task_hash = None
+            self.candidate_task_basis_message_id = None
             self.task_hash_stable_count = 0
             return False
 
@@ -113,6 +115,7 @@ class SessionRuntimeState:
 
         self.active_task_hash = candidate_hash
         self.candidate_task_hash = None
+        self.candidate_task_basis_message_id = None
         self.task_hash_stable_count = 0
         return True
 

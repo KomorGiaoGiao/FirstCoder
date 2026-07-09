@@ -56,6 +56,19 @@ def test_writer_advances_turn_on_user_messages(tmp_path) -> None:
     assert writer.current_turn == 2
 
 
+def test_writer_can_patch_message_part_metadata(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    writer = SessionEventWriter(store=store, session_id="sess_test")
+    message_id = writer.append_user_message("第一任务")
+    part_id = store.rebuild_session_view("sess_test").messages[0].parts[0].id
+
+    writer.append_message_part_metadata_updated(message_id=message_id, part_id=part_id, metadata={"task_hash": "task_a"})
+
+    view = store.rebuild_session_view("sess_test")
+    assert view.messages[0].parts[0].metadata["task_hash"] == "task_a"
+    assert view.messages[0].parts[0].metadata["created_turn"] == 1
+
+
 def test_writer_appends_session_created_once_when_requested(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     writer = SessionEventWriter(store=store, session_id="sess_test")
@@ -81,7 +94,7 @@ def test_writer_appends_session_metadata_update_event(tmp_path) -> None:
 def test_writer_appends_task_boundary_observation_event(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     writer = SessionEventWriter(store=store, session_id="sess_test")
-    state = SessionRuntimeState(session_id="sess_test")
+    state = SessionRuntimeState(session_id="sess_test", active_task_hash="task_previous")
     service = TaskBoundaryService(required_stable_count=1)
     observation = service.observe(state, decision=TaskBoundaryDecision.NEW, basis_message_id="msg_new")
 

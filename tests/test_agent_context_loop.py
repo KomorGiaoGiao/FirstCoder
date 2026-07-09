@@ -262,6 +262,32 @@ class PartialThenErrorStreamingProvider(ChatProvider):
 
 
 @dataclass
+class FallbackStreamingProvider(ChatProvider):
+    stream_errors: list[ProviderError]
+    complete_response: ChatResponse
+    stream_requests: list[ChatRequest] = field(default_factory=list)
+    complete_requests: list[ChatRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return "fallback-stream"
+
+    @property
+    def model(self) -> str:
+        return "fallback-stream-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        self.complete_requests.append(request)
+        return self.complete_response
+
+    async def astream(self, request: ChatRequest):
+        self.stream_requests.append(request)
+        yield ChatStreamEvent(kind="message_started")
+        yield ChatStreamEvent(kind="text_delta", text="partial")
+        raise self.stream_errors.pop(0)
+
+
+@dataclass
 class PartialPromptTooLongThenSuccessStreamingProvider(ChatProvider):
     requests: list[ChatRequest] = field(default_factory=list)
 
@@ -825,6 +851,57 @@ def test_agent_loop_streaming_prompt_too_long_retry_discards_failed_attempt_even
     assert [event.text for event in loop.last_stream_events if event.kind == "text_delta"] == ["ok"]
 
 
+def test_agent_loop_streaming_retries_retryable_network_error_once(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_network_retry", agents_md="")
+    provider = StreamingProvider(
+        [
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "connection closed"),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
+
+    result = loop.run_user_turn_streaming_sync("问题")
+
+    assert result.content == "ok"
+    assert len(provider.requests) == 2
+    assert [event.kind for event in loop.last_stream_events] == [
+        "message_started",
+        "text_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    assert [event.text for event in loop.last_stream_events if event.kind == "text_delta"] == ["o", "k"]
+    assert [message.role for message in store.rebuild_session_view("sess_stream_network_retry").messages] == [
+        "user",
+        "assistant",
+    ]
+
+
+def test_agent_loop_streaming_falls_back_to_non_streaming_after_retryable_stream_failures(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_fallback", agents_md="")
+    provider = FallbackStreamingProvider(
+        stream_errors=[
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "connection closed"),
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "connection closed again"),
+        ],
+        complete_response=ChatResponse(provider="fallback-stream", model="fallback-stream-model", content="complete ok"),
+    )
+    loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
+
+    result = loop.run_user_turn_streaming_sync("问题")
+
+    assert result.content == "complete ok"
+    assert len(provider.stream_requests) == 2
+    assert len(provider.complete_requests) == 1
+    assert loop.last_stream_events == []
+    view = store.rebuild_session_view("sess_stream_fallback")
+    assert [message.role for message in view.messages] == ["user", "assistant"]
+    assert view.messages[-1].parts[0].content == "complete ok"
+
+
 def test_agent_loop_streaming_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_stream_no_tool_exec", agents_md="")
@@ -965,6 +1042,37 @@ def test_agent_loop_persists_task_boundary_observation_for_replay(tmp_path) -> N
     assert replayed.active_task_hash == session.runtime_state.active_task_hash
 
 
+def test_agent_loop_initializes_active_task_hash_when_model_skips_task_boundary(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
+    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
+
+    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+
+    events = store.list_events("sess_test")
+    boundary_event = next(event for event in events if event.type == "task_boundary_observed")
+    replayed = replay_runtime_state(store, "sess_test")
+    user_message = next(message for message in store.rebuild_session_view("sess_test").messages if message.role == "user")
+
+    assert boundary_event.payload["confirmation_reason"] == "implicit_initial_task"
+    assert boundary_event.payload["basis_message_id"] == user_message.id
+    assert boundary_event.payload["active_task_hash"] == session.runtime_state.active_task_hash
+    assert session.runtime_state.active_task_hash is not None
+    assert replayed.active_task_hash == session.runtime_state.active_task_hash
+
+
+def test_agent_loop_tags_initial_user_message_with_implicit_task_hash(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
+    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
+
+    AgentLoop(session=session, provider=provider).run_user_turn("第一任务：" + "旧任务内容" * 80)
+
+    view = store.rebuild_session_view("sess_test")
+    user_part = next(message for message in view.messages if message.role == "user").parts[0]
+    assert user_part.metadata["task_hash"] == session.runtime_state.active_task_hash
+
+
 def test_agent_loop_rejects_task_boundary_unknown_basis_message_id(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
@@ -995,9 +1103,9 @@ def test_agent_loop_rejects_task_boundary_unknown_basis_message_id(tmp_path) -> 
     replayed = replay_runtime_state(store, "sess_test")
     assert tool_result.metadata["ok"] is False
     assert "basis_message_id 不属于当前 session" in tool_result.content
-    assert "task_boundary_observed" not in event_types
-    assert session.runtime_state.active_task_hash is None
-    assert replayed.active_task_hash is None
+    assert event_types.count("task_boundary_observed") == 1
+    assert session.runtime_state.active_task_hash is not None
+    assert replayed.active_task_hash == session.runtime_state.active_task_hash
 
 
 def test_agent_loop_passes_current_turn_into_context_manager(tmp_path) -> None:
@@ -1293,6 +1401,49 @@ def test_agent_loop_skips_todo_self_check_when_all_todos_done(tmp_path) -> None:
     assert len(provider.requests) == 2
 
 
+def test_agent_loop_skips_todo_self_check_when_all_todos_completed(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_self_check_completed",
+        agents_md="",
+        tools=[create_todo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={
+                            "action": "set",
+                            "todos": [
+                                {"content": "读代码", "status": "completed"},
+                                {"content": "跑测试", "status": "completed"},
+                            ],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="我完成了"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "我完成了"
+    assert len(provider.requests) == 2
+
+
 def test_agent_loop_executes_tool_calls_after_todo_self_check(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(
@@ -1433,6 +1584,72 @@ def test_agent_loop_reminds_model_when_todo_is_stale_during_tool_loop(tmp_path) 
     assert provider.requests[4].messages[-1].role == "user"
     assert "Todo progress reminder" in provider.requests[4].messages[-1].content
     assert "跑测试" in provider.requests[4].messages[-1].content
+
+
+def test_agent_loop_reminds_model_to_create_todo_for_multi_step_tool_work(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_todo_missing_plan_reminder",
+        agents_md="",
+        tools=[create_todo_tool(), _echo_tool()],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_1", name="echo", arguments={"text": "inspect"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[ToolCall(id="call_echo_2", name="echo", arguments={"text": "diagnose"})],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_todo_set",
+                        name="todo",
+                        arguments={
+                            "action": "set",
+                            "todos": [
+                                {"content": "Inspect current behavior", "status": "completed"},
+                                {"content": "Implement fix", "status": "in_progress"},
+                                {"content": "Run focused tests", "status": "pending"},
+                            ],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="继续实现"),
+            ChatResponse(provider="fake", model="fake-model", content="还有测试未完成"),
+        ]
+    )
+
+    response = AgentLoop(
+        session=session,
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=10, max_provider_calls=10, max_turn_seconds=None),
+    ).run_user_turn("做一个多步骤任务")
+
+    assert response.content == "还有测试未完成"
+    assert provider.requests[2].messages[-1].role == "user"
+    assert "Todo planning reminder" in provider.requests[2].messages[-1].content
+    assert "complete 3-7 item plan" in provider.requests[2].messages[-1].content
+    assert sum(
+        "Todo planning reminder" in request.messages[-1].content
+        for request in provider.requests
+        if request.messages
+    ) == 1
 
 
 def test_agent_loop_injects_guidance_before_next_provider_call(tmp_path) -> None:
@@ -1810,6 +2027,7 @@ def test_agent_session_resume_replays_runtime_state_and_known_message_ids(tmp_pa
 def test_agent_loop_runs_compact_when_task_boundary_confirms_change(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
+    session.runtime_state.active_task_hash = "task_previous"
     provider = BoundaryProvider()
     context_manager = FakeContextManager()
 

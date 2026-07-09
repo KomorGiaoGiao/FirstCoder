@@ -45,15 +45,15 @@ def test_fetch_rejects_unsupported_scheme(tmp_path):
     assert result.error == "只支持 http 和 https URL"
 
 
-def test_web_search_calls_exa_mcp(monkeypatch, tmp_path):
+def _fake_web_search_response(body: str):
+    """辅助：创建一个返回指定 text 的 fake urlopen。"""
     payload = web_search_module.dumps_json(
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "result": {"content": [{"type": "text", "text": "search results"}]},
+            "result": {"content": [{"type": "text", "text": body}]},
         }
     )
-    captured = {}
 
     class FakeResponse:
         status = 200
@@ -71,10 +71,17 @@ def test_web_search_calls_exa_mcp(monkeypatch, tmp_path):
         def __exit__(self, exc_type, exc, traceback):
             return False
 
+    return FakeContext()
+
+
+def test_web_search_uses_parallel_by_default(monkeypatch, tmp_path):
+    """默认使用 Parallel MCP（不是 Exa）。"""
+    captured = {}
+
     def fake_urlopen(req, timeout):
         captured["url"] = req.full_url
         captured["body"] = req.data.decode("utf-8")
-        return FakeContext()
+        return _fake_web_search_response("parallel results")
 
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
@@ -83,41 +90,26 @@ def test_web_search_calls_exa_mcp(monkeypatch, tmp_path):
     result = registry.execute("web_search", {"query": "FirstCoder agent", "num_results": 3})
 
     assert result.ok is True
-    assert result.content == "search results"
-    assert captured["url"] == "https://mcp.exa.ai/mcp"
-    assert '"name":"web_search_exa"' in captured["body"]
-    assert '"numResults":3' in captured["body"]
+    assert "search.parallel.ai" in captured["url"]
+    assert '"name":"web_search"' in captured["body"]
+    assert '"num_results":3' in captured["body"]
 
 
-def test_web_search_redacts_exa_api_key_from_result_data(monkeypatch, tmp_path):
-    payload = web_search_module.dumps_json(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"content": [{"type": "text", "text": "search results"}]},
-        }
-    )
+def test_web_search_falls_back_to_exa_with_api_key(monkeypatch, tmp_path):
+    """有 EXA_API_KEY 且 Parallel 失败时 fallback 到 Exa。"""
     captured = {}
-
-    class FakeResponse:
-        status = 200
-
-        def read(self):
-            return payload.encode("utf-8")
-
-        def getheaders(self):
-            return []
-
-    class FakeContext:
-        def __enter__(self):
-            return FakeResponse()
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
+    call_count = 0
 
     def fake_urlopen(req, timeout):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Parallel 先失败
+            raise web_search_module.error.URLError("parallel failed")
+        # Exa
         captured["url"] = req.full_url
-        return FakeContext()
+        captured["body"] = req.data.decode("utf-8")
+        return _fake_web_search_response("exa results")
 
     monkeypatch.setenv("EXA_API_KEY", "secret-token")
     monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
@@ -125,12 +117,30 @@ def test_web_search_redacts_exa_api_key_from_result_data(monkeypatch, tmp_path):
 
     result = registry.execute("web_search", {"query": "FirstCoder"})
 
+    assert result.ok is True
+    assert result.content == "exa results"
+    assert "mcp.exa.ai" in captured["url"]
+    assert '"name":"web_search_exa"' in captured["body"]
+
+
+def test_web_search_redacts_exa_api_key_from_result_data(monkeypatch, tmp_path):
+    """有 EXA key 时，强制 Exa provider 后 url 中的 key 会被脱敏。"""
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        return _fake_web_search_response("search results")
+
+    monkeypatch.setenv("EXA_API_KEY", "secret-token")
+    monkeypatch.setenv("FIRSTCODER_WEBSEARCH_PROVIDER", "exa")
+    monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
+    registry = create_builtin_registry(tmp_path, include_network_tools=True)
+
+    result = registry.execute("web_search", {"query": "FirstCoder"})
+
     assert "secret-token" in captured["url"]
     assert result.ok is True
-    assert result.data["url"] == "https://mcp.exa.ai/mcp?exaApiKey=%2A%2A%2A"
-    assert "secret-token" not in result.data["url"]
-
-
+    assert result.data.get("url", "") == "https://mcp.exa.ai/mcp?exaApiKey=%2A%2A%2A"
 def test_web_search_parses_sse_response():
     payload = web_search_module.dumps_json(
         {
@@ -167,34 +177,11 @@ def test_web_search_definition_constrains_enum_parameters(tmp_path):
 
 
 def test_web_search_normalizes_common_model_boolean_livecrawl(monkeypatch, tmp_path):
-    payload = web_search_module.dumps_json(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"content": [{"type": "text", "text": "search results"}]},
-        }
-    )
     captured = {}
-
-    class FakeResponse:
-        status = 200
-
-        def read(self):
-            return payload.encode("utf-8")
-
-        def getheaders(self):
-            return []
-
-    class FakeContext:
-        def __enter__(self):
-            return FakeResponse()
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
 
     def fake_urlopen(req, timeout):
         captured["body"] = req.data.decode("utf-8")
-        return FakeContext()
+        return _fake_web_search_response("search results")
 
     monkeypatch.setattr(web_search_module.request, "urlopen", fake_urlopen)
     registry = create_builtin_registry(tmp_path, include_network_tools=True)
@@ -202,4 +189,5 @@ def test_web_search_normalizes_common_model_boolean_livecrawl(monkeypatch, tmp_p
     result = registry.execute("web_search", {"query": "FirstCoder", "livecrawl": "false"})
 
     assert result.ok is True
-    assert '"livecrawl":"fallback"' in captured["body"]
+    # Parallel 不支持 livecrawl，所以 body 里不该有 livecrawl
+    assert "livecrawl" not in captured["body"]

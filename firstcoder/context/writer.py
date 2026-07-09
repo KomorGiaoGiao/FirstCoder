@@ -64,6 +64,20 @@ class SessionEventWriter:
             )
         )
 
+    def append_message_part_metadata_updated(self, *, message_id: str, part_id: str, metadata: dict[str, Any]) -> None:
+        self.store.append_event(
+            SessionEvent(
+                id=new_event_id(),
+                session_id=self.session_id,
+                type="message_part_metadata_updated",
+                payload={
+                    "message_id": message_id,
+                    "part_id": part_id,
+                    "metadata": dict(metadata),
+                },
+            )
+        )
+
     def append_user_message(
         self,
         content: str,

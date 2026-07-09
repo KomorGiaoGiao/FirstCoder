@@ -12,13 +12,15 @@ from firstcoder.utils.json_utils import dumps_json, loads_json
 
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 DEFAULT_TIMEOUT_SECONDS = 25
 DEFAULT_NUM_RESULTS = 8
 DEFAULT_CONTEXT_MAX_CHARACTERS = 10000
+FIRST_SEARCH_PROVIDER = "parallel"  # 默认优先使用 Parallel（无 key 免费）
 
 
 def create_web_search_tool() -> Tool:
-    """创建基于 Exa MCP 的网页搜索工具。"""
+    """创建网页搜索工具。默认使用 Parallel MCP（免费无 key），有 EXA_API_KEY 时回退到 Exa。"""
 
     def web_search(
         query: str,
@@ -44,67 +46,92 @@ def create_web_search_tool() -> Tool:
         if livecrawl not in ("fallback", "preferred"):
             return make_error_result("web_search", "livecrawl 只能是 fallback 或 preferred")
 
-        url = _exa_mcp_url()
-        body = dumps_json(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "web_search_exa",
-                    "arguments": {
-                        "query": query,
-                        "type": search_type,
-                        "numResults": num_results,
-                        "livecrawl": livecrawl,
-                        "contextMaxCharacters": context_max_characters,
-                    },
-                },
-            }
-        ).encode("utf-8")
-        req = request.Request(
-            url,
-            data=body,
-            method="POST",
-            headers={
-                "Accept": "application/json, text/event-stream",
-                "Content-Type": "application/json",
-                "User-Agent": "FirstCoder/0.1",
-            },
-        )
+        # 确定 provider 顺序
+        provider = os.environ.get("FIRSTCODER_WEBSEARCH_PROVIDER") or FIRST_SEARCH_PROVIDER
+        providers_to_try = ["parallel", "exa"]
+        if provider == "exa":
+            providers_to_try = ["exa", "parallel"]
 
-        try:
-            with request.urlopen(req, timeout=timeout_seconds) as response:
-                raw_body = response.read()
-                status = getattr(response, "status", None)
-                headers = dict(response.getheaders())
-        except error.URLError as exc:
-            return make_error_result("web_search", f"搜索请求失败：{exc}", provider="exa")
+        last_error = None
+        for prov in providers_to_try:
+            if prov == "exa" and not os.environ.get("EXA_API_KEY"):
+                # 无 Exa key 时跳过
+                continue
+            try:
+                if prov == "parallel":
+                    result = _run_parallel_search(query, num_results, timeout_seconds)
+                else:
+                    result = _run_exa_search(query, num_results, search_type, livecrawl, context_max_characters, timeout_seconds)
+                if result is not None:
+                    return result
+            except Exception as exc:
+                last_error = str(exc)
+                continue
 
-        text = raw_body.decode("utf-8", errors="replace")
-        result = parse_mcp_search_response(text)
-        if not result:
-            result = "没有找到搜索结果，请尝试换一个查询。"
-
-        return make_text_result(
-            "web_search",
-            result,
-            provider="exa",
-            query=query,
-            url=_redact_url(url),
-            status=status,
-            headers=headers,
-        )
+        return make_error_result("web_search", f"所有搜索 provider 均不可用：{last_error or '无可用 provider'}")
 
     tool = tool_from_function(web_search)
     tool.definition.parameters["properties"]["search_type"]["enum"] = ["auto", "fast", "deep"]
     tool.definition.parameters["properties"]["livecrawl"]["enum"] = ["fallback", "preferred"]
     tool.permission = ToolPermissionSpec(
         action=PermissionAction.NETWORK_REQUEST,
-        target_value=EXA_MCP_URL,
+        target_value=f"{EXA_MCP_URL},{PARALLEL_MCP_URL}",
         reason="网页搜索需要网络请求权限。",
     )
     return tool
+
+
+def _run_parallel_search(query: str, num_results: int, timeout: int) -> ToolResult | None:
+    """调用 Parallel MCP 搜索。"""
+    body = dumps_json({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "web_search",
+            "arguments": {
+                "query": query,
+                "search_queries": [query],
+                "objective": query,
+                "num_results": num_results,
+            },
+        },
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json", "User-Agent": "FirstCoder/0.1"}
+    api_key = os.environ.get("PARALLEL_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        with request.urlopen(
+            request.Request(PARALLEL_MCP_URL, data=body, method="POST", headers=headers),
+            timeout=timeout,
+        ) as resp:
+            raw = resp.read()
+    except (error.URLError, error.HTTPError):
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    result = _parse_parallel_response(text)
+    if not result:
+        return None
+    return make_text_result("web_search", result, provider="parallel", query=query)
+
+
+def _parse_parallel_response(body: str) -> str | None:
+    """从 Parallel MCP 的 JSON-RPC 响应中提取文本结果。"""
+    trimmed = body.strip()
+    if not trimmed.startswith("{"):
+        return None
+    try:
+        data = loads_json(trimmed)
+    except ValueError:
+        return None
+    result = data.get("result") if isinstance(data, dict) else None
+    content = result.get("content") if isinstance(result, dict) else None
+    if not isinstance(content, list):
+        return None
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"]:
+            return item["text"]
+    return None
 
 
 def _normalize_livecrawl(value: str) -> str:
@@ -114,6 +141,45 @@ def _normalize_livecrawl(value: str) -> str:
     if normalized in {"true", "1", "yes", "on"}:
         return "preferred"
     return value
+
+
+def _run_exa_search(
+    query: str,
+    num_results: int,
+    search_type: str,
+    livecrawl: str,
+    context_max_characters: int,
+    timeout: int,
+) -> ToolResult | None:
+    url = _exa_mcp_url()
+    body = dumps_json({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "web_search_exa",
+            "arguments": {
+                "query": query,
+                "type": search_type,
+                "numResults": num_results,
+                "livecrawl": livecrawl,
+                "contextMaxCharacters": context_max_characters,
+            },
+        },
+    }).encode("utf-8")
+    req = request.Request(
+        url, data=body, method="POST",
+        headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json", "User-Agent": "FirstCoder/0.1"},
+    )
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            raw_body = response.read()
+    except error.URLError:
+        return None
+    text = raw_body.decode("utf-8", errors="replace")
+    result = parse_mcp_search_response(text)
+    if not result:
+        return None
+    return make_text_result("web_search", result, provider="exa", query=query, url=_redact_url(url))
 
 
 def _exa_mcp_url() -> str:

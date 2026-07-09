@@ -1455,7 +1455,7 @@ def test_firstcoder_app_updates_persistent_todo_panel_for_todo_events(monkeypatc
                 content="已设置任务清单",
                 data={
                     "todos": [
-                        {"id": "todo_1", "content": "读代码", "status": "done"},
+                        {"id": "todo_1", "content": "读代码", "status": "completed"},
                         {"id": "todo_2", "content": "跑测试", "status": "in_progress"},
                     ]
                 },
@@ -1465,10 +1465,30 @@ def test_firstcoder_app_updates_persistent_todo_panel_for_todo_events(monkeypatc
     app._restore_tool_event_handler(previous_handler)
 
     assert app.transcript.todos == [
-        TuiTodoItem(id="todo_1", content="读代码", status="done"),
+        TuiTodoItem(id="todo_1", content="读代码", status="completed"),
         TuiTodoItem(id="todo_2", content="跑测试", status="in_progress"),
     ]
-    assert todo_panel.updates[-1] == "Todo\n[x] 读代码\n[~] 跑测试"
+    assert todo_panel.updates[-1] == "Todo\n[✓] 读代码\n[~] 跑测试"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_todo_panel_preserves_status_markers_as_plain_text() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test():
+        panel = app.query_one("#todo-panel")
+        app.transcript.update_todos(
+            [
+                {"id": "todo_1", "content": "已完成", "status": "completed"},
+                {"id": "todo_2", "content": "进行中", "status": "in_progress"},
+                {"id": "todo_3", "content": "未完成", "status": "pending"},
+            ]
+        )
+        app._render_todo_panel()
+
+        assert panel.content == "Todo\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
+        assert str(panel.render()) == "Todo\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
 
 
 def test_firstcoder_app_updates_topbar_when_activity_changes(monkeypatch) -> None:

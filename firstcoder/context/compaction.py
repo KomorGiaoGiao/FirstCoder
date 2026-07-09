@@ -39,6 +39,7 @@ class CompactionRequest:
     current_turn: int
     enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")
     force_route_current_text: bool = False
+    force_old_task_compaction: bool = False
 
 
 @dataclass(slots=True)
@@ -83,7 +84,7 @@ class CompactionPipeline:
         view = _clone_view(request.view)
         input_fingerprint = _view_fingerprint(request.view)
         before_tokens = _estimate_view_tokens(view)
-        if before_tokens <= request.target_tokens:
+        if before_tokens <= request.target_tokens and not request.force_old_task_compaction:
             deduped = input_fingerprint in self._seen_noop_fingerprints
             self._seen_noop_fingerprints.add(input_fingerprint)
             return CompactionResult(

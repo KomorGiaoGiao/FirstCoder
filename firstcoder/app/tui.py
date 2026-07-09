@@ -271,7 +271,7 @@ class FirstCoderApp(App[None]):
         yield Static(self._topbar_text(), id="topbar", classes="topbar")
         with Vertical(id="main"):
             yield VerticalScroll(id="output")
-            yield Static("", id="todo-panel", classes="todo-panel hidden")
+            yield _plain_static("", id="todo-panel", classes="todo-panel hidden")
             yield Static("idle · ready", id="activity", classes="activity-line")
             with Vertical(id="composer", classes="composer"):
                 yield Input(placeholder="输入消息，或使用 /context、/compact status、/compact", id="input")
@@ -1472,8 +1472,8 @@ def _todo_panel_text(todos: list[TuiTodoItem]) -> str:
     lines = ["Todo"]
     for item in todos:
         marker = "[ ]"
-        if item.status == "done":
-            marker = "[x]"
+        if item.status in {"completed", "done"}:
+            marker = "[✓]"
         elif item.status == "in_progress":
             marker = "[~]"
         lines.append(f"{marker} {item.content}")

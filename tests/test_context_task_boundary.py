@@ -43,7 +43,7 @@ def test_uncertain_keeps_active_task_hash() -> None:
     assert state.active_task_hash == "task_active"
 
 
-def test_same_resets_pending_new_candidate_window() -> None:
+def test_uncertain_resets_pending_new_candidate_window() -> None:
     state = SessionRuntimeState(session_id="sess_test", active_task_hash="task_active")
     service = TaskBoundaryService(required_stable_count=2)
 
@@ -54,8 +54,8 @@ def test_same_resets_pending_new_candidate_window() -> None:
     )
     service.observe(
         state,
-        decision=TaskBoundaryDecision.SAME,
-        basis_message_id="msg_same",
+        decision=TaskBoundaryDecision.UNCERTAIN,
+        basis_message_id="msg_uncertain",
     )
     second = service.observe(
         state,
@@ -68,6 +68,32 @@ def test_same_resets_pending_new_candidate_window() -> None:
     assert second.should_trigger_compaction is False
     assert state.candidate_task_hash == second.candidate_hash
     assert state.task_hash_stable_count == 1
+
+
+def test_same_after_pending_new_confirms_candidate_task() -> None:
+    state = SessionRuntimeState(session_id="sess_test", active_task_hash="task_active")
+    service = TaskBoundaryService(required_stable_count=2)
+
+    first = service.observe(
+        state,
+        decision=TaskBoundaryDecision.NEW,
+        basis_message_id="msg_new_1",
+    )
+    second = service.observe(
+        state,
+        decision=TaskBoundaryDecision.SAME,
+        basis_message_id="msg_new_2",
+    )
+
+    assert first.confirmed_change is False
+    assert second.confirmed_change is True
+    assert second.should_trigger_compaction is True
+    assert second.candidate_hash == first.candidate_hash
+    assert second.active_task_hash == first.candidate_hash
+    assert second.confirmation_reason == "stable_window"
+    assert state.active_task_hash == first.candidate_hash
+    assert state.candidate_task_hash is None
+    assert state.task_hash_stable_count == 0
 
 
 def test_uncertain_resets_pending_new_candidate_window() -> None:
@@ -117,6 +143,26 @@ def test_new_requires_stable_window() -> None:
     assert second.confirmed_change is True
     assert second.should_trigger_compaction is True
     assert state.active_task_hash == second.candidate_hash
+
+
+def test_first_new_initializes_active_task_hash_without_stable_window() -> None:
+    state = SessionRuntimeState(session_id="sess_test")
+    service = TaskBoundaryService(required_stable_count=2)
+
+    observation = service.observe(
+        state,
+        decision=TaskBoundaryDecision.NEW,
+        basis_message_id="msg_new",
+    )
+
+    assert observation.confirmed_change is True
+    assert observation.should_trigger_compaction is False
+    assert observation.confirmation_reason == "initial_task"
+    assert observation.active_task_hash == observation.candidate_hash
+    assert observation.stable_count == 0
+    assert state.active_task_hash == observation.candidate_hash
+    assert state.candidate_task_hash is None
+    assert state.task_hash_stable_count == 0
 
 
 def test_new_candidate_hash_is_program_generated_and_stable() -> None:

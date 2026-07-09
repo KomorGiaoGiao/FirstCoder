@@ -68,6 +68,7 @@ def create_task_boundary_tool(
             decision=observation.decision.value,
             basis_message_id=observation.basis_message_id,
             candidate_hash=observation.candidate_hash,
+            candidate_basis_message_id=observation.candidate_basis_message_id,
             active_task_hash=observation.active_task_hash,
             confirmed_change=observation.confirmed_change,
             should_trigger_compaction=observation.should_trigger_compaction,

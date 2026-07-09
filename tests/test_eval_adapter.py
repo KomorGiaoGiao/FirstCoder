@@ -375,3 +375,24 @@ def test_adapter_patch_includes_untracked_files(tmp_path: Path):
 
     assert "diff --git a/new_module.py b/new_module.py" in result.model_patch
     assert "+NEW_VALUE = 3" in result.model_patch
+
+
+def test_adapter_result_includes_context_metrics(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    adapter = FirstCoderCodingAgentAdapter(
+        session_root=tmp_path / "sessions",
+        provider_factory=lambda provider_name: FakeProvider(),
+    )
+    task = CodingTask(
+        instance_id="metrics-task",
+        repo_path=repo,
+        problem_statement="Say done.",
+    )
+
+    result = adapter.run_task(task)
+
+    assert result.context_metrics["transcript_exists"] is True
+    assert result.context_metrics["messages"] >= 2
+    assert result.context_metrics["task_boundary_events"] >= 1

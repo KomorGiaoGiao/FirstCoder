@@ -43,6 +43,14 @@ ScrollBarCorner {
     background: #0f1014;
 }
 
+.welcome {
+    width: 100%;
+    margin: 1 0;
+    padding: 0;
+    background: #0f1014;
+    color: #cfd1d6;
+}
+
 .composer {
     height: 4;
     margin: 0 2 0 2;

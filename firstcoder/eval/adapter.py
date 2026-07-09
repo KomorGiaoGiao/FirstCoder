@@ -11,6 +11,7 @@ from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.eval.context_metrics import collect_context_metrics
 from firstcoder.eval.patch import collect_git_diff
 from firstcoder.eval.tasks import CodingTask, CodingTaskResult
 from firstcoder.permissions.grants import PermissionGrantStore
@@ -64,12 +65,14 @@ class FirstCoderCodingAgentAdapter:
         session_root.mkdir(parents=True, exist_ok=True)
         loop = self.loop_factory(task, session_root)
         response = loop.run_user_turn(_build_task_prompt(task))
+        transcript_path = session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl"
         return CodingTaskResult(
             instance_id=task.instance_id,
             model_name_or_path=self.model_name_or_path,
             model_patch=collect_git_diff(task.repo_path, include_untracked=True),
-            transcript_path=session_root / "sessions" / f"{_session_dir_name(task.instance_id)}.jsonl",
+            transcript_path=transcript_path,
             raw_response=response.content,
+            context_metrics=collect_context_metrics(transcript_path),
         )
 
     def _session_root_for_task(self, task: CodingTask) -> Path:

@@ -50,18 +50,20 @@ def test_task_boundary_tool_returns_program_generated_candidate_hash() -> None:
     assert state.active_task_hash == second.data["candidate_hash"]
 
 
-def test_task_boundary_tool_same_resets_pending_candidate() -> None:
+def test_task_boundary_tool_same_confirms_pending_candidate() -> None:
     state = SessionRuntimeState(session_id="sess_test", active_task_hash="task_active")
     tool = create_task_boundary_tool(state, required_stable_count=2)
 
-    tool.executor(decision="new", basis_message_id="msg_new")
+    first = tool.executor(decision="new", basis_message_id="msg_new")
     same = tool.executor(decision="same", basis_message_id="msg_same")
-    again = tool.executor(decision="new", basis_message_id="msg_new")
 
     assert same.ok is True
-    assert same.data["candidate_hash"] is None
-    assert again.data["confirmed_change"] is False
-    assert state.task_hash_stable_count == 1
+    assert same.data["candidate_hash"] == first.data["candidate_hash"]
+    assert same.data["candidate_basis_message_id"] == "msg_new"
+    assert same.data["confirmed_change"] is True
+    assert same.data["should_trigger_compaction"] is True
+    assert state.active_task_hash == first.data["candidate_hash"]
+    assert state.task_hash_stable_count == 0
 
 
 def test_task_boundary_tool_rejects_invalid_decision() -> None:
@@ -92,7 +94,7 @@ def test_task_boundary_tool_supports_single_observation_policy_without_schema_ch
 
     assert result.ok is True
     assert result.data["confirmed_change"] is True
-    assert result.data["should_trigger_compaction"] is True
+    assert result.data["should_trigger_compaction"] is False
     assert result.data["stable_count"] == 0
 
 
@@ -106,5 +108,5 @@ def test_session_registry_can_lower_required_stable_count() -> None:
 
     assert result.ok is True
     assert result.data["confirmed_change"] is True
-    assert result.data["should_trigger_compaction"] is True
+    assert result.data["should_trigger_compaction"] is False
     assert result.data["required_stable_count"] == 1

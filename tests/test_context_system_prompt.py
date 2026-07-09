@@ -147,17 +147,26 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
 
     assert "# Role and operating context" in content
     assert "# Working loop" in content
+    assert "# Project conventions" in content
     assert "# Task boundary" in content
     assert "# Tool use" in content
     assert "# Task tracking" in content
     assert "# Verification and completion" in content
     assert "# Communication style" in content
+    assert "assume they want you to act" in content
+    assert "Persist until the user's task is handled end-to-end" in content
+    assert "check for additional AGENTS.md files whose scope may apply" in content
+    assert "never revert, overwrite, or reformat changes you did not make" in content
     assert "Call task_boundary before substantial work" in content
     assert "Never invent, guess, or display task hashes" in content
     assert "issue multiple read-only tool calls in the same assistant response" in content
     assert "Do not batch tools whose inputs depend on previous tool results" in content
+    assert "Prefer rg or rg --files" in content
     assert "Use todo for multi-step coding tasks" in content
+    assert "infer them from repo files, docs, or neighboring tests" in content
+    assert "inspect the relevant diff or status" in content
     assert "After successful verification, stop calling tools" in content
+    assert "The user does not see full tool output" in content
 
 
 def test_system_prompt_includes_external_few_shots() -> None:

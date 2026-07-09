@@ -27,6 +27,7 @@ class CodingTaskResult:
     model_patch: str
     transcript_path: Path | None = None
     raw_response: str = ""
+    context_metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_prediction_dict(self) -> dict[str, str]:
         return {

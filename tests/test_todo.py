@@ -48,6 +48,36 @@ def test_todo_set_replaces_full_plan():
     assert "旧任务" not in result.content
 
 
+def test_todo_set_uses_completed_as_canonical_status():
+    tool = create_todo_tool()
+
+    result = tool.executor(
+        action="set",
+        todos=[
+            {"content": "读代码", "status": "completed"},
+            {"content": "跑测试", "status": "in_progress"},
+            {"content": "总结", "status": "pending"},
+        ],
+    )
+
+    assert result.ok is True
+    assert result.data["todos"] == [
+        {"id": "todo_1", "content": "读代码", "status": "completed"},
+        {"id": "todo_2", "content": "跑测试", "status": "in_progress"},
+        {"id": "todo_3", "content": "总结", "status": "pending"},
+    ]
+    assert "[✓] todo_1: 读代码" in result.content
+
+
+def test_todo_accepts_done_as_legacy_alias_for_completed():
+    tool = create_todo_tool()
+
+    result = tool.executor(action="add", content="旧状态", status="done")
+
+    assert result.ok is True
+    assert result.data["todos"][0]["status"] == "completed"
+
+
 def test_todo_lists_items():
     tool = create_todo_tool()
     tool.executor(action="add", content="任务 A")
@@ -66,10 +96,10 @@ def test_todo_updates_status():
     add_result = tool.executor(action="add", content="任务 A")
     todo_id = add_result.data["todos"][0]["id"]
 
-    result = tool.executor(action="update", todo_id=todo_id, status="done")
+    result = tool.executor(action="update", todo_id=todo_id, status="completed")
 
     assert result.ok is True
-    assert result.data["todos"][0]["status"] == "done"
+    assert result.data["todos"][0]["status"] == "completed"
 
 
 def test_todo_updates_content():
@@ -107,7 +137,7 @@ def test_todo_delete_unknown_id_returns_error():
 def test_todo_update_unknown_id_returns_error():
     tool = create_todo_tool()
 
-    result = tool.executor(action="update", todo_id="unknown", status="done")
+    result = tool.executor(action="update", todo_id="unknown", status="completed")
 
     assert result.ok is False
     assert "不存在" in result.error
@@ -146,12 +176,12 @@ def test_todo_shows_status_emoji():
     tool = create_todo_tool()
     add_result = tool.executor(action="add", content="任务")
     todo_id = add_result.data["todos"][0]["id"]
-    tool.executor(action="update", todo_id=todo_id, status="done")
+    tool.executor(action="update", todo_id=todo_id, status="completed")
 
     result = tool.executor(action="list")
 
     assert result.ok is True
-    assert "[x]" in result.content or "done" in result.content
+    assert "[✓]" in result.content
 
 
 def test_todo_definition_has_correct_schema():
@@ -160,6 +190,11 @@ def test_todo_definition_has_correct_schema():
     assert tool.name == "todo"
     properties = tool.definition.parameters["properties"]
     assert properties["action"]["enum"] == ["set", "add", "update", "delete", "list", "clear"]
-    assert properties["status"]["enum"] == ["pending", "in_progress", "done"]
+    assert properties["status"]["enum"] == ["pending", "in_progress", "completed"]
+    assert "Track and plan multi-step work" in tool.definition.description
+    assert "complete 3-7 item plan" in tool.definition.description
+    assert "concrete, verifiable actions" in tool.definition.description
+    assert "Before a final answer" in tool.definition.description
     assert properties["todos"]["type"] == "array"
+    assert "3-7 short, concrete, verifiable items" in properties["todos"]["description"]
     assert tool.definition.parameters["required"] == ["action"]

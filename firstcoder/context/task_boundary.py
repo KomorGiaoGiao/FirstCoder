@@ -38,6 +38,7 @@ class TaskBoundaryObservation:
     should_trigger_compaction: bool
     stable_count: int = 0
     active_task_hash: str | None = None
+    candidate_basis_message_id: str | None = None
     triggered_compaction: bool = False
     confirmation_reason: str = "not_confirmed"
     required_stable_count: int = 2
@@ -91,13 +92,40 @@ class TaskBoundaryService:
     ) -> TaskBoundaryObservation:
         self._validate_basis_message_id(basis_message_id)
         normalized_decision = TaskBoundaryDecision(decision)
+        if normalized_decision == TaskBoundaryDecision.SAME and state.candidate_task_hash is not None:
+            candidate_hash = state.candidate_task_hash
+            candidate_basis_message_id = state.candidate_task_basis_message_id
+            confirmed_change = state.observe_task_hash_candidate(
+                candidate_hash,
+                required_stable_count=self._required_stable_count_for(basis_message_id),
+            )
+            return TaskBoundaryObservation(
+                decision=normalized_decision,
+                basis_message_id=basis_message_id,
+                candidate_hash=candidate_hash,
+                candidate_basis_message_id=candidate_basis_message_id,
+                confirmed_change=confirmed_change,
+                should_trigger_compaction=confirmed_change,
+                stable_count=state.task_hash_stable_count,
+                active_task_hash=state.active_task_hash,
+                triggered_compaction=confirmed_change,
+                confirmation_reason=_confirmation_reason(
+                    confirmed_change,
+                    single_observation_policy=False,
+                ),
+                required_stable_count=self.required_stable_count,
+                created_at=utc_now_iso(),
+            )
+
         if normalized_decision in {TaskBoundaryDecision.SAME, TaskBoundaryDecision.UNCERTAIN}:
             state.candidate_task_hash = None
+            state.candidate_task_basis_message_id = None
             state.task_hash_stable_count = 0
             return TaskBoundaryObservation(
                 decision=normalized_decision,
                 basis_message_id=basis_message_id,
                 candidate_hash=None,
+                candidate_basis_message_id=None,
                 confirmed_change=False,
                 should_trigger_compaction=False,
                 stable_count=0,
@@ -112,16 +140,39 @@ class TaskBoundaryService:
             session_id=state.session_id,
             basis_message_id=basis_message_id,
         )
+        if state.active_task_hash is None and state.candidate_task_hash is None:
+            state.active_task_hash = candidate_hash
+            state.candidate_task_basis_message_id = None
+            state.task_hash_stable_count = 0
+            return TaskBoundaryObservation(
+                decision=normalized_decision,
+                basis_message_id=basis_message_id,
+                candidate_hash=candidate_hash,
+                candidate_basis_message_id=basis_message_id,
+                confirmed_change=True,
+                should_trigger_compaction=False,
+                stable_count=0,
+                active_task_hash=state.active_task_hash,
+                triggered_compaction=False,
+                confirmation_reason="initial_task",
+                required_stable_count=self.required_stable_count,
+                created_at=utc_now_iso(),
+            )
         required_stable_count = self._required_stable_count_for(basis_message_id)
         single_observation_policy = self._uses_single_observation_policy(basis_message_id)
+        previous_candidate_hash = state.candidate_task_hash
         confirmed_change = state.observe_task_hash_candidate(
             candidate_hash,
             required_stable_count=required_stable_count,
         )
+        if not confirmed_change and candidate_hash != previous_candidate_hash:
+            state.candidate_task_basis_message_id = basis_message_id
+        candidate_basis_message_id = basis_message_id if confirmed_change else state.candidate_task_basis_message_id
         return TaskBoundaryObservation(
             decision=normalized_decision,
             basis_message_id=basis_message_id,
             candidate_hash=candidate_hash,
+            candidate_basis_message_id=candidate_basis_message_id,
             confirmed_change=confirmed_change,
             should_trigger_compaction=confirmed_change,
             stable_count=state.task_hash_stable_count,
@@ -147,6 +198,7 @@ class TaskBoundaryService:
                 "decision": observation.decision.value,
                 "basis_message_id": observation.basis_message_id,
                 "candidate_hash": observation.candidate_hash,
+                "candidate_basis_message_id": observation.candidate_basis_message_id,
                 "active_hash": observation.active_task_hash,
                 "active_task_hash": observation.active_task_hash,
                 "confirmed_change": observation.confirmed_change,
@@ -171,6 +223,38 @@ class TaskBoundaryService:
 
     def _uses_single_observation_policy(self, basis_message_id: str) -> bool:
         return basis_message_id in set(self.policy.single_observation_basis_message_ids)
+
+    def initialize_active_task(
+        self,
+        state: SessionRuntimeState,
+        *,
+        basis_message_id: str,
+        confirmation_reason: str = "implicit_initial_task",
+    ) -> TaskBoundaryObservation | None:
+        """Initialize the first active task without relying on model tool use."""
+
+        if state.active_task_hash is not None:
+            return None
+        self._validate_basis_message_id(basis_message_id)
+        candidate_hash = self.candidate_hash(session_id=state.session_id, basis_message_id=basis_message_id)
+        state.active_task_hash = candidate_hash
+        state.candidate_task_hash = None
+        state.candidate_task_basis_message_id = None
+        state.task_hash_stable_count = 0
+        return TaskBoundaryObservation(
+            decision=TaskBoundaryDecision.NEW,
+            basis_message_id=basis_message_id,
+            candidate_hash=candidate_hash,
+            candidate_basis_message_id=basis_message_id,
+            confirmed_change=True,
+            should_trigger_compaction=False,
+            stable_count=0,
+            active_task_hash=state.active_task_hash,
+            triggered_compaction=False,
+            confirmation_reason=confirmation_reason,
+            required_stable_count=self.required_stable_count,
+            created_at=utc_now_iso(),
+        )
 
 
 def _confirmation_reason(confirmed_change: bool, *, single_observation_policy: bool) -> str:
@@ -198,6 +282,7 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
         decision=normalized_decision,
         basis_message_id=str(basis_message_id),
         candidate_hash=_optional_str(data.get("candidate_hash")),
+        candidate_basis_message_id=_optional_str(data.get("candidate_basis_message_id")),
         active_task_hash=_optional_str(data.get("active_task_hash")),
         confirmed_change=bool(data.get("confirmed_change")),
         should_trigger_compaction=bool(data.get("should_trigger_compaction")),

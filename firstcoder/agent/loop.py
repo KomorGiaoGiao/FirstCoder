@@ -25,6 +25,7 @@ from firstcoder.agent.verification import is_successful_verification_result
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
 from firstcoder.context.system_prompt import PromptPrefixCache
+from firstcoder.context.task_boundary import TaskBoundaryService
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
@@ -65,6 +66,7 @@ _BYPASS_PARALLEL_TOOL_NAMES = _PARALLEL_READONLY_TOOL_NAMES | frozenset(
     }
 )
 _TODO_STALE_TOOL_RESULT_THRESHOLD = 3
+_TODO_MISSING_TOOL_RESULT_THRESHOLD = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,7 @@ class AgentLoop:
         self.cancellation_token = cancellation_token
         self._skills_prepared_for_turn: int | None = None
         self._last_todo_stale_reminder_count = 0
+        self._missing_todo_plan_reminded = False
         # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
         # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
@@ -182,7 +185,8 @@ class AgentLoop:
 
         self._begin_turn()
         self._check_cancelled()
-        self.session.append_user_message(content)
+        message_id = self.session.append_user_message(content)
+        self._initialize_active_task_if_missing(message_id)
         # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
         # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
@@ -235,7 +239,8 @@ class AgentLoop:
 
         self._begin_turn()
         self._check_cancelled()
-        self.session.append_user_message(content)
+        message_id = self.session.append_user_message(content)
+        self._initialize_active_task_if_missing(message_id)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         result = await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
@@ -259,6 +264,37 @@ class AgentLoop:
         """
 
         return asyncio.run(self.run_user_turn_streaming(content))
+
+    def _initialize_active_task_if_missing(self, basis_message_id: str) -> None:
+        service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)
+        observation = service.initialize_active_task(self.session.runtime_state, basis_message_id=basis_message_id)
+        if observation is not None:
+            self.session.writer.append_task_boundary_observation(observation)
+            self._tag_message_parts_with_task_hash(basis_message_id, observation.active_task_hash)
+
+    def _tag_message_parts_with_task_hash(self, message_id: str, task_hash: str | None) -> None:
+        if not task_hash:
+            return
+        view = self.session.rebuild_view()
+        message = next((message for message in view.messages if message.id == message_id), None)
+        if message is None:
+            return
+        for part in message.parts:
+            self.session.writer.append_message_part_metadata_updated(
+                message_id=message_id,
+                part_id=part.id,
+                metadata={"task_hash": task_hash},
+            )
+
+    def _tag_task_boundary_messages_with_active_hash(self, data: dict[str, object]) -> None:
+        active_hash = data.get("active_task_hash")
+        message_ids = {
+            str(data.get("basis_message_id") or ""),
+            str(data.get("candidate_basis_message_id") or ""),
+        }
+        for message_id in message_ids:
+            if message_id:
+                self._tag_message_parts_with_task_hash(message_id, active_hash)
 
     def _append_permission_resume_result(self, request_id: str, answer: str) -> AgentTurnResult | None:
         pending = self.session.pending_permission_execution
@@ -522,15 +558,22 @@ class AgentLoop:
         return final_response
 
     async def _stream_once_with_recovery(self, *, tool_choice="auto") -> ChatResponse:
-        try:
-            return await self._stream_once_attempt(tool_choice=tool_choice)
-        except ProviderError as exc:
-            if not exc.requires_compaction:
-                raise
-            result = self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
-            if result is None or result.status != "success":
-                raise
-            return await self._stream_once_attempt(tool_choice=tool_choice)
+        retryable_failures = 0
+        while True:
+            try:
+                return await self._stream_once_attempt(tool_choice=tool_choice)
+            except ProviderError as exc:
+                if exc.retryable:
+                    if retryable_failures == 0:
+                        retryable_failures += 1
+                        continue
+                    return self._complete_once(tool_choice=tool_choice)
+                if not exc.requires_compaction:
+                    raise
+                result = self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
+                if result is None or result.status != "success":
+                    raise
+                return await self._stream_once_attempt(tool_choice=tool_choice)
 
     async def _stream_once_attempt(self, *, tool_choice="auto") -> ChatResponse:
         start_event_count = len(self.last_stream_events)
@@ -635,7 +678,7 @@ class AgentLoop:
                 return self._tool_round_limit_response(response), None
             # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
             # 重新投影完整历史，让模型读取刚才的工具输出。
-            reminder = self._todo_progress_reminder_prompt()
+            reminder = self._todo_planning_reminder_prompt() or self._todo_progress_reminder_prompt()
             if reminder:
                 self.session.append_user_message(reminder)
             self._check_cancelled()
@@ -685,7 +728,7 @@ class AgentLoop:
             tool_rounds += 1
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
                 return self._tool_round_limit_response(response), None
-            reminder = self._todo_progress_reminder_prompt()
+            reminder = self._todo_planning_reminder_prompt() or self._todo_progress_reminder_prompt()
             if reminder:
                 self.session.append_user_message(reminder)
             self._check_cancelled()
@@ -722,6 +765,24 @@ class AgentLoop:
             lines.append(f"- [{item.get('status', 'pending')}] {item.get('content', '')}")
         return "\n".join(lines)
 
+    def _todo_planning_reminder_prompt(self) -> str | None:
+        if self._missing_todo_plan_reminded:
+            return None
+        if "todo" not in self.session.tool_registry.names():
+            return None
+        if self._has_todo_result():
+            return None
+        non_todo_count = self._non_todo_tool_results_since_latest_todo()
+        if non_todo_count < _TODO_MISSING_TOOL_RESULT_THRESHOLD:
+            return None
+        self._missing_todo_plan_reminded = True
+        return "\n".join(
+            [
+                "Todo planning reminder: this has become multi-step work, but no todo plan exists yet.",
+                "Call todo with action='set' and a complete 3-7 item plan before continuing implementation. Use concrete, verifiable items and keep exactly one in_progress.",
+            ]
+        )
+
     def _latest_unfinished_todos(self) -> list[dict[str, object]]:
         latest: list[dict[str, object]] | None = None
         for message in self.session.rebuild_view().messages:
@@ -737,7 +798,16 @@ class AgentLoop:
                     latest = [item for item in todos if isinstance(item, dict)]
         if not latest:
             return []
-        return [item for item in latest if item.get("status") != "done"]
+        return [item for item in latest if item.get("status") not in {"completed", "done"}]
+
+    def _has_todo_result(self) -> bool:
+        for message in self.session.rebuild_view().messages:
+            if message.role != "tool":
+                continue
+            for part in message.parts:
+                if part.kind == "tool_result" and part.metadata.get("tool_name") == "todo":
+                    return True
+        return False
 
     def _non_todo_tool_results_since_latest_todo(self) -> int:
         count = 0
@@ -827,6 +897,7 @@ class AgentLoop:
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
                 # task_boundary 是一种“语义触发”：即使上下文还没超 token 阈值，确认任务切换
                 # 后也应该整理旧任务上下文，降低旧任务信息污染新任务的概率。
+                self._tag_task_boundary_messages_with_active_hash(result.data)
                 task_hash_changed = True
             index += 1
         return _ToolExecutionState(
@@ -896,6 +967,7 @@ class AgentLoop:
                     pending_input=pending_input,
                 )
             if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
+                self._tag_task_boundary_messages_with_active_hash(result.data)
                 task_hash_changed = True
             index += 1
         return _ToolExecutionState(

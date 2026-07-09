@@ -418,6 +418,7 @@ def test_auto_tail_message_count_e2e_writes_auto_compaction(tmp_path) -> None:
 def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_task_boundary", agents_md="")
+    session.runtime_state.active_task_hash = "task_previous"
     provider = FakeProvider(
         [
             ChatResponse(
@@ -473,6 +474,170 @@ def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None
     assert task_boundary_events[-1].payload["should_trigger_compaction"] is True
     compact_events = _compact_events(store, "sess_task_boundary")
     assert any(event.payload["trigger"] == "task_hash_changed" for event in compact_events)
+
+
+def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_boundary_old_task", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="旧任务记录"),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_1",
+                        name="task_boundary",
+                        arguments={"decision": "new", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_2",
+                        name="task_boundary",
+                        arguments={"decision": "new", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="新任务继续"),
+        ]
+    )
+
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=ContextWindowManager(store=store),
+    )
+    original_complete = provider.complete
+
+    def complete_with_latest_user_basis(request: ChatRequest) -> ChatResponse:
+        response = original_complete(request)
+        user_message_id = [message for message in session.rebuild_view().messages if message.role == "user"][-1].id
+        for tool_call in response.tool_calls:
+            if tool_call.name == "task_boundary":
+                tool_call.arguments["basis_message_id"] = user_message_id
+        return response
+
+    provider.complete = complete_with_latest_user_basis
+
+    loop.run_user_turn("旧任务内容 " + ("alpha " * 80))
+    first_task_hash = session.runtime_state.active_task_hash
+    loop.run_user_turn("换一个任务 " + ("beta " * 20))
+
+    compact_events = [
+        event.payload["event"]
+        for event in _compact_events(store, "sess_task_boundary_old_task")
+        if event.payload["trigger"] == "task_hash_changed"
+    ]
+    assert compact_events
+    assert compact_events[-1]["changed_parts"] >= 1
+    assert "l1" in compact_events[-1]["levels_attempted"]
+
+    view = store.rebuild_session_view("sess_task_boundary_old_task")
+    old_task_parts = [
+        part
+        for message in view.messages
+        for part in message.parts
+        if part.metadata.get("task_hash") == first_task_hash
+    ]
+    assert old_task_parts
+    assert any(part.metadata.get("compacted_by") == "l1_old_task" for part in old_task_parts)
+    latest_user = [message for message in view.messages if message.role == "user"][-1]
+    assert latest_user.parts[0].metadata.get("task_hash") == session.runtime_state.active_task_hash
+    assert latest_user.parts[0].metadata.get("task_hash") != first_task_hash
+    new_task_user_parts = [
+        message.parts[0]
+        for message in view.messages
+        if message.role == "user" and "换一个任务" in message.parts[0].content
+    ]
+    assert new_task_user_parts
+    assert all(part.metadata.get("task_hash") == session.runtime_state.active_task_hash for part in new_task_user_parts)
+
+
+def test_task_boundary_e2e_confirms_pending_new_when_next_turn_is_same_task(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_boundary_new_then_same", agents_md="")
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="旧任务记录"),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_new",
+                        name="task_boundary",
+                        arguments={"decision": "new", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="新任务第一轮"),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_boundary_same",
+                        name="task_boundary",
+                        arguments={"decision": "same", "basis_message_id": ""},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="新任务第二轮"),
+        ]
+    )
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=ContextWindowManager(store=store),
+    )
+    original_complete = provider.complete
+
+    def complete_with_latest_user_basis(request: ChatRequest) -> ChatResponse:
+        response = original_complete(request)
+        user_message_id = [message for message in session.rebuild_view().messages if message.role == "user"][-1].id
+        for tool_call in response.tool_calls:
+            if tool_call.name == "task_boundary":
+                tool_call.arguments["basis_message_id"] = user_message_id
+        return response
+
+    provider.complete = complete_with_latest_user_basis
+
+    loop.run_user_turn("旧任务内容 " + ("alpha " * 80))
+    first_task_hash = session.runtime_state.active_task_hash
+    loop.run_user_turn("任务B：HTTP 缓存头解释")
+    loop.run_user_turn("任务B：继续 HTTP 缓存头解释")
+
+    compact_events = [
+        event.payload["event"]
+        for event in _compact_events(store, "sess_task_boundary_new_then_same")
+        if event.payload["trigger"] == "task_hash_changed"
+    ]
+    assert compact_events
+    assert compact_events[-1]["changed_parts"] >= 1
+    assert session.runtime_state.active_task_hash != first_task_hash
+
+    view = store.rebuild_session_view("sess_task_boundary_new_then_same")
+    new_task_user_parts = [
+        message.parts[0]
+        for message in view.messages
+        if message.role == "user" and message.parts[0].content.startswith("任务B")
+    ]
+    assert len(new_task_user_parts) == 2
+    assert all(part.metadata.get("task_hash") == session.runtime_state.active_task_hash for part in new_task_user_parts)
 
 
 def test_manual_compact_command_e2e_writes_manual_route_compaction(tmp_path) -> None:

@@ -44,7 +44,8 @@ def test_builtin_tool_descriptions_are_agent_facing_english(tmp_path):
     assert "Prefer this for multi-file edits" in descriptions["apply_patch"]
     assert descriptions["shell"].startswith("Run a shell command")
     assert "Prefer dedicated tools" in descriptions["shell"]
-    assert descriptions["todo"].startswith("Track progress")
+    assert descriptions["todo"].startswith("Track and plan")
+    assert "complete 3-7 item plan" in descriptions["todo"]
 
 
 def test_builtin_registry_contains_read_only_tools(tmp_path):
