@@ -54,8 +54,6 @@ def render_picker_item(picker: TuiPickerState, item: TuiPickerItem, index: int) 
     scope = meta.get("scope") or "-"
     lines = [item.label]
     lines.append(f"    {scope} · {path}")
-    if item.detail:
-        lines.append(f"    {_truncate_detail(item.detail, 120)}")
     return "\n".join(lines)
 
 

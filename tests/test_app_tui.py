@@ -16,7 +16,7 @@ from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _entry_renderable
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
-from firstcoder.app.picker import TuiPickerItem, TuiPickerState
+from firstcoder.app.picker import TuiPickerItem, TuiPickerState, render_picker
 from firstcoder.app.picker_adapters import render_picker_item
 from firstcoder.app.activity_view import tool_event_label, tool_event_status, turn_metrics_text
 from firstcoder.app.welcome import welcome_renderable
@@ -131,8 +131,40 @@ def test_skill_picker_item_renderer_keeps_name_path_and_description_separate() -
 
     rendered = render_picker_item(picker, item, 0)
 
-    assert rendered.startswith("very-long\n    global · skills/very-long.md\n    ")
-    assert len(rendered.splitlines()[2]) <= 124
+    assert rendered == "very-long\n    global · skills/very-long.md"
+
+
+def test_skill_picker_render_keeps_item_heights_stable_and_detail_in_footer() -> None:
+    picker = TuiPickerState(
+        kind="skill",
+        title="Select a skill:",
+        items=[
+            TuiPickerItem(
+                id="skills/brief.md",
+                label="brief",
+                detail="Write a brief.",
+                meta={"scope": "project", "path": "skills/brief.md"},
+            ),
+            TuiPickerItem(
+                id="skills/review.md",
+                label="review",
+                detail="",
+                meta={"scope": "project", "path": "skills/review.md"},
+            ),
+        ],
+        selected_index=0,
+    )
+
+    rendered = render_picker(
+        picker,
+        limit=20,
+        render_item=lambda item, index: render_picker_item(picker, item, index),
+    )
+
+    assert "Write a brief." not in rendered.splitlines()[1:5]
+    assert "Selected: Write a brief." in rendered
+    assert "> 1. brief\n    project · skills/brief.md" in rendered
+    assert "  2. review\n    project · skills/review.md" in rendered
 
 
 def test_command_picker_renderable_colors_selected_cursor() -> None:
@@ -149,6 +181,46 @@ def test_command_picker_renderable_colors_selected_cursor() -> None:
     assert rendered.plain == "Select:\n> 1. first\n  2. second"
     assert any(span.start == len("Select:\n") and span.end == len("Select:\n>") for span in rendered.spans)
     assert any(span.style == "#7bba55 bold" for span in rendered.spans)
+
+
+def test_picker_rerender_updates_existing_command_widget_without_full_rerender(monkeypatch) -> None:
+    class FakeWidget:
+        def __init__(self) -> None:
+            self.updates: list[object] = []
+            self.classes: str | None = None
+
+        def update(self, renderable) -> None:
+            self.updates.append(renderable)
+
+    app = FirstCoderApp()
+    widget = FakeWidget()
+    entry = app.transcript.add(TuiEntryKind.COMMAND, "Select:\n> 1. first\n  2. second")
+    entry.widget = widget
+    app._picker = TuiPickerState(
+        kind="model",
+        title="Select a model:",
+        items=[
+            TuiPickerItem(id="old", label="old"),
+            TuiPickerItem(id="new", label="new"),
+        ],
+        selected_index=0,
+    )
+    rerendered = False
+
+    def fail_full_rerender() -> None:
+        nonlocal rerendered
+        rerendered = True
+
+    monkeypatch.setattr(app, "_rerender_transcript", fail_full_rerender)
+
+    app._picker.move(1)
+    app._render_picker()
+
+    assert rerendered is False
+    assert len(widget.updates) == 1
+    assert getattr(widget.updates[0], "plain", "") == "Select a model:\n  1. old\n> 2. new\nUse up/down and enter to select."
+    assert app.transcript.entries[-1].body.startswith("Select a model:")
+    assert "> 2. new" in app.transcript.entries[-1].body
 
 
 class RecordingCommandHandler:
@@ -434,6 +506,30 @@ def test_firstcoder_app_topbar_truncates_long_activity_before_metadata() -> None
     assert "[#7bba55]thinking" in text
 
 
+def test_firstcoder_app_topbar_fits_narrow_width_with_long_activity_and_metadata() -> None:
+    app = FirstCoderApp(
+        current_session=FakeSession(),
+        config=FirstCoderTuiConfig(
+            provider_name="yurenapi",
+            provider_model="very-long-model-name",
+            project_name="FirstCoder",
+        ),
+    )
+    app._activity_text = "thinking [...] " + "reading think tool result " * 8
+
+    text = app._topbar_text(width=80)
+    plain = Text.from_markup(text).plain
+
+    assert len(plain) <= 80
+    assert "sess_test" in plain
+    assert "cwd FirstCoder" in plain
+
+    narrow_plain = Text.from_markup(app._topbar_text(width=60)).plain
+
+    assert len(narrow_plain) <= 60
+    assert "sess_test" in narrow_plain
+
+
 def test_tui_transcript_records_structured_entries_with_stable_labels() -> None:
     transcript = TuiTranscript()
 
@@ -674,6 +770,15 @@ class UnhandledCommandHandler:
         return CommandResult(handled=False)
 
 
+class SubmitChatCommandHandler:
+    def handle(self, text: str) -> CommandResult:
+        return CommandResult(
+            handled=True,
+            output="Using skill: brief",
+            action={"type": "submit_chat", "text": "请使用 skills/brief.md 写日报"},
+        )
+
+
 def test_firstcoder_app_can_be_created_with_composite_handler_and_chat_runner() -> None:
     context_handler = ContextCommandHandler(session=FakeSession())
     composite = CompositeCommandHandler(
@@ -716,6 +821,20 @@ async def test_firstcoder_app_does_not_send_unhandled_slash_command_to_chat_runn
         await pilot.press("enter")
 
     assert runner.inputs == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_submits_chat_from_command_action() -> None:
+    runner = FakeChatRunner()
+    app = FirstCoderApp(command_handler=SubmitChatCommandHandler(), chat_runner=runner)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/brief 写日报")
+        await pilot.press("enter")
+
+    assert runner.inputs == ["请使用 skills/brief.md 写日报"]
 
 
 @pytest.mark.anyio
@@ -894,7 +1013,8 @@ async def test_firstcoder_app_skill_picker_references_selected_skill_in_input() 
         await pilot.pause()
         output_text = _static_output_text(app)
         assert "Select a skill:" in output_text
-        assert "> 1. brief\n    project · skills/brief.md\n    Write a brief." in output_text
+        assert "> 1. brief\n    project · skills/brief.md" in output_text
+        assert "Selected: Write a brief." in output_text
 
         await pilot.press("down")
         await pilot.press("enter")
@@ -1065,6 +1185,31 @@ def test_firstcoder_app_streaming_skips_normalized_duplicate_assistant_line(monk
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
     assert output.mounted[0].allow_select is False
     assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
+
+
+def test_firstcoder_app_streaming_skips_replaying_intermediate_assistant_lines(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    runner.last_display_lines = [
+        "先看详情：",
+        'Tool call: shell {"command": "pytest"}',
+        "Tool result: shell success: ok",
+        "问题找到了：",
+        "最终结论",
+    ]
+    output = FakeOutput()
+    app = FirstCoderApp(chat_runner=runner)
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+
+    previous_handler = app._install_stream_event_handler()
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="最终"))
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="结论"))
+    app._live_tool_events_seen = True
+    app._write_chat_response(ChatResponse(provider="fake", model="fake", content="最终结论"))
+    app._restore_stream_event_handler(previous_handler)
+
+    assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
+    assert output.mounted[0].updates[-1] == "FirstCoder:\n\n最终结论"
+    assert [entry.body for entry in app.transcript.entries if entry.kind == TuiEntryKind.ASSISTANT] == ["最终结论"]
 
 
 def test_firstcoder_app_paces_stream_markdown_updates(monkeypatch) -> None:

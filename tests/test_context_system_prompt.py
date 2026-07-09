@@ -157,7 +157,7 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "Persist until the user's task is handled end-to-end" in content
     assert "check for additional AGENTS.md files whose scope may apply" in content
     assert "never revert, overwrite, or reformat changes you did not make" in content
-    assert "Call task_boundary before substantial work" in content
+    assert "At the start of every user turn, call task_boundary before answering or using any other tool" in content
     assert "Never invent, guess, or display task hashes" in content
     assert "issue multiple read-only tool calls in the same assistant response" in content
     assert "Do not batch tools whose inputs depend on previous tool results" in content
@@ -167,6 +167,14 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "inspect the relevant diff or status" in content
     assert "After successful verification, stop calling tools" in content
     assert "The user does not see full tool output" in content
+
+
+def test_system_prompt_requires_task_boundary_at_start_of_each_user_turn() -> None:
+    entry = SystemPromptBuilder().build(_inputs())
+    content = entry.messages[0].content
+
+    assert "At the start of every user turn, call task_boundary before answering or using any other tool" in content
+    assert "Skip task_boundary only when no tools are available" in content
 
 
 def test_system_prompt_includes_external_few_shots() -> None:

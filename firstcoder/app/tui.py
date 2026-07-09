@@ -230,43 +230,15 @@ class FirstCoderApp(App[None]):
             result = self.command_handler.handle(text)
             if result.handled:
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
-                self._handle_command_action(result.action, output=result.output)
+                if self._handle_command_action(result.action, output=result.output):
+                    self._refresh_session_subtitle()
+                    return
                 self._refresh_session_subtitle()
                 return
             self._write_line(f"Unknown command: {text}", kind=TuiEntryKind.ERROR)
             return
 
-        if self.chat_runner is None:
-            self._write_line("普通聊天入口尚未接入 AgentLoop。", kind=TuiEntryKind.ERROR)
-            return
-
-        if self._chat_busy:
-            add_guidance = getattr(self.chat_runner, "add_guidance", None)
-            if add_guidance is None:
-                self._write_line(
-                    "Chat is still running. Please wait for the current turn to finish.",
-                    kind=TuiEntryKind.SYSTEM,
-                )
-                return
-            add_guidance(text)
-            self._write_line("Guidance queued for the running turn.", kind=TuiEntryKind.SYSTEM)
-            self._set_activity("running · guidance queued")
-            return
-
-        pending = getattr(self.chat_runner, "last_pending_input", None)
-        if getattr(pending, "kind", None) == "permission_confirmation":
-            choice = permission_choice_for_text(text, pending)
-            if choice is None:
-                self._write_line(permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
-                return
-            self._chat_busy = True
-            token = self._resume_active_chat_turn()
-            self._chat_worker = self.run_worker(self._resume_permission_turn(pending.id, choice, token))
-            return
-
-        self._chat_busy = True
-        token = self._begin_active_chat_turn()
-        self._chat_worker = self.run_worker(self._run_chat_turn(text, token))
+        self._submit_chat_text(text)
 
     def on_key(self, event: Key) -> None:
         if self._picker is not None and self._handle_picker_key(event):
@@ -379,16 +351,54 @@ class FirstCoderApp(App[None]):
             return self._input_history[self._input_history_index]
         return None
 
-    def _handle_command_action(self, action: dict[str, Any] | None, *, output: str = "") -> None:
-        if not action:
+    def _submit_chat_text(self, text: str) -> None:
+        if self.chat_runner is None:
+            self._write_line("普通聊天入口尚未接入 AgentLoop。", kind=TuiEntryKind.ERROR)
             return
+
+        if self._chat_busy:
+            add_guidance = getattr(self.chat_runner, "add_guidance", None)
+            if add_guidance is None:
+                self._write_line(
+                    "Chat is still running. Please wait for the current turn to finish.",
+                    kind=TuiEntryKind.SYSTEM,
+                )
+                return
+            add_guidance(text)
+            self._write_line("Guidance queued for the running turn.", kind=TuiEntryKind.SYSTEM)
+            self._set_activity("running · guidance queued")
+            return
+
+        pending = getattr(self.chat_runner, "last_pending_input", None)
+        if getattr(pending, "kind", None) == "permission_confirmation":
+            choice = permission_choice_for_text(text, pending)
+            if choice is None:
+                self._write_line(permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
+                return
+            self._chat_busy = True
+            token = self._resume_active_chat_turn()
+            self._chat_worker = self.run_worker(self._resume_permission_turn(pending.id, choice, token))
+            return
+
+        self._chat_busy = True
+        token = self._begin_active_chat_turn()
+        self._chat_worker = self.run_worker(self._run_chat_turn(text, token))
+
+    def _handle_command_action(self, action: dict[str, Any] | None, *, output: str = "") -> bool:
+        if not action:
+            return False
         action_type = action.get("type")
+        if action_type == "submit_chat":
+            text = str(action.get("text") or "").strip()
+            if text:
+                self._submit_chat_text(text)
+            return True
         if action_type == "new_session":
             self._picker = None
             self._clear_output()
             if output:
                 self._write_line(output, kind=TuiEntryKind.COMMAND)
-            return
+            return False
         if action_type == "resume_picker":
             self._picker = TuiPickerState(
                 kind="resume",
@@ -404,7 +414,7 @@ class FirstCoderApp(App[None]):
                 count_label="sessions",
             )
             self._render_picker()
-            return
+            return False
         if action_type == "model_picker":
             self._picker = TuiPickerState(
                 kind="model",
@@ -420,7 +430,7 @@ class FirstCoderApp(App[None]):
                 count_label="models",
             )
             self._render_picker()
-            return
+            return False
         if action_type == "skill_picker":
             self._picker = TuiPickerState(
                 kind="skill",
@@ -436,20 +446,21 @@ class FirstCoderApp(App[None]):
                 count_label="skills",
             )
             self._render_picker()
-            return
+            return False
         if action_type == "replay_session":
             self._picker = None
             self._replay_current_session()
-            return
+            return False
         if action_type == "model_changed":
             self._picker = None
             self.config.provider_name = str(action.get("provider") or "")
             self.config.provider_model = str(action.get("model") or "")
-            return
+            return False
         if action_type == "skill_referenced":
             self._picker = None
             self._insert_input_text(str(action.get("reference") or ""))
-            return
+            return False
+        return False
 
     def _handle_picker_key(self, event: Key) -> bool:
         picker = self._picker
@@ -526,6 +537,11 @@ class FirstCoderApp(App[None]):
         for entry in reversed(self.transcript.entries):
             if entry.kind == TuiEntryKind.COMMAND:
                 entry.body = text
+                rendered = entry_plain_text(entry)
+                widget = entry.widget
+                if widget is not None and hasattr(widget, "update"):
+                    widget.update(_entry_renderable(entry, rendered))
+                    return
                 self._rerender_transcript()
                 return
         self._write_line(text, kind=TuiEntryKind.COMMAND)
@@ -660,6 +676,8 @@ class FirstCoderApp(App[None]):
             self._flush_stream_text()
         if self._live_tool_events_seen:
             display_lines = [line for line in display_lines if not looks_like_tool_display_line(line)]
+        if self._live_tool_events_seen and self._stream_text_started:
+            display_lines = []
         if display_lines:
             for line in display_lines:
                 if line == content or looks_like_markdown_response(line):
@@ -698,32 +716,66 @@ class FirstCoderApp(App[None]):
             session_id = self.current_session.session_id
         brand = "[#7bba55]FirstCoder[/]"
         status = activity_markup(self._activity_text)
-        metadata_parts = [f"[#6e6d72]{escape(_short_session_id(session_id) if session_id else 'no session')}[/]"]
+        metadata_values: list[tuple[str, str, int | None]] = [
+            ("#6e6d72", _short_session_id(session_id) if session_id else "no session", None)
+        ]
         if self.config.provider_name or self.config.provider_model:
-            provider = escape(self.config.provider_name or "provider")
-            model = escape(self.config.provider_model or "model")
-            metadata_parts.append(f"[#6e6d72]{provider}/{model}[/]")
+            provider = self.config.provider_name or "provider"
+            model = self.config.provider_model or "model"
+            metadata_values.append(("#6e6d72", f"{provider}/{model}", 18))
         mode = getattr(self.current_session, "mode", None) if self.current_session is not None else None
         if mode:
-            mode_text = escape(str(mode))
+            mode_text = str(mode)
             mode_color = "#b28443" if mode_text == "bypass" else "#6e6d72"
-            metadata_parts.append(f"[{mode_color}]{mode_text}[/]")
+            metadata_values.append((mode_color, mode_text, None))
         if self.config.project_name:
-            metadata_parts.append(f"[#6e6d72]cwd {escape(self.config.project_name)}[/]")
-        metadata = "   [#303238]·[/]   ".join(metadata_parts)
-        compact = f"{brand}   [#303238]·[/]   {status}   [#303238]·[/]   {metadata}"
+            metadata_values.append(("#6e6d72", f"cwd {self.config.project_name}", 22))
+        top_separator = "   [#303238]·[/]   "
+        metadata = _metadata_markup(metadata_values, separator=top_separator)
+        compact = f"{brand}{top_separator}{status}{top_separator}{metadata}"
         if width is None:
             return compact
         brand_width = _markup_width(brand)
         status_width = _markup_width(status)
         metadata_width = _markup_width(metadata)
-        compact_separator_width = 14
-        content_width = brand_width + status_width + metadata_width + compact_separator_width
+        top_separator_width = _markup_width(top_separator) * 2
+        content_width = brand_width + status_width + metadata_width + top_separator_width
+        if content_width > width:
+            top_separator = " [#303238]·[/] "
+            metadata = _metadata_markup(metadata_values, separator=top_separator)
+            metadata_width = _markup_width(metadata)
+            top_separator_width = _markup_width(top_separator) * 2
+            content_width = brand_width + status_width + metadata_width + top_separator_width
+        if content_width > width:
+            status_budget = max(1, width - brand_width - metadata_width - top_separator_width)
+            status = activity_markup(truncate_activity_text(self._activity_text, status_budget))
+            status_width = _markup_width(status)
+            content_width = brand_width + status_width + metadata_width + top_separator_width
+            if content_width > width:
+                overflow = content_width - width
+                metadata, overflow = _shrink_metadata(metadata_values, overflow, separator=top_separator)
+                metadata_width = _markup_width(metadata)
+                content_width = brand_width + status_width + metadata_width + top_separator_width
+            if content_width > width:
+                metadata_values = _drop_optional_metadata(metadata_values)
+                metadata = _metadata_markup(metadata_values, separator=top_separator)
+                metadata_width = _markup_width(metadata)
+                content_width = brand_width + status_width + metadata_width + top_separator_width
+                status_budget = max(1, width - brand_width - metadata_width - top_separator_width)
+                status = activity_markup(truncate_activity_text(self._activity_text, status_budget))
+                status_width = _markup_width(status)
+                content_width = brand_width + status_width + metadata_width + top_separator_width
+            if content_width > width:
+                return _truncate_markup_plain(
+                    f"{brand}{top_separator}{status}{top_separator}{metadata}",
+                    width,
+                )
+            return f"{brand}{top_separator}{status}{top_separator}{metadata}"
         if width - content_width < 8:
-            available_status_width = width - brand_width - metadata_width - compact_separator_width
+            available_status_width = width - brand_width - metadata_width - top_separator_width
             if available_status_width < status_width:
                 status = activity_markup(truncate_activity_text(self._activity_text, max(1, available_status_width)))
-                compact = f"{brand}   [#303238]·[/]   {status}   [#303238]·[/]   {metadata}"
+                compact = f"{brand}{top_separator}{status}{top_separator}{metadata}"
             return compact
         left_gap = max(3, (width // 2) - _markup_width(brand) - (_markup_width(status) // 2))
         right_gap = width - brand_width - left_gap - _markup_width(status) - metadata_width
@@ -845,7 +897,9 @@ class FirstCoderApp(App[None]):
         rendered = entry_plain_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
-            output.mount(_plain_static(_entry_renderable(entry, rendered), classes=classes))
+            widget = _plain_static(_entry_renderable(entry, rendered), classes=classes)
+            entry.widget = widget
+            output.mount(widget)
             self._scroll_output_end_if_pinned(output)
             return entry
         if hasattr(output, "write_line"):
@@ -1203,6 +1257,41 @@ def _short_session_id(session_id: str) -> str:
 
 def _markup_width(markup: str) -> int:
     return len(Text.from_markup(markup).plain)
+
+
+def _metadata_markup(values: list[tuple[str, str, int | None]], *, separator: str) -> str:
+    return separator.join(f"[{color}]{escape(value)}[/]" for color, value, _ in values)
+
+
+def _shrink_metadata(
+    values: list[tuple[str, str, int | None]],
+    overflow: int,
+    *,
+    separator: str,
+) -> tuple[str, int]:
+    shrunk: list[tuple[str, str, int | None]] = []
+    for color, value, min_width in values:
+        if overflow > 0 and min_width is not None and len(value) > min_width:
+            target = max(min_width, len(value) - overflow)
+            shortened = truncate_activity_text(value, target)
+            overflow -= len(value) - len(shortened)
+            value = shortened
+        shrunk.append((color, value, min_width))
+    return _metadata_markup(shrunk, separator=separator), overflow
+
+
+def _drop_optional_metadata(values: list[tuple[str, str, int | None]]) -> list[tuple[str, str, int | None]]:
+    result = list(values)
+    for index, (_, value, min_width) in enumerate(result):
+        if min_width is not None and "/" in value:
+            del result[index]
+            return result
+    return result
+
+
+def _truncate_markup_plain(markup: str, width: int) -> str:
+    plain = Text.from_markup(markup).plain
+    return truncate_activity_text(plain, max(1, width))
 
 
 def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:

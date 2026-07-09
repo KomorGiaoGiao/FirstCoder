@@ -66,6 +66,9 @@ def render_picker(
         marker = ">" if index == picker.selected_index else " "
         body = render_item(item, index) if render_item is not None else _default_item_text(item)
         lines.append(f"{marker} {index + 1}. {body}")
+    selected = picker.selected_item
+    if picker.kind == "skill" and selected is not None and selected.detail:
+        lines.append(f"Selected: {_truncate_detail(selected.detail, 140)}")
     if picker.footer:
         lines.append(picker.footer)
     return "\n".join(lines)
@@ -82,3 +85,10 @@ def _default_item_text(item: TuiPickerItem) -> str:
     if item.detail:
         return f"{item.label} {item.detail}"
     return item.label
+
+
+def _truncate_detail(text: str, max_chars: int) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 3] + "..."

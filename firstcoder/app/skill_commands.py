@@ -11,7 +11,7 @@ from firstcoder.skills.models import SkillCatalog, SkillDefinition
 
 @dataclass(slots=True)
 class SkillCommandHandler:
-    """Handle `/skills` and `/skill <name>`."""
+    """Handle `/skills`, `/skill <name>`, and exact `/<skill-name> <instruction>`."""
 
     catalog_provider: Callable[[], SkillCatalog]
 
@@ -29,6 +29,9 @@ class SkillCommandHandler:
             return CommandResult(handled=True, output=self._show_skill(args))
         if name == "/skill-use":
             return self._reference_skill(args)
+        launched = self._launch_exact_skill(name, command)
+        if launched is not None:
+            return launched
         return CommandResult(handled=False)
 
     def _list_skills(self) -> CommandResult:
@@ -88,6 +91,26 @@ class SkillCommandHandler:
             },
         )
 
+    def _launch_exact_skill(self, slash_name: str, command: str) -> CommandResult | None:
+        query = slash_name.removeprefix("/").lower()
+        if not query:
+            return None
+        catalog = self.catalog_provider()
+        skill = _find_exact_skill(catalog.skills, query)
+        if skill is None:
+            return None
+        instruction = command[len(slash_name) :].strip()
+        if not instruction:
+            return CommandResult(handled=True, output=f"Usage: /{skill.name} <instruction>")
+        return CommandResult(
+            handled=True,
+            output=f"Using skill: {skill.name}",
+            action={
+                "type": "submit_chat",
+                "text": f"请使用 {skill.path} {instruction}",
+            },
+        )
+
 
 def _find_skill(skills: list[SkillDefinition], query: str) -> SkillDefinition | None:
     for skill in skills:
@@ -97,6 +120,23 @@ def _find_skill(skills: list[SkillDefinition], query: str) -> SkillDefinition | 
         if query in skill.name.lower() or query in skill.path.lower():
             return skill
     return None
+
+
+def _find_exact_skill(skills: list[SkillDefinition], query: str) -> SkillDefinition | None:
+    for skill in skills:
+        aliases = {skill.name.lower(), skill.path.lower(), _path_alias(skill.path)}
+        if query in aliases:
+            return skill
+    return None
+
+
+def _path_alias(path: str) -> str:
+    value = path.lower()
+    if value.endswith("/skill.md"):
+        return value.rsplit("/", 2)[-2]
+    if value.endswith(".md"):
+        return value.rsplit("/", 1)[-1].removesuffix(".md")
+    return value
 
 
 def _skill_action_item(skill: SkillDefinition) -> dict[str, str]:
