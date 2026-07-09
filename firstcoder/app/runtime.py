@@ -94,6 +94,11 @@ class AgentChatRunner:
     _cancellation_lock: threading.Lock = field(default_factory=threading.Lock)
     _active_cancellation_token: CancellationToken | None = None
 
+    def set_provider(self, provider: ChatProvider, *, use_streaming: bool) -> None:
+        self.provider = provider
+        self.use_streaming = use_streaming
+        self.last_stream_events = []
+
     def add_guidance(self, content: str) -> None:
         text = content.strip()
         if not text:

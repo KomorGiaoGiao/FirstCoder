@@ -123,7 +123,9 @@ TUI 路径通过 `AgentChatRunner` 的异步接口工作：
 - `/resume <session_id>`
 - `/share [session_id] [--tool-results]`
 - `/rename <title>`
-- `/skills`
+- `/model`
+- `/model <model|provider/model>`
+- `/skills` 打开选择器，并把选中的 skill 引用插入输入框
 - `/skill <name>`
 - `/context`
 - `/compact status`

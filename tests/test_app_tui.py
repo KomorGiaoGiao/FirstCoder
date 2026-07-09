@@ -15,9 +15,11 @@ from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
-from firstcoder.app.tui import _turn_metrics_text
-from firstcoder.app.tui import _welcome_renderable
-from firstcoder.app.tui import _entry_classes, _tool_event_entry_kind, _tool_event_label, _tool_event_status
+from firstcoder.app.picker import TuiPickerItem, TuiPickerState
+from firstcoder.app.picker_adapters import render_picker_item
+from firstcoder.app.activity_view import tool_event_label, tool_event_status, turn_metrics_text
+from firstcoder.app.welcome import welcome_renderable
+from firstcoder.app.transcript_view import entry_classes, tool_event_entry_kind
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript
 from firstcoder.app.tui_state import TuiTranscriptEntry
 from firstcoder.context.models import SessionView
@@ -117,6 +119,83 @@ class FakeTodoPanel(FakeActivity):
     pass
 
 
+def test_skill_picker_item_renderer_keeps_name_path_and_description_separate() -> None:
+    picker = TuiPickerState(kind="skill", title="Select a skill:", items=[])
+    item = TuiPickerItem(
+        id="skills/very-long.md",
+        label="very-long",
+        detail=" ".join(["description"] * 30),
+        meta={"scope": "global", "path": "skills/very-long.md"},
+    )
+
+    rendered = render_picker_item(picker, item, 0)
+
+    assert rendered.startswith("very-long\n    global · skills/very-long.md\n    ")
+    assert len(rendered.splitlines()[2]) <= 124
+
+
+class RecordingCommandHandler:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def handle(self, text: str) -> CommandResult:
+        self.commands.append(text)
+        if text == "/model":
+            return CommandResult(
+                handled=True,
+                output="Select a model:",
+                action={
+                    "type": "model_picker",
+                    "models": [
+                        {"provider": "fake", "model": "old"},
+                        {"provider": "fake", "model": "new"},
+                    ],
+                    "selected_index": 0,
+                },
+            )
+        if text == "/model fake/new":
+            return CommandResult(
+                handled=True,
+                output="Model switched: fake/new",
+                action={"type": "model_changed", "provider": "fake", "model": "new"},
+            )
+        if text == "/skills":
+            return CommandResult(
+                handled=True,
+                output="Skills:",
+                action={
+                    "type": "skill_picker",
+                    "skills": [
+                        {
+                            "name": "brief",
+                            "path": "skills/brief.md",
+                            "scope": "project",
+                            "description": "Write a brief.",
+                        },
+                        {
+                            "name": "review",
+                            "path": "skills/review.md",
+                            "scope": "project",
+                            "description": "Review work.",
+                        },
+                    ],
+                    "selected_index": 0,
+                },
+            )
+        if text == "/skill-use skills/review.md":
+            return CommandResult(
+                handled=True,
+                output="Referenced skill: review skills/review.md",
+                action={
+                    "type": "skill_referenced",
+                    "name": "review",
+                    "path": "skills/review.md",
+                    "reference": "请使用 skills/review.md ",
+                },
+            )
+        return CommandResult(handled=False)
+
+
 @pytest.mark.parametrize(
     ("elapsed_seconds", "expected"),
     [
@@ -130,7 +209,7 @@ class FakeTodoPanel(FakeActivity):
     ],
 )
 def test_turn_metrics_time_units_appear_only_after_thresholds(elapsed_seconds, expected) -> None:
-    assert _turn_metrics_text(elapsed_seconds, 0) == expected
+    assert turn_metrics_text(elapsed_seconds, 0) == expected
 
 
 class FakeSession:
@@ -223,9 +302,9 @@ def test_firstcoder_markdown_blocks_do_not_enter_textual_selection_path() -> Non
 
 
 def test_welcome_renderable_uses_colored_full_block_pixels() -> None:
-    renderable = _welcome_renderable()
+    renderable = welcome_renderable()
     text = renderable.renderable
-    next_text = _welcome_renderable(particle_frame=1).renderable
+    next_text = welcome_renderable(particle_frame=1).renderable
 
     assert renderable.align == "center"
     assert "██" in text.plain
@@ -317,6 +396,25 @@ def test_firstcoder_app_topbar_includes_live_activity_status() -> None:
     app._activity_text = "thinking [.. ] planning next step..."
 
     assert "[#7bba55]thinking [.. ] planning next step...[/]" in app._topbar_text(width=120)
+
+
+def test_firstcoder_app_topbar_truncates_long_activity_before_metadata() -> None:
+    app = FirstCoderApp(
+        current_session=FakeSession(),
+        config=FirstCoderTuiConfig(
+            provider_name="yurenapi",
+            provider_model="very-long-model-name",
+            project_name="FirstCoder",
+        ),
+    )
+    app._activity_text = "thinking [...] " + "reading think tool result " * 8
+
+    text = app._topbar_text(width=150)
+
+    assert "[#6e6d72]yurenapi/very-long-model-name[/]" in text
+    assert "[#6e6d72]cwd FirstCoder[/]" in text
+    assert "reading think tool result reading think tool result" not in text
+    assert "[#7bba55]thinking" in text
 
 
 def test_tui_transcript_records_structured_entries_with_stable_labels() -> None:
@@ -737,6 +835,57 @@ async def test_firstcoder_app_resume_picker_renders_twenty_visible_rows_and_scro
         await pilot.pause()
 
     assert state.session.session_id == "sess_04"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_model_picker_switches_selected_model() -> None:
+    handler = RecordingCommandHandler()
+    app = FirstCoderApp(
+        command_handler=handler,
+        config=FirstCoderTuiConfig(provider_name="fake", provider_model="old"),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/model")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        assert "Select a model:" in output_text
+        assert "> 1. fake/old" in output_text
+
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert handler.commands == ["/model", "/model fake/new"]
+    assert app.config.provider_name == "fake"
+    assert app.config.provider_model == "new"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_skill_picker_references_selected_skill_in_input() -> None:
+    handler = RecordingCommandHandler()
+    app = FirstCoderApp(command_handler=handler)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/skills")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+        assert "Select a skill:" in output_text
+        assert "> 1. brief\n    project · skills/brief.md\n    Write a brief." in output_text
+
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        input_widget = app.query_one("#input")
+
+    assert handler.commands == ["/skills", "/skill-use skills/review.md"]
+    assert input_widget.value == "请使用 skills/review.md "
 
 
 @pytest.mark.anyio
@@ -1575,11 +1724,11 @@ def test_permission_requested_tool_event_uses_permission_style() -> None:
         tool_call=ToolCall(id="call_write", name="apply_patch", arguments={}),
     )
 
-    assert _tool_event_entry_kind(event) == TuiEntryKind.PERMISSION
-    assert _tool_event_status(event) == "permission_requested"
-    assert _tool_event_label(event) == "permission requested"
+    assert tool_event_entry_kind(event) == TuiEntryKind.PERMISSION
+    assert tool_event_status(event) == "permission_requested"
+    assert tool_event_label(event) == "permission requested"
     assert (
-        _entry_classes(
+        entry_classes(
             TuiTranscriptEntry(
                 id=1,
                 kind=TuiEntryKind.PERMISSION,
@@ -1594,7 +1743,7 @@ def test_permission_requested_tool_event_uses_permission_style() -> None:
 
 def test_tool_skipped_has_stable_gray_tool_class() -> None:
     assert (
-        _entry_classes(
+        entry_classes(
             TuiTranscriptEntry(
                 id=1,
                 kind=TuiEntryKind.TOOL,

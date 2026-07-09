@@ -123,7 +123,9 @@ The current TUI command surface is assembled from dedicated handlers and include
 - `/resume <session_id>`
 - `/share [session_id] [--tool-results]`
 - `/rename <title>`
-- `/skills`
+- `/model`
+- `/model <model|provider/model>`
+- `/skills` opens a picker and inserts the selected skill reference into the input
 - `/skill <name>`
 - `/context`
 - `/compact status`

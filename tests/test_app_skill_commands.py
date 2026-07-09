@@ -20,6 +20,18 @@ def test_skills_command_lists_discovered_skills(tmp_path: Path, monkeypatch) -> 
     assert "Skills:" in result.output
     assert "- brief project skills/brief.md" in result.output
     assert "Write a brief." in result.output
+    assert result.action == {
+        "type": "skill_picker",
+        "skills": [
+            {
+                "name": "brief",
+                "path": "skills/brief.md",
+                "scope": "project",
+                "description": "Write a brief.",
+            }
+        ],
+        "selected_index": 0,
+    }
 
 
 def test_skill_command_shows_single_skill_details(tmp_path: Path, monkeypatch) -> None:
@@ -50,3 +62,22 @@ def test_skill_command_reports_missing_skill(tmp_path: Path, monkeypatch) -> Non
 
     assert result.handled is True
     assert result.output == "Skill not found: missing"
+
+
+def test_skill_use_command_references_skill_for_input(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "brief.md").write_text("# Brief\n", encoding="utf-8")
+    handler = SkillCommandHandler(catalog_provider=lambda: discover_all_skills(tmp_path))
+
+    result = handler.handle("/skill-use skills/brief.md")
+
+    assert result.handled is True
+    assert result.output == "Referenced skill: brief skills/brief.md"
+    assert result.action == {
+        "type": "skill_referenced",
+        "name": "brief",
+        "path": "skills/brief.md",
+        "reference": "请使用 skills/brief.md ",
+    }

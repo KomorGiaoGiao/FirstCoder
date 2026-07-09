@@ -122,6 +122,41 @@ def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) 
     assert app.chat_runner.use_streaming is False
 
 
+def test_model_command_switches_runtime_provider_and_compact_summarizer(tmp_path: Path) -> None:
+    initial_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
+    config = AppConfig(
+        provider_name="openai-compatible",
+        env={"YURENAPI_API_KEY": "test-key"},
+        project_config={
+            "model": "yurenapi/old-model",
+            "provider": {
+                "type": "openai-compatible",
+                "name": "yurenapi",
+                "base_url": "https://example.test/v1",
+                "api_key_env": "YURENAPI_API_KEY",
+                "parallel_tool_calls": True,
+            },
+        },
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        provider=initial_provider,
+        session_id="sess_test",
+        tools=[],
+        app_config=config,
+    )
+
+    result = app.command_handler.handle("/model new-model")
+
+    assert result.output == "Model switched: yurenapi/new-model"
+    assert result.action == {"type": "model_changed", "provider": "yurenapi", "model": "new-model"}
+    assert app.chat_runner.provider.name == "yurenapi"
+    assert app.chat_runner.provider.model == "new-model"
+    assert app.chat_runner.use_streaming is True
+    assert app.chat_runner.context_manager.l4_service.summarizer.provider is app.chat_runner.provider
+
+
 def test_app_factory_configures_default_loop_limits(tmp_path: Path) -> None:
     app = create_firstcoder_app(project_root=tmp_path, provider=FakeProvider([]), tools=[])
 

@@ -105,6 +105,21 @@ def test_current_session_state_proxies_replaced_session(tmp_path) -> None:
     assert state.rebuild_view().session_id == "sess_second"
 
 
+def test_agent_chat_runner_can_switch_provider(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
+    state = CurrentSessionState(session)
+    old_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="old")])
+    new_provider = FakeStreamingProvider([ChatResponse(provider="fake-stream", model="fake-stream-model", content="new")])
+    runner = AgentChatRunner(current_session=state, provider=old_provider, use_streaming=False)
+
+    runner.set_provider(new_provider, use_streaming=True)
+
+    assert runner.provider is new_provider
+    assert runner.use_streaming is True
+    assert runner.last_stream_events == []
+
+
 def test_agent_chat_runner_uses_current_session_and_can_follow_resume(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     first = AgentSession.create(store=store, session_id="sess_first", agents_md="")

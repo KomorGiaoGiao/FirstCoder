@@ -13,94 +13,60 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
 
-from rich.align import Align
 from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Key
 from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static
 
 from firstcoder.app.commands import CommandResult
+from firstcoder.app.activity_view import (
+    activity_markup,
+    post_tool_reasoning_text,
+    todo_panel_text,
+    tool_activity_line_text,
+    tool_activity_summary,
+    tool_event_label,
+    tool_event_status,
+    tool_status_text,
+    truncate_activity_text,
+    turn_metrics_text,
+)
+from firstcoder.app.picker import TuiPickerState, render_picker
+from firstcoder.app.picker_adapters import (
+    model_picker_item,
+    picker_command,
+    render_picker_item,
+    session_picker_item,
+    skill_picker_item,
+)
 from firstcoder.app.session_commands import SESSION_LIST_VISIBLE_LIMIT
+from firstcoder.app.permission_view import permission_choice_for_text, permission_options_text, permission_prompt_text
+from firstcoder.app.transcript_view import (
+    display_line_kind,
+    display_line_status,
+    entry_classes,
+    entry_markdown_text,
+    entry_plain_text,
+    looks_like_markdown_response,
+    looks_like_tool_display_line,
+    normalize_stream_text,
+    tool_event_entry_kind,
+)
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript, TuiTranscriptEntry
+from firstcoder.app.welcome import welcome_renderable
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
-
-_WELCOME_LOGO_PALETTE = {
-    "M": "#81e8bb",
-    "C": "#18cfcb",
-    "T": "#1ba59e",
-    "W": "#f5fcfa",
-    "O": "#002630",
-    "P": "#b8ffdf",
-    "Q": "#45e6df",
-}
-
-_WELCOME_LOGO_PIXELS = (
-    ".................M..CCT",
-    "..................CCCTT",
-    ".................CCCTCT",
-    "......CTTCT......CTCTT",
-    ".......TCCTT....TTTTTC",
-    ".......CTCTTT...TTTT",
-    ".........TTTT...TC",
-    "",
-    "...............M",
-    "...............M",
-    "",
-    "............WWWWWWWW",
-    ".........MWWWWWWWWWWWM",
-    "........WWWWWWWWWWWWMMM",
-    "......MWWWWWWWWWWWWWMMMC",
-    ".....MWWWWWWWWWWWWWMMMMCC",
-    "....MMWWWWWWWWWWWMMMMMMMCC",
-    "....MMMMWWWWWWWMMMMMMMMMCC",
-    "...MMMMMMMMMMMMMMMMMMMMMCCC",
-    "..MMMMMMMMMMMMMMMMMMMMMMCCC",
-    "..MMMMMMMMMMMMMMMMMMMMMMMCC",
-    ".MMMWWMMMMMMMMMWWMMMMMMMMCCC",
-    ".MMMWWMMMMMMMMMWWMMMMMMMMCCC",
-    ".MMMWWMMMMMMMMMWWMMMMMMMMCCT",
-    "MMMMMMMMMWWWWMMMMMMMMMMMMCCC",
-    "MMMMMMMMMMMMMMMMMMMMMMMMMCCC",
-    "MMMMMMMMMMMMMMMMMMMMMMMMMCCC",
-    "MMMMMMMMMMMMWMMMMMMMMMMMMCCC",
-    "MMMMMMWWMMMWWMWMMMMMMMMMCCCC",
-    "MMMMMWWMMMMWMMMWWMMMMMMMCCCC",
-    "MMMMWWMMMMMWMMMMWWMMMMMMCCC",
-    "MMMMWWMMMMWMMMMMWWMMMMMMCCC",
-    ".MMMMWWMMMWMMMMWWMMMMMMCCCC",
-    ".MMMMMWWMMWMMMWWMMMMMMMCCC.M",
-    "..MMMMMMMWMMMMMMMMMMMMCCC",
-    "..MMMMMMMMMMMMMMMMMMMMCCC",
-    "...MMMMMMMMMMMMMMMMMMCCC",
-    ".....MMMMMMMMMMMMMMMCT",
-    "......MMMMMMMMMMMMMCC",
-    ".....M...MMMMMMMMM...M",
-)
-
-_WELCOME_PARTICLE_FRAMES = (
-    ((6, 3, "P"), (11, 26, "Q"), (25, 29, "P"), (37, 4, "P")),
-    ((5, 5, "Q"), (14, 1, "P"), (28, 30, "Q"), (38, 23, "P")),
-    ((4, 2, "P"), (10, 24, "P"), (21, 31, "Q"), (35, 28, "P")),
-    ((7, 1, "Q"), (16, 29, "P"), (31, 2, "P"), (39, 18, "Q")),
-)
-
 
 @dataclass(slots=True)
 class _ActiveChatTurn:
     id: str
     token: int
     started_at: float
-
-
-@dataclass(slots=True)
-class _ResumePickerState:
-    sessions: list[dict[str, object]]
-    selected_index: int = 0
 
 
 class FirstCoderMarkdown(Markdown):
@@ -116,26 +82,6 @@ class FirstCoderMarkdown(Markdown):
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
     kwargs.setdefault("markup", False)
     return Static(content, *args, **kwargs)
-
-
-def _visible_session_window(
-    sessions: list[dict[str, object]], *, selected_index: int, limit: int = SESSION_LIST_VISIBLE_LIMIT
-) -> tuple[int, list[dict[str, object]]]:
-    if not sessions:
-        return 0, []
-    selected_index = max(0, min(selected_index, len(sessions) - 1))
-    limit = max(1, limit)
-    if len(sessions) <= limit:
-        return 0, sessions
-    window_start = min(max(0, selected_index - limit + 1), len(sessions) - limit)
-    return window_start, sessions[window_start : window_start + limit]
-
-
-def _resume_picker_header(window_start: int, visible_count: int, total_count: int) -> str:
-    if total_count <= visible_count:
-        return "Select a session:"
-    window_end = window_start + visible_count
-    return f"Select a session: Showing {window_start + 1}-{window_end} of {total_count} sessions"
 
 
 def _observe_markdown_update(update_result) -> None:
@@ -154,28 +100,6 @@ def _observe_markdown_update(update_result) -> None:
             raise exception
 
     future.add_done_callback(observe_cancelled_update)
-
-
-def _welcome_renderable(*, particle_frame: int = 0) -> Align:
-    rows = [list(row) for row in _WELCOME_LOGO_PIXELS]
-    frame = _WELCOME_PARTICLE_FRAMES[particle_frame % len(_WELCOME_PARTICLE_FRAMES)]
-    for row_index, column_index, pixel in frame:
-        if not 0 <= row_index < len(rows):
-            continue
-        row = rows[row_index]
-        if column_index >= len(row):
-            row.extend("." for _ in range(column_index - len(row) + 1))
-        if row[column_index] == ".":
-            row[column_index] = pixel
-
-    text = Text()
-    for row_index, row in enumerate(rows):
-        if row_index:
-            text.append("\n")
-        for pixel in row:
-            color = _WELCOME_LOGO_PALETTE.get(pixel)
-            text.append("██" if color else "  ", style=color)
-    return Align.center(text)
 
 
 class CommandHandlerLike(Protocol):
@@ -261,7 +185,7 @@ class FirstCoderApp(App[None]):
         self._activity_text = "idle · ready"
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
-        self._resume_picker: _ResumePickerState | None = None
+        self._picker: TuiPickerState | None = None
         self._welcome_widget: Static | None = None
         self._welcome_particle_timer: Timer | None = None
         self._welcome_particle_frame = 0
@@ -292,8 +216,8 @@ class FirstCoderApp(App[None]):
         self._dismiss_welcome()
         self._record_input_history(text)
 
-        if self._resume_picker is not None and text.isdigit():
-            if self._resume_picker_select_number(int(text)):
+        if self._picker is not None and text.isdigit():
+            if self._picker_select_number(int(text)):
                 return
 
         self._write_line(f"> {text}", kind=TuiEntryKind.USER)
@@ -331,9 +255,9 @@ class FirstCoderApp(App[None]):
 
         pending = getattr(self.chat_runner, "last_pending_input", None)
         if getattr(pending, "kind", None) == "permission_confirmation":
-            choice = _permission_choice_for_text(text, pending)
+            choice = permission_choice_for_text(text, pending)
             if choice is None:
-                self._write_line(_permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
+                self._write_line(permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
                 return
             self._chat_busy = True
             token = self._resume_active_chat_turn()
@@ -345,7 +269,7 @@ class FirstCoderApp(App[None]):
         self._chat_worker = self.run_worker(self._run_chat_turn(text, token))
 
     def on_key(self, event: Key) -> None:
-        if self._resume_picker is not None and self._handle_resume_picker_key(event):
+        if self._picker is not None and self._handle_picker_key(event):
             event.stop()
             event.prevent_default()
             return
@@ -460,84 +384,143 @@ class FirstCoderApp(App[None]):
             return
         action_type = action.get("type")
         if action_type == "new_session":
-            self._resume_picker = None
+            self._picker = None
             self._clear_output()
             if output:
                 self._write_line(output, kind=TuiEntryKind.COMMAND)
             return
         if action_type == "resume_picker":
-            self._resume_picker = _ResumePickerState(
-                sessions=[item for item in action.get("sessions", []) if isinstance(item, dict)],
+            self._picker = TuiPickerState(
+                kind="resume",
+                title="Select a session:",
+                items=[
+                    session_picker_item(item)
+                    for item in action.get("sessions", [])
+                    if isinstance(item, dict)
+                ],
                 selected_index=int(action.get("selected_index") or 0),
+                empty_text="No sessions.",
+                footer="Use up/down and enter to resume, or type a number.",
+                count_label="sessions",
             )
-            self._render_resume_picker()
+            self._render_picker()
+            return
+        if action_type == "model_picker":
+            self._picker = TuiPickerState(
+                kind="model",
+                title="Select a model:",
+                items=[
+                    model_picker_item(item)
+                    for item in action.get("models", [])
+                    if isinstance(item, dict)
+                ],
+                selected_index=int(action.get("selected_index") or 0),
+                empty_text="No model choices.",
+                footer="Use up/down and enter to switch, or type /model <model>.",
+                count_label="models",
+            )
+            self._render_picker()
+            return
+        if action_type == "skill_picker":
+            self._picker = TuiPickerState(
+                kind="skill",
+                title="Select a skill:",
+                items=[
+                    skill_picker_item(item)
+                    for item in action.get("skills", [])
+                    if isinstance(item, dict)
+                ],
+                selected_index=int(action.get("selected_index") or 0),
+                empty_text="No skills.",
+                footer="Use up/down and enter to reference, or type a number.",
+                count_label="skills",
+            )
+            self._render_picker()
             return
         if action_type == "replay_session":
-            self._resume_picker = None
+            self._picker = None
             self._replay_current_session()
+            return
+        if action_type == "model_changed":
+            self._picker = None
+            self.config.provider_name = str(action.get("provider") or "")
+            self.config.provider_model = str(action.get("model") or "")
+            return
+        if action_type == "skill_referenced":
+            self._picker = None
+            self._insert_input_text(str(action.get("reference") or ""))
+            return
 
-    def _handle_resume_picker_key(self, event: Key) -> bool:
-        picker = self._resume_picker
+    def _handle_picker_key(self, event: Key) -> bool:
+        picker = self._picker
         if picker is None:
             return False
         if event.key == "up":
-            picker.selected_index = max(0, picker.selected_index - 1)
-            self._render_resume_picker()
+            picker.move(-1)
+            self._render_picker()
             return True
         if event.key == "down":
-            picker.selected_index = min(len(picker.sessions) - 1, picker.selected_index + 1)
-            self._render_resume_picker()
+            picker.move(1)
+            self._render_picker()
             return True
         if event.key == "enter":
-            self._resume_picker_select_index(picker.selected_index)
+            self._picker_select_index(picker.selected_index)
             return True
         if event.key == "escape":
-            self._resume_picker = None
-            self._write_line("Resume cancelled.", kind=TuiEntryKind.COMMAND)
+            kind = picker.kind
+            self._picker = None
+            self._write_line(f"{kind.capitalize()} selection cancelled.", kind=TuiEntryKind.COMMAND)
             return True
         return False
 
-    def _resume_picker_select_number(self, number: int) -> bool:
-        picker = self._resume_picker
+    def _picker_select_number(self, number: int) -> bool:
+        picker = self._picker
         if picker is None:
             return False
         index = number - 1
-        if index < 0 or index >= len(picker.sessions):
-            self._write_line("Invalid session selection.", kind=TuiEntryKind.ERROR)
+        if index < 0 or index >= len(picker.items):
+            self._write_line("Invalid selection.", kind=TuiEntryKind.ERROR)
             return True
-        self._resume_picker_select_index(index)
+        self._picker_select_index(index)
         return True
 
-    def _resume_picker_select_index(self, index: int) -> None:
-        picker = self._resume_picker
+    def _picker_select_index(self, index: int) -> None:
+        picker = self._picker
         if picker is None or self.command_handler is None:
             return
-        if index < 0 or index >= len(picker.sessions):
+        if index < 0 or index >= len(picker.items):
             return
-        session_id = str(picker.sessions[index].get("session_id") or "")
-        if not session_id:
+        item = picker.items[index]
+        command = picker_command(picker.kind, item)
+        if not command:
             return
-        result = self.command_handler.handle(f"/resume {session_id}")
+        result = self.command_handler.handle(command)
         if result.output:
             self._write_line(result.output, kind=TuiEntryKind.COMMAND)
         self._handle_command_action(result.action)
         self._refresh_session_subtitle()
 
-    def _render_resume_picker(self) -> None:
-        picker = self._resume_picker
+    def _render_picker(self) -> None:
+        picker = self._picker
         if picker is None:
             return
-        window_start, visible_sessions = _visible_session_window(picker.sessions, selected_index=picker.selected_index)
-        lines = [_resume_picker_header(window_start, len(visible_sessions), len(picker.sessions))]
-        for offset, item in enumerate(visible_sessions):
-            index = window_start + offset
-            marker = ">" if index == picker.selected_index else " "
-            lines.append(
-                f"{marker} {index + 1}. {item.get('session_id')} {item.get('title')} "
-                f"messages={item.get('message_count')}"
+        self._replace_last_command_output(
+            render_picker(
+                picker,
+                limit=SESSION_LIST_VISIBLE_LIMIT,
+                render_item=lambda item, index: render_picker_item(picker, item, index),
             )
-        lines.append("Use up/down and enter to resume, or type a number.")
-        self._replace_last_command_output("\n".join(lines))
+        )
+
+    def _insert_input_text(self, text: str) -> None:
+        if not text:
+            return
+        input_widget = self.query_one("#input", Input)
+        existing = input_widget.value
+        prefix = "" if not existing or existing.endswith((" ", "\n")) else " "
+        input_widget.value = f"{existing}{prefix}{text}"
+        input_widget.cursor_position = len(input_widget.value)
+        input_widget.focus()
 
     def _replace_last_command_output(self, text: str) -> None:
         for entry in reversed(self.transcript.entries):
@@ -664,25 +647,25 @@ class FirstCoderApp(App[None]):
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
         content = getattr(response, "content", "")
         if self._stream_text_started:
-            if content and _normalize_stream_text(content) != _normalize_stream_text(self._stream_text_buffer):
+            if content and normalize_stream_text(content) != normalize_stream_text(self._stream_text_buffer):
                 self._stream_text_buffer = content
                 if self._stream_text_entry is not None:
                     self._stream_text_entry.body = content
             display_lines = [
                 line
                 for line in display_lines
-                if _looks_like_tool_display_line(line)
-                or _normalize_stream_text(line) != _normalize_stream_text(self._stream_text_buffer)
+                if looks_like_tool_display_line(line)
+                or normalize_stream_text(line) != normalize_stream_text(self._stream_text_buffer)
             ]
             self._flush_stream_text()
         if self._live_tool_events_seen:
-            display_lines = [line for line in display_lines if not _looks_like_tool_display_line(line)]
+            display_lines = [line for line in display_lines if not looks_like_tool_display_line(line)]
         if display_lines:
             for line in display_lines:
-                if line == content or _looks_like_markdown_response(line):
+                if line == content or looks_like_markdown_response(line):
                     self._write_markdown_message(line)
                 else:
-                    self._write_line(line, kind=_display_line_kind(line), status=_display_line_status(line))
+                    self._write_line(line, kind=display_line_kind(line), status=display_line_status(line))
         elif not self._stream_text_started:
             self._write_markdown_message(content or "[assistant response has no text content]")
         self._write_pending_input()
@@ -714,7 +697,7 @@ class FirstCoderApp(App[None]):
         if session_id is None and self.current_session is not None:
             session_id = self.current_session.session_id
         brand = "[#7bba55]FirstCoder[/]"
-        status = _activity_markup(self._activity_text)
+        status = activity_markup(self._activity_text)
         metadata_parts = [f"[#6e6d72]{escape(_short_session_id(session_id) if session_id else 'no session')}[/]"]
         if self.config.provider_name or self.config.provider_model:
             provider = escape(self.config.provider_name or "provider")
@@ -731,14 +714,22 @@ class FirstCoderApp(App[None]):
         compact = f"{brand}   [#303238]·[/]   {status}   [#303238]·[/]   {metadata}"
         if width is None:
             return compact
-        content_width = _markup_width(brand) + _markup_width(status) + _markup_width(metadata)
+        brand_width = _markup_width(brand)
+        status_width = _markup_width(status)
+        metadata_width = _markup_width(metadata)
+        compact_separator_width = 14
+        content_width = brand_width + status_width + metadata_width + compact_separator_width
         if width - content_width < 8:
+            available_status_width = width - brand_width - metadata_width - compact_separator_width
+            if available_status_width < status_width:
+                status = activity_markup(truncate_activity_text(self._activity_text, max(1, available_status_width)))
+                compact = f"{brand}   [#303238]·[/]   {status}   [#303238]·[/]   {metadata}"
             return compact
         left_gap = max(3, (width // 2) - _markup_width(brand) - (_markup_width(status) // 2))
-        right_gap = width - _markup_width(brand) - left_gap - _markup_width(status) - _markup_width(metadata)
+        right_gap = width - brand_width - left_gap - _markup_width(status) - metadata_width
         if right_gap < 3:
             right_gap = 3
-            left_gap = width - _markup_width(brand) - _markup_width(status) - _markup_width(metadata) - right_gap
+            left_gap = width - brand_width - _markup_width(status) - metadata_width - right_gap
         return f"{brand}{' ' * left_gap}{status}{' ' * right_gap}{metadata}"
 
     def _install_stream_event_handler(self, token: int | None = None):
@@ -801,7 +792,7 @@ class FirstCoderApp(App[None]):
             tool_name = str(getattr(tool_call, "name", "") or "tool")
             if tool_name in _HIDDEN_TOOL_STATUS_NAMES:
                 return
-            line = _tool_status_text(event)
+            line = tool_status_text(event)
             if not line:
                 return
             self._live_tool_events_seen = True
@@ -812,9 +803,9 @@ class FirstCoderApp(App[None]):
             self._call_ui_thread(
                 self._write_line,
                 line,
-                kind=_tool_event_entry_kind(event),
-                label=_tool_event_label(event),
-                status=_tool_event_status(event),
+                kind=tool_event_entry_kind(event),
+                label=tool_event_label(event),
+                status=tool_event_status(event),
             )
 
         setattr(self.chat_runner, "tool_event_handler", handle_event)
@@ -850,8 +841,8 @@ class FirstCoderApp(App[None]):
         status: str | None = None,
     ) -> TuiTranscriptEntry:
         entry = self.transcript.add(kind, text, label=label, status=status)
-        classes = classes or _entry_classes(entry)
-        rendered = _entry_plain_text(entry)
+        classes = classes or entry_classes(entry)
+        rendered = entry_plain_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
             output.mount(_plain_static(rendered, classes=classes))
@@ -865,7 +856,7 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output")
         if not hasattr(output, "mount"):
             return
-        self._welcome_widget = _plain_static(_welcome_renderable(), id="welcome", classes="welcome")
+        self._welcome_widget = _plain_static(welcome_renderable(), id="welcome", classes="welcome")
         output.mount(self._welcome_widget)
         self._start_welcome_particles()
 
@@ -901,12 +892,12 @@ class FirstCoderApp(App[None]):
             self._stop_welcome_particles()
             return
         self._welcome_particle_frame += 1
-        self._welcome_widget.update(_welcome_renderable(particle_frame=self._welcome_particle_frame))
+        self._welcome_widget.update(welcome_renderable(particle_frame=self._welcome_particle_frame))
 
     def _record_tool_activity(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
         name = str(getattr(tool_call, "name", "") or "tool")
-        status = _tool_event_status(event) or "unknown"
+        status = tool_event_status(event) or "unknown"
         tool_call_id = str(getattr(tool_call, "id", "") or "")
         if status == "running":
             self._turn_tool_count += 1
@@ -914,16 +905,16 @@ class FirstCoderApp(App[None]):
                 self._running_tool_call_ids.add(tool_call_id)
         elif tool_call_id:
             self._running_tool_call_ids.discard(tool_call_id)
-        summary = _tool_activity_summary(event)
+        summary = tool_activity_summary(event)
         self.transcript.record_tool_activity(name, status, summary)
         if status == "success":
-            self._show_working_indicator(_post_tool_reasoning_text(name))
+            self._show_working_indicator(post_tool_reasoning_text(name))
             return
         self._stop_working_animation()
         if status == "running":
             self._show_activity_animation("running", self._running_tools_activity_detail(name))
             return
-        self._show_static_activity(_activity_line_text(name, status))
+        self._show_static_activity(tool_activity_line_text(name, status))
 
     def _refresh_todo_panel_from_tool_event(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
@@ -951,11 +942,11 @@ class FirstCoderApp(App[None]):
             return
         if hasattr(panel, "remove_class"):
             panel.remove_class("hidden")
-        panel.update(_todo_panel_text(todos))
+        panel.update(todo_panel_text(todos))
 
     def _write_markdown_message(self, content: str, *, classes: str = "message assistant-message") -> None:
         entry = self.transcript.add(TuiEntryKind.ASSISTANT, content)
-        text = _entry_markdown_text(entry)
+        text = entry_markdown_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
             markdown = FirstCoderMarkdown(classes=classes)
@@ -971,7 +962,7 @@ class FirstCoderApp(App[None]):
         if pending is None:
             return
         if getattr(pending, "kind", None) == "permission_confirmation":
-            self._write_line(_permission_prompt_text(pending), kind=TuiEntryKind.PERMISSION)
+            self._write_line(permission_prompt_text(pending), kind=TuiEntryKind.PERMISSION)
             self._set_activity("waiting · permission")
             return
         question = str(getattr(pending, "question", "") or "需要用户输入。")
@@ -983,7 +974,7 @@ class FirstCoderApp(App[None]):
         line = f"{label}: {text}" if include_label else text
         if hasattr(output, "mount"):
             entry = self.transcript.add(TuiEntryKind.REASONING, line)
-            output.mount(_plain_static(_entry_plain_text(entry), classes="message reasoning-message"))
+            output.mount(_plain_static(entry_plain_text(entry), classes="message reasoning-message"))
             self._scroll_output_end_if_pinned(output)
             return
         if hasattr(output, "write"):
@@ -1110,20 +1101,28 @@ class FirstCoderApp(App[None]):
 
     def _set_activity(self, text: str) -> None:
         self._activity_text = text
-        activity = self.query_one("#activity")
-        rendered = self._activity_line_text(text, activity)
+        if not getattr(self, "is_mounted", False):
+            return
+        try:
+            activity = self.query_one("#activity")
+        except NoMatches:
+            return
+        rendered = self.tool_activity_line_text(text, activity)
         if hasattr(activity, "update"):
             activity.update(self._activity_renderable(rendered))
-        if getattr(self, "is_mounted", False):
+        try:
             topbar = self.query_one("#topbar")
+        except NoMatches:
+            return
+        else:
             if hasattr(topbar, "update"):
                 topbar.update(self._topbar_text(width=self._topbar_width()))
 
     def _activity_renderable(self, text: str) -> Text:
         return Text(text, style="#527c3b")
 
-    def _activity_line_text(self, text: str, activity) -> str:
-        metrics = _turn_metrics_text(self._turn_elapsed_seconds(), self._turn_tool_count)
+    def tool_activity_line_text(self, text: str, activity) -> str:
+        metrics = turn_metrics_text(self._turn_elapsed_seconds(), self._turn_tool_count)
         width = getattr(getattr(activity, "size", None), "width", None)
         if not isinstance(width, int) or width <= 0:
             return f"{text} · {metrics}" if text != "idle · ready" else text
@@ -1131,7 +1130,7 @@ class FirstCoderApp(App[None]):
             return text
         if len(text) + len(metrics) + 1 > width:
             available = max(1, width - len(metrics) - 1)
-            text = _truncate_activity_text(text, available)
+            text = truncate_activity_text(text, available)
         return f"{text}{' ' * (width - len(text) - len(metrics))}{metrics}"
 
     def _append_stream_text(self, text: str) -> None:
@@ -1194,29 +1193,6 @@ class FirstCoderApp(App[None]):
         return True
 
 
-def _permission_choice_for_text(text: str, pending) -> str | None:
-    normalized = text.strip().lower().replace(" ", "_")
-    aliases = {
-        "1": "deny",
-        "no": "deny",
-        "deny": "deny",
-        "2": "allow_once",
-        "allow_once": "allow_once",
-        "once": "allow_once",
-        "allow": "allow_once",
-        "3": "allow_always_same_scope",
-        "allow_always": "allow_always_same_scope",
-        "always": "allow_always_same_scope",
-        "allow_always_same_scope": "allow_always_same_scope",
-    }
-    if normalized in aliases:
-        return aliases[normalized]
-    for option in getattr(pending, "options", []) or []:
-        if normalized in {str(option.id).lower(), str(option.label).strip().lower().replace(" ", "_")}:
-            return str(option.id)
-    return None
-
-
 def _short_session_id(session_id: str) -> str:
     if len(session_id) <= 14:
         return session_id
@@ -1227,297 +1203,3 @@ def _short_session_id(session_id: str) -> str:
 
 def _markup_width(markup: str) -> int:
     return len(Text.from_markup(markup).plain)
-
-
-def _activity_markup(text: str) -> str:
-    color = "#7bba55"
-    if text.startswith("waiting"):
-        color = "#b28443"
-    elif text.startswith("running"):
-        color = "#808185"
-    elif text.startswith("streaming"):
-        color = "#6e6d72"
-    elif text.startswith("error"):
-        color = "#c85f5f"
-    return f"[{color}]{escape(text)}[/]"
-
-
-def _truncate_activity_text(text: str, width: int) -> str:
-    if len(text) <= width:
-        return text
-    if width <= 1:
-        return text[:width]
-    return text[: width - 1] + "."
-
-
-def _turn_metrics_text(elapsed_seconds: float, tool_count: int) -> str:
-    elapsed = _format_elapsed_time(elapsed_seconds)
-    return f"{elapsed} · {tool_count} {'tool' if tool_count == 1 else 'tools'}"
-
-
-def _format_elapsed_time(elapsed_seconds: float) -> str:
-    if elapsed_seconds < 60:
-        return f"{max(0.0, elapsed_seconds):.1f}s"
-    total_seconds = int(max(0, elapsed_seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes}m {seconds}s"
-    return f"{minutes}m {seconds}s"
-
-
-def _permission_options_text(pending) -> str:
-    options = getattr(pending, "options", []) or []
-    if not options:
-        return "请回复权限选择：deny / allow_once / allow_always_same_scope"
-    rendered = ", ".join(f"{option.id} ({option.label})" for option in options)
-    return f"请回复权限选择：{rendered}"
-
-
-def _permission_prompt_text(pending) -> str:
-    payload = getattr(pending, "payload", {}) or {}
-    action = str(payload.get("action") or "")
-    target = str(payload.get("target") or "")
-    reason = str(payload.get("reason") or "")
-    question = str(getattr(pending, "question", "") or "允许执行这个权限操作吗？")
-
-    headline = "permission requested"
-    if action and target:
-        headline = f"{headline}  {action} {target}"
-    elif action:
-        headline = f"{headline}  {action}"
-    elif target:
-        headline = f"{headline}  {target}"
-    lines = [headline]
-    if reason:
-        lines.append(f"  {reason}")
-    elif not any((action, target)):
-        lines.append(f"  {question}")
-
-    options = list(getattr(pending, "options", []) or [])
-    if options:
-        choices: list[str] = []
-        for index, option in enumerate(options, start=1):
-            label = str(getattr(option, "label", "") or getattr(option, "id", ""))
-            option_id = str(getattr(option, "id", ""))
-            rendered = _permission_option_label(label, option_id)
-            choices.append(f"[{index}] {rendered}")
-        lines.append("  " + "  ".join(choices))
-    else:
-        lines.append("  [1] deny  [2] allow once  [3] allow always")
-    return "\n".join(lines)
-
-
-def _permission_option_label(label: str, option_id: str) -> str:
-    normalized = (option_id or label).strip().lower().replace("_", " ")
-    aliases = {
-        "deny": "deny",
-        "allow once": "allow once",
-        "allow always same scope": "allow always",
-    }
-    return aliases.get(normalized, label.strip().lower() or option_id)
-
-
-def _looks_like_markdown_response(line: str) -> bool:
-    return not _looks_like_tool_display_line(line)
-
-
-def _looks_like_tool_display_line(line: str) -> bool:
-    return line.startswith(("Tool call:", "Tool result:"))
-
-
-def _normalize_stream_text(text: str) -> str:
-    return text.strip()
-
-
-def _display_line_kind(line: str) -> TuiEntryKind:
-    if line.startswith(("Tool call:", "Tool result:")):
-        return TuiEntryKind.TOOL
-    return TuiEntryKind.SYSTEM
-
-
-def _display_line_status(line: str) -> str | None:
-    if line.startswith("Tool call:"):
-        return "running"
-    if line.startswith("Tool result:"):
-        return "success"
-    return None
-
-
-def _entry_classes(entry: TuiTranscriptEntry) -> str:
-    base = "message"
-    if entry.kind == TuiEntryKind.SYSTEM:
-        return f"{base} system-message"
-    if entry.kind == TuiEntryKind.COMMAND:
-        return f"{base} command-message"
-    if entry.kind == TuiEntryKind.USER:
-        return f"{base} user-message"
-    if entry.kind == TuiEntryKind.ASSISTANT:
-        return f"{base} assistant-message"
-    if entry.kind == TuiEntryKind.REASONING:
-        return f"{base} reasoning-message"
-    if entry.kind == TuiEntryKind.PERMISSION:
-        if entry.status == "permission_requested":
-            return f"{base} permission-message permission-requested"
-        return f"{base} permission-message"
-    if entry.kind == TuiEntryKind.ERROR:
-        return f"{base} error-message"
-    if entry.kind == TuiEntryKind.TOOL:
-        if entry.status == "running":
-            return f"{base} tool-message tool-running"
-        if entry.status == "success":
-            return f"{base} tool-message tool-done"
-        if entry.status in {"error", "denied", "failed"}:
-            return f"{base} tool-message tool-failed"
-        if entry.status == "skipped":
-            return f"{base} tool-message tool-skipped"
-        return f"{base} tool-message"
-    return f"{base} system-message"
-
-
-def _entry_plain_text(entry: TuiTranscriptEntry) -> str:
-    if entry.kind in {TuiEntryKind.USER, TuiEntryKind.ASSISTANT, TuiEntryKind.TOOL, TuiEntryKind.REASONING}:
-        return f"{entry.label}\n  {entry.body}"
-    return entry.body
-
-
-def _entry_markdown_text(entry: TuiTranscriptEntry) -> str:
-    return f"{entry.label}\n\n{entry.body}"
-
-
-def _display_line_classes(line: str) -> str:
-    if line.startswith("Tool call:"):
-        return "message tool-message tool-running"
-    if line.startswith("Tool result:"):
-        return "message tool-message tool-done"
-    return "message system-message"
-
-
-def _tool_event_classes(event) -> str:
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "started":
-        return "message tool-message tool-running"
-    if kind == "finished":
-        result = getattr(event, "result", None)
-        if getattr(result, "ok", False):
-            return "message tool-message tool-done"
-        return "message tool-message tool-failed"
-    if kind == "permission_requested":
-        return "message permission-message"
-    if kind == "denied":
-        return "message tool-message tool-failed"
-    return "message tool-message"
-
-
-def _tool_event_status(event) -> str | None:
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "started":
-        return "running"
-    if kind == "finished":
-        result = getattr(event, "result", None)
-        return "success" if getattr(result, "ok", False) else "error"
-    if kind == "permission_requested":
-        return "permission_requested"
-    if kind == "denied":
-        return "denied"
-    if kind == "skipped":
-        return "skipped"
-    return None
-
-
-def _tool_event_entry_kind(event) -> TuiEntryKind:
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "permission_requested":
-        return TuiEntryKind.PERMISSION
-    return TuiEntryKind.TOOL
-
-
-def _tool_event_label(event) -> str:
-    tool_call = getattr(event, "tool_call", None)
-    name = str(getattr(tool_call, "name", "") or "tool")
-    status = _tool_event_status(event)
-    if status == "permission_requested":
-        return "permission requested"
-    return f"tool {name} {status}" if status else f"tool {name}"
-
-
-def _tool_activity_summary(event) -> str:
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "started":
-        tool_call = getattr(event, "tool_call", None)
-        return _compact_tool_arguments(getattr(tool_call, "arguments", None))
-    if kind == "finished":
-        result = getattr(event, "result", None)
-        return _compact_tool_content(str(getattr(result, "content", "") or ""))
-    return ""
-
-
-def _activity_line_text(name: str, status: str) -> str:
-    if status == "running":
-        return f"running · {name}"
-    if status == "success":
-        return _post_tool_reasoning_text(name)
-    if status == "permission_requested":
-        return "waiting · permission"
-    if status in {"error", "failed"}:
-        return f"error · {name}"
-    return f"{status} · {name}"
-
-
-def _post_tool_reasoning_text(name: str) -> str:
-    return f"reading {name} result"
-
-
-def _todo_panel_text(todos: list[TuiTodoItem]) -> str:
-    lines = ["Todo"]
-    for item in todos:
-        marker = "[ ]"
-        if item.status in {"completed", "done"}:
-            marker = "[✓]"
-        elif item.status == "in_progress":
-            marker = "[~]"
-        lines.append(f"{marker} {item.content}")
-    return "\n".join(lines)
-
-
-def _tool_status_text(event) -> str:
-    tool_call = getattr(event, "tool_call", None)
-    name = str(getattr(tool_call, "name", "") or "tool")
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "started":
-        arguments = _compact_tool_arguments(getattr(tool_call, "arguments", None))
-        suffix = f" {arguments}" if arguments else ""
-        return f"正在调用工具：{name}{suffix}"
-    if kind == "finished":
-        result = getattr(event, "result", None)
-        status = "完成" if getattr(result, "ok", False) else "失败"
-        content = _compact_tool_content(str(getattr(result, "content", "") or ""))
-        suffix = f"：{content}" if content else ""
-        return f"工具{status}：{name}{suffix}"
-    if kind == "permission_requested":
-        request = getattr(event, "permission_request", None)
-        target = str(getattr(request, "target", "") or "")
-        action = str(getattr(request, "action", "") or "")
-        suffix = f"  {action} {target}".rstrip() if action or target else f"  {name}"
-        return f"permission requested{suffix}"
-    if kind == "denied":
-        return f"工具已拒绝：{name}"
-    if kind == "skipped":
-        return f"工具已跳过：{name}"
-    return ""
-
-
-def _compact_tool_arguments(arguments) -> str:
-    if not arguments:
-        return ""
-    rendered = str(arguments)
-    return _compact_tool_content(rendered, max_chars=120)
-
-
-def _compact_tool_content(text: str, max_chars: int = 180) -> str:
-    normalized = " ".join(text.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    if max_chars <= 3:
-        return "." * max_chars
-    return normalized[: max_chars - 3] + "..."
