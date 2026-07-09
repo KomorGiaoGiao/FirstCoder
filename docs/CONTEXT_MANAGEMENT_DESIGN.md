@@ -125,6 +125,8 @@ The runtime does not trust the model to invent task identities. Instead:
 
 This makes task-aware compaction a program-owned mechanism rather than a free-form model behavior.
 
+The runtime also initializes an `active_task_hash` when a session starts doing work before the model calls `task_boundary`. This gives early user-message parts a task tag and lets later task switches compact old-task material consistently.
+
 ## Fallback And Circuit Breaking
 
 If L4 fails, the manager can apply fallback policy at the manager layer rather than hiding all retry behavior inside the L4 service.
@@ -156,3 +158,4 @@ These events are replayed later into both `SessionView` and `SessionRuntimeState
 - Programmatic compaction is the normal path; L4 is the expensive escalation path.
 - Checkpoints alter provider projection, not the existence of raw historical facts.
 - Task-aware compaction is runtime-owned and stabilized before it affects history projection.
+- `TASK_HASH_CHANGED` is a semantic trigger: it can force old-task compaction even when the window is still under the normal token threshold and it is not blocked by the auto-compaction circuit breaker.

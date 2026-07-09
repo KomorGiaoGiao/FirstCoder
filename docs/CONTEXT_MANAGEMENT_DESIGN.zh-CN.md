@@ -125,6 +125,8 @@ L4 由 `LlmCompactService` 执行。
 
 因此，任务感知压缩是 runtime-owned 的机制，而不是自由的模型行为。
 
+如果会话已经开始工作但模型还没有调用 `task_boundary`，运行时也会初始化 `active_task_hash`。这样早期用户消息 part 也能带上任务标签，后续任务切换时可以一致地压缩旧任务材料。
+
 ## Fallback 与 Circuit Breaking
 
 如果 L4 失败，manager 可以在 manager 层应用 fallback policy，而不是把所有 retry 细节都藏在 L4 service 里。
@@ -156,3 +158,4 @@ L4 由 `LlmCompactService` 执行。
 - 程序化压缩是常规路径，L4 是昂贵的升级路径。
 - checkpoint 改变的是 provider 投影，不是删除原始历史事实。
 - 任务感知压缩由 runtime 持有，并在真正影响历史投影前做稳定确认。
+- `TASK_HASH_CHANGED` 是语义触发：即使当前窗口还没超过普通 token 阈值，也可以强制压缩旧任务内容，并且不受 auto-compaction 熔断限制。

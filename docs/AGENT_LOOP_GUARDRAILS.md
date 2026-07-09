@@ -79,6 +79,8 @@ Several runtime behaviors interact with these limits:
 
 - prompt-too-long provider errors can trigger compaction and a retry path
 - readonly tools can execute in parallel in some cases
+- multi-step tool work without an existing todo plan can trigger a one-time planning reminder after multiple non-todo tool results
+- stale todo state can trigger a progress reminder when several tools run after the last todo update
 - successful verification can stop further tool looping and force a final model response
 - permission confirmation can pause the turn and later resume it without losing tool-call integrity
 
@@ -102,3 +104,4 @@ This gives the runtime both automatic stop conditions and user-driven interrupti
 - The real implementation is simpler than earlier conceptual docs: provider-call count matters more than abstract verification budgets.
 - Verification still matters, but today it is modeled as an early-stop condition, not a max-count quota.
 - Prompt-too-long recovery belongs in the same practical safety envelope because it prevents a turn from repeatedly failing on the same oversized prompt.
+- Todo reminders are guardrails for planning quality, not a separate scheduler: they nudge the model to create or update a complete visible plan while keeping execution in the normal loop.

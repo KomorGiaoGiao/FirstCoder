@@ -135,10 +135,10 @@ loop 还会保证每个 assistant tool call 最终都有一个匹配的 tool res
 
 有些工具不是简单的环境适配器：
 
-- `todo` 会更新 session 可见的 todo 模型，供 TUI 使用
+- `todo` 会更新 session 可见的 todo 模型，供 TUI 使用。它同时也是轻量规划协议：非平凡 coding 任务应先用 `action="set"` 写入完整 3-7 项计划，保持同一时间只有一个 `in_progress`，以 `completed` 作为完成状态，并在进度、阻塞或计划变化时重写完整列表。
 - `think` 记录结构化推理文本，但不改变外部环境
 - `task_boundary` 是按 session 注入的，并参与任务感知上下文压缩
-- `web_search` 是具体后端驱动的搜索工具，不是抽象搜索接口
+- `web_search` 是具体后端驱动的搜索工具，不是抽象搜索接口。默认优先使用 Parallel MCP；当存在 `EXA_API_KEY` 时可回退到 Exa。
 
 这些工具会直接影响运行时行为，而不只是“访问文件”或“执行命令”。
 

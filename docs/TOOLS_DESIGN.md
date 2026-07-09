@@ -130,10 +130,10 @@ The loop also guarantees that every assistant tool call is matched by a tool res
 
 Some tools are not simple environment adapters:
 
-- `todo` updates a session-visible todo model used by the TUI
+- `todo` updates a session-visible todo model used by the TUI. It is also a lightweight planning protocol: non-trivial coding tasks should create a complete 3-7 item plan with `action="set"`, keep exactly one `in_progress` item, use `completed` as the canonical finished status, and rewrite the full list whenever progress, blockers, or the plan changes.
 - `think` records structured reasoning text without changing the environment
 - `task_boundary` is injected per session and participates in task-aware context compaction
-- `web_search` is a concrete backend-specific search tool, not a generic abstract search interface
+- `web_search` is a concrete backend-specific search tool, not a generic abstract search interface. It prefers Parallel MCP by default and can fall back to Exa when `EXA_API_KEY` is available.
 
 These tools matter because they feed runtime behavior, not just local file or shell execution.
 
