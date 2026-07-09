@@ -845,7 +845,7 @@ class FirstCoderApp(App[None]):
         rendered = entry_plain_text(entry)
         output = self.query_one("#output")
         if hasattr(output, "mount"):
-            output.mount(_plain_static(rendered, classes=classes))
+            output.mount(_plain_static(_entry_renderable(entry, rendered), classes=classes))
             self._scroll_output_end_if_pinned(output)
             return entry
         if hasattr(output, "write_line"):
@@ -1203,3 +1203,20 @@ def _short_session_id(session_id: str) -> str:
 
 def _markup_width(markup: str) -> int:
     return len(Text.from_markup(markup).plain)
+
+
+def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:
+    if entry.kind != TuiEntryKind.COMMAND:
+        return rendered
+    if not any(line.startswith("> ") for line in rendered.splitlines()):
+        return rendered
+    text = Text()
+    for line_index, line in enumerate(rendered.splitlines()):
+        if line_index:
+            text.append("\n")
+        if line.startswith("> "):
+            text.append(">", style="#7bba55 bold")
+            text.append(line[1:])
+        else:
+            text.append(line)
+    return text

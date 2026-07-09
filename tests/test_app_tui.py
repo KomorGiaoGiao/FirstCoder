@@ -13,6 +13,7 @@ from firstcoder.app.runtime import CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
+from firstcoder.app.tui import _entry_renderable
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
 from firstcoder.app.picker import TuiPickerItem, TuiPickerState
@@ -132,6 +133,22 @@ def test_skill_picker_item_renderer_keeps_name_path_and_description_separate() -
 
     assert rendered.startswith("very-long\n    global · skills/very-long.md\n    ")
     assert len(rendered.splitlines()[2]) <= 124
+
+
+def test_command_picker_renderable_colors_selected_cursor() -> None:
+    entry = TuiTranscriptEntry(
+        id=1,
+        kind=TuiEntryKind.COMMAND,
+        label="command",
+        body="",
+    )
+
+    rendered = _entry_renderable(entry, "Select:\n> 1. first\n  2. second")
+
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "Select:\n> 1. first\n  2. second"
+    assert any(span.start == len("Select:\n") and span.end == len("Select:\n>") for span in rendered.spans)
+    assert any(span.style == "#7bba55 bold" for span in rendered.spans)
 
 
 class RecordingCommandHandler:
