@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from firstcoder.eval.patch import collect_git_diff, ensure_clean_repo
 
 
@@ -75,6 +77,18 @@ def test_collect_git_diff_returns_empty_for_non_git_directory(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "hello.txt").write_text("Hello, world!\n", encoding="utf-8")
+
+    assert collect_git_diff(workspace, include_untracked=True) == ""
+
+
+def test_collect_git_diff_returns_empty_when_git_is_unavailable(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", missing_git)
 
     assert collect_git_diff(workspace, include_untracked=True) == ""
 

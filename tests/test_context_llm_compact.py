@@ -73,7 +73,8 @@ def test_l4_writes_checkpoint_on_success(tmp_path: Path) -> None:
     rebuilt = store.rebuild_session_view("sess_test")
     checkpoint = rebuilt.checkpoints[0]
     assert result.checkpoint.id == checkpoint.id
-    assert checkpoint.summary == "旧历史摘要"
+    assert "## 当前目标\n旧历史摘要" in checkpoint.summary
+    assert checkpoint.summary.count("## ") == 7
     assert checkpoint.tail_start_message_id == "msg_3"
     assert checkpoint.covered_until_message_id == "msg_2"
     assert checkpoint.source_fingerprint == result.event.source_fingerprint

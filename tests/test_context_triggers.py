@@ -54,6 +54,14 @@ def test_compaction_config_can_be_derived_from_token_budget_service() -> None:
     assert config.blocking_target_tokens == 630
 
 
+def test_task_switch_target_defaults_lower_and_allows_explicit_override() -> None:
+    default_config = ContextCompactionConfig(target_tokens=24_000)
+    explicit_config = ContextCompactionConfig(target_tokens=24_000, task_switch_target_tokens=12_345)
+
+    assert default_config.target_for_trigger("task_hash_changed") == 16_000
+    assert explicit_config.target_for_trigger("task_hash_changed") == 12_345
+
+
 def test_large_single_tool_result_triggers_archive_guard() -> None:
     config = ContextCompactionConfig(
         auto_compact_threshold=10_000,

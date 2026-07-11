@@ -148,6 +148,7 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "# Role and operating context" in content
     assert "# Working loop" in content
     assert "# Project conventions" in content
+    assert "# Decision and verification discipline" in content
     assert "# Task boundary" in content
     assert "# Tool use" in content
     assert "# Task tracking" in content
@@ -157,16 +158,28 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "Persist until the user's task is handled end-to-end" in content
     assert "check for additional AGENTS.md files whose scope may apply" in content
     assert "never revert, overwrite, or reformat changes you did not make" in content
+    assert "observable success condition, material constraints, and smallest evidence" in content
+    assert "Implement the observable contract, not only a visible example" in content
+    assert "shared behavior, change the abstraction that owns the contract" in content
+    assert "several material entry points or lifecycle paths" in content
+    assert "existing extension boundaries as design constraints" in content
+    assert "do not add a type special-case or broader base abstraction" in content
+    assert "Do not expose long chain-of-thought" in content
     assert "At the start of every user turn, call task_boundary before answering or using any other tool" in content
+    assert "Runtime control messages such as \"Todo planning reminder\"" in content
     assert "Never invent, guess, or display task hashes" in content
+    assert "After task_boundary, answer a simple question directly" in content
     assert "issue multiple read-only tool calls in the same assistant response" in content
     assert "Do not batch tools whose inputs depend on previous tool results" in content
     assert "Prefer rg or rg --files" in content
     assert "Use todo for multi-step coding tasks" in content
     assert "infer them from repo files, docs, or neighboring tests" in content
-    assert "inspect the relevant diff or status" in content
-    assert "After successful verification, stop calling tools" in content
+    assert "complete this order: verify the requested behavior, then inspect the relevant diff or status" in content
+    assert "Stop calling tools and provide a final answer only after that verification and diff/status review are sufficient" in content
+    assert "A successful command is sufficient only when it meaningfully covers" in content
     assert "The user does not see full tool output" in content
+    discipline = content.split("# Decision and verification discipline", 1)[1].split("# Task boundary", 1)[0]
+    assert discipline.count("\n- ") == 6
 
 
 def test_system_prompt_requires_task_boundary_at_start_of_each_user_turn() -> None:
@@ -184,14 +197,21 @@ def test_system_prompt_includes_external_few_shots() -> None:
     assert "# Few-shot examples" in content
     assert "Example: new coding task" in content
     assert "task_boundary(decision=\"new\"" in content
-    assert "Example: verification passed" in content
-    assert "Do not call more tools after a successful verification command." in content
+    assert "Call `task_boundary` first when the tool is available." in content
+    assert "Example: runtime control reminder" in content
+    assert "Treat it as an internal continuation message for the active task" in content
+    assert "identify the intended public contract and constraints before editing" in content
+    assert "use an established extension route instead of a one-off special case in the base" in content
+    assert "Verify the changed public behavior and any other material entry path" in content
+    assert "Example: sufficient verification" in content
+    assert "Do not call more unrelated tools after sufficient verification." in content
+    assert "For code changes, inspect the relevant diff or status before the final answer." in content
 
 
-def test_system_prompt_version_is_v4() -> None:
+def test_system_prompt_version_is_v11() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v4" in entry.messages[0].content
+    assert "prompt_version=v11" in entry.messages[0].content
 
 
 def test_system_prompt_token_estimate_uses_shared_estimator() -> None:

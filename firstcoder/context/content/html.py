@@ -62,7 +62,7 @@ class HtmlRouteCompressor:
         return RouteCompactResult(
             content="\n".join(lines),
             content_type=RouteContentType.HTML,
-            compacted_by="l3_html",
+            compacted_by="l2_html",
             metadata={
                 "html_title": parser.title,
                 "html_heading_count": len(parser.headings),

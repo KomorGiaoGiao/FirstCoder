@@ -35,12 +35,15 @@ def _collect_final_worktree_diff(repo: Path) -> str:
 
 
 def _is_git_worktree(repo: Path) -> bool:
-    result = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo,
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        return False
     return result.returncode == 0 and result.stdout.strip() == "true"
 
 

@@ -65,7 +65,7 @@ class JsonRouteCompressor:
         return RouteCompactResult(
             content=_dump_json(payload),
             content_type=RouteContentType.JSON_ARRAY,
-            compacted_by="l3_json_array",
+            compacted_by="l2_json_array",
             metadata={
                 "json_original_items": len(items),
                 "json_kept_items": len(selected_items),
@@ -95,7 +95,7 @@ class JsonRouteCompressor:
         return RouteCompactResult(
             content=_dump_json(payload),
             content_type=RouteContentType.JSON_OBJECT,
-            compacted_by="l3_json_object",
+            compacted_by="l2_json_object",
             metadata={
                 "json_original_keys": len(value),
                 "json_kept_keys": len(compacted),

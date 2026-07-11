@@ -60,7 +60,7 @@ class SourceCodeRouteCompressor:
         return RouteCompactResult(
             content="\n".join(output),
             content_type=RouteContentType.SOURCE_CODE,
-            compacted_by="l3_source_code",
+            compacted_by="l2_source_code",
             metadata={
                 "code_language": _detect_language(lines),
                 "code_original_lines": len(lines),

@@ -25,6 +25,7 @@ from firstcoder.providers.types import (
     ProviderDiagnostics,
     ProviderCapabilities,
     ToolCall,
+    ToolChoiceFunction,
     ToolDefinition,
 )
 from firstcoder.tools.task_boundary import create_task_boundary_tool
@@ -1311,6 +1312,44 @@ def test_agent_loop_passes_tool_choice_none_for_final_only_completion(tmp_path) 
     assert provider.requests[0].tool_choice == "none"
 
 
+def test_agent_loop_forces_task_boundary_before_normal_tool_loop(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_forced_boundary", agents_md="")
+    provider = BoundaryProvider()
+
+    response = AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+
+    assert response.content == "ok"
+    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
+    assert provider.requests[1].tool_choice == "auto"
+
+
+def test_agent_loop_does_not_force_task_boundary_when_provider_cannot_select_tool(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_unforced_boundary", agents_md="")
+    provider = FakeProvider(
+        [ChatResponse(provider="fake", model="fake-model", content="ok")],
+        capabilities=ProviderCapabilities(supports_forced_tool_choice=False),
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+
+    assert provider.requests[0].tool_choice == "auto"
+
+
+def test_agent_loop_streaming_forces_task_boundary_before_first_request(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_forced_boundary", agents_md="")
+    provider = StreamingProvider(
+        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok")]
+    )
+
+    response = AgentLoop(session=session, provider=provider).run_user_turn_streaming_sync("读取 README")
+
+    assert response.content == "ok"
+    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
+
+
 def test_agent_loop_runs_todo_self_check_before_final_answer(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(
@@ -1899,7 +1938,7 @@ def test_agent_loop_forces_final_answer_after_successful_verification(tmp_path) 
 
     assert response.content == "Tests pass."
     assert len(provider.requests) == 2
-    assert provider.requests[0].tool_choice == "auto"
+    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
     assert provider.requests[1].tool_choice == "none"
     assert [message.role for message in store.rebuild_session_view("sess_verify_stop").messages] == [
         "user",

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
 from typing import Collection, Protocol
 
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.task_boundary import TaskBoundaryPolicy, TaskBoundaryService
 from firstcoder.permissions.manager import PermissionManager
 from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
+from firstcoder.tools.retrieve_archive import create_retrieve_archive_tool
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.types import Tool
@@ -41,6 +44,8 @@ def create_session_tool_registry(
     single_observation_basis_message_ids: Collection[str] = (),
     task_boundary_required_stable_count: int = 2,
     permission_manager: PermissionManager | None = None,
+    archive_root: str | Path | None = None,
+    current_turn: Callable[[], int] | None = None,
 ) -> ToolRegistryLike:
     """创建单个会话专用的工具注册表。
 
@@ -54,9 +59,20 @@ def create_session_tool_registry(
         known_message_ids=known_message_ids,
         policy=TaskBoundaryPolicy(single_observation_basis_message_ids=single_observation_basis_message_ids),
     )
-    registry = ToolRegistry(tools or [])
+    supplied_tools = tools or []
+    if any(tool.name == "retrieve_archive" for tool in supplied_tools):
+        raise ValueError("retrieve_archive is a reserved session-scoped tool name")
+    registry = ToolRegistry(supplied_tools)
     if "task_boundary" not in registry.names():
         registry.register(create_task_boundary_tool(state, service=boundary_service))
+    if archive_root is not None:
+        registry.register(
+            create_retrieve_archive_tool(
+                session_id=session_id,
+                archive_root=archive_root,
+                current_turn=current_turn or (lambda: 0),
+            )
+        )
     if permission_manager is not None:
         return PermissionAwareToolRegistry(registry, permission_manager)
     return registry

@@ -101,6 +101,6 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         api_key_env="ANTHROPIC_API_KEY",
         model_env="ANTHROPIC_MODEL",
         default_model="claude-sonnet-4-5",
-        capabilities=ProviderCapabilities(supports_streaming=False),
+        capabilities=ProviderCapabilities(supports_streaming=False, supports_forced_tool_choice=False),
     ),
 }

@@ -7,7 +7,15 @@ from typing import Any
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.tool_adapters import to_anthropic_tool
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, FinishReason, ProviderDiagnostics, ToolCall
+from firstcoder.providers.types import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    FinishReason,
+    ProviderCapabilities,
+    ProviderDiagnostics,
+    ToolCall,
+)
 
 
 def _read_field(value: Any, name: str, default: Any = None) -> Any:
@@ -48,6 +56,10 @@ class AnthropicProvider(ChatProvider):
     @property
     def model(self) -> str:
         return self._model
+
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(supports_streaming=False, supports_forced_tool_choice=False)
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         """调用 Anthropic Messages API，并转换为统一响应。"""

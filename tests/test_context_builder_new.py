@@ -1,5 +1,6 @@
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.tool_sequence import validate_tool_call_sequence
 from firstcoder.context.system_prompt import SystemPromptBuilder, SystemPromptInputs
 from firstcoder.providers.types import ChatMessage
 
@@ -180,3 +181,102 @@ def test_context_builder_accepts_stable_system_prefix_from_builder() -> None:
     assert "你是 FirstCoder。" in messages[0].content
     assert "basis_message_id=msg_user" in messages[1].content
     assert "继续实现上下文。" in messages[1].content
+
+
+def test_context_builder_projects_one_trim_marker_and_preserves_latest_user_and_tool_chain() -> None:
+    """L1's empty parts never make an orphan or blank provider message."""
+
+    trimmed_metadata = {"task_hash": "old", "compaction_state": "trimmed"}
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            AgentMessage(
+                id="msg_old_user",
+                session_id="sess_test",
+                role="user",
+                parts=[
+                    MessagePart(
+                        id="part_old_user",
+                        message_id="msg_old_user",
+                        kind="text",
+                        content="raw old user text",
+                        metadata=trimmed_metadata,
+                    )
+                ],
+            ),
+            AgentMessage(
+                id="msg_old_assistant",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_old_assistant",
+                        message_id="msg_old_assistant",
+                        kind="text",
+                        content="raw old assistant text",
+                        metadata=trimmed_metadata,
+                    )
+                ],
+            ),
+            AgentMessage(
+                id="msg_tool_call",
+                session_id="sess_test",
+                role="assistant",
+                parts=[
+                    MessagePart(
+                        id="part_tool_call_text",
+                        message_id="msg_tool_call",
+                        kind="text",
+                        content="Keep this tool rationale.",
+                        metadata=trimmed_metadata,
+                    ),
+                    MessagePart(
+                        id="part_tool_call",
+                        message_id="msg_tool_call",
+                        kind="tool_call",
+                        content="",
+                        metadata={"tool_call_id": "call_1", "tool_name": "shell", "arguments": {}},
+                    ),
+                ],
+            ),
+            AgentMessage(
+                id="msg_tool_result",
+                session_id="sess_test",
+                role="tool",
+                parts=[
+                    MessagePart(
+                        id="part_tool_result",
+                        message_id="msg_tool_result",
+                        kind="tool_result",
+                        content="tool result",
+                        metadata={"tool_call_id": "call_1", "tool_name": "shell"},
+                    )
+                ],
+            ),
+            AgentMessage(
+                id="msg_latest_user",
+                session_id="sess_test",
+                role="user",
+                parts=[
+                    MessagePart(
+                        id="part_latest_user",
+                        message_id="msg_latest_user",
+                        kind="text",
+                        content="latest user requirement",
+                        metadata=trimmed_metadata,
+                    )
+                ],
+            ),
+        ],
+    )
+
+    projected = ContextBuilder().build_provider_messages(view)
+
+    assert [message.role for message in projected] == ["user", "assistant", "tool", "user"]
+    assert projected[0].content == "[Earlier dialogue trimmed]"
+    assert projected[1].content == "Keep this tool rationale."
+    assert projected[1].tool_calls[0].id == "call_1"
+    assert projected[2].tool_call_id == "call_1"
+    assert "latest user requirement" in projected[3].content
+    assert sum(message.content == "[Earlier dialogue trimmed]" for message in projected) == 1
+    validate_tool_call_sequence(view.messages)

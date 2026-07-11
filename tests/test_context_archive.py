@@ -1,46 +1,52 @@
+import hashlib
 import json
 
-from firstcoder.context.archive import ToolResultArchive
+import pytest
+
+from firstcoder.context.archive import ArchiveIntegrityError, ToolResultArchive
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.versions import ARCHIVE_SCHEMA_VERSION
 
 
-def test_large_tool_result_is_written_to_archive(tmp_path) -> None:
-    part = MessagePart(
-        id="part_result",
-        message_id="msg_tool",
-        kind="tool_result",
-        content="line\n" * 200,
-        metadata={"tool_name": "shell", "tool_call_id": "call_1"},
-    )
-
-    archived = ToolResultArchive(tmp_path).archive_part(session_id="sess_test", part=part)
-
-    archive_id = archived.metadata["archive_id"]
-    archive_dir = tmp_path / "archives" / "sess_test"
-    assert (archive_dir / f"{archive_id}.txt").read_text(encoding="utf-8") == "line\n" * 200
-
-    metadata = json.loads((archive_dir / f"{archive_id}.json").read_text(encoding="utf-8"))
-    assert metadata["archive_id"] == archive_id
-    assert metadata["session_id"] == "sess_test"
-    assert metadata["part_id"] == "part_result"
-    assert metadata["tool_call_id"] == "call_1"
-    assert metadata["original_tokens"] > metadata["preview_tokens"]
-
-
-def test_archive_placeholder_keeps_archive_id_summary_and_preview(tmp_path) -> None:
-    content = "abcdef" * 200
-    part = MessagePart(
+def _part(content: str = "line\n" * 200) -> MessagePart:
+    return MessagePart(
         id="part_result",
         message_id="msg_tool",
         kind="tool_result",
         content=content,
-        metadata={"tool_name": "read_file", "tool_call_id": "call_1"},
+        metadata={"tool_name": "shell", "tool_call_id": "call_1"},
     )
 
+
+def test_large_tool_result_is_written_to_archive(tmp_path) -> None:
+    part = _part()
+    archived = ToolResultArchive(tmp_path).archive_part(session_id="sess_test", part=part)
+
+    archive_id = archived.metadata["archive_id"]
+    archive_dir = tmp_path / "archives" / "sess_test"
+    assert (archive_dir / f"{archive_id}.txt").read_text(encoding="utf-8") == part.content
+
+    metadata = json.loads((archive_dir / f"{archive_id}.json").read_text(encoding="utf-8"))
+    assert metadata["archive_id"] == archive_id
+    assert metadata["content_sha256"] == hashlib.sha256(part.content.encode()).hexdigest()
+    assert metadata["original_tokens"] > 0
+    assert metadata["schema_version"] == ARCHIVE_SCHEMA_VERSION
+    assert set(metadata) == {
+        "archive_id",
+        "content_sha256",
+        "original_chars",
+        "original_tokens",
+        "created_at",
+        "schema_version",
+    }
+
+
+def test_archive_placeholder_keeps_archive_id_summary_and_preview(tmp_path) -> None:
+    content = "abcdef" * 200
     archived = ToolResultArchive(tmp_path, preview_chars=24).archive_part(
         session_id="sess_test",
-        part=part,
+        part=_part(content),
         summary="read_file 输出过大，已归档。",
     )
 
@@ -56,16 +62,8 @@ def test_archive_placeholder_keeps_archive_id_summary_and_preview(tmp_path) -> N
 
 
 def test_archived_tool_result_is_not_archived_twice(tmp_path) -> None:
-    part = MessagePart(
-        id="part_result",
-        message_id="msg_tool",
-        kind="tool_result",
-        content="large result" * 200,
-        metadata={"tool_name": "shell", "tool_call_id": "call_1"},
-    )
     archive = ToolResultArchive(tmp_path)
-
-    first = archive.archive_part(session_id="sess_test", part=part)
+    first = archive.archive_part(session_id="sess_test", part=_part())
     second = archive.archive_part(session_id="sess_test", part=first)
 
     assert second == first
@@ -75,37 +73,29 @@ def test_archived_tool_result_is_not_archived_twice(tmp_path) -> None:
 
 
 def test_archive_part_accepts_caller_provided_archive_id(tmp_path) -> None:
-    part = MessagePart(
-        id="part_result",
-        message_id="msg_tool",
-        kind="tool_result",
-        content="large result" * 200,
-        metadata={"tool_name": "shell", "tool_call_id": "call_1"},
-    )
-
+    part = _part()
+    archive_id = "ar_" + hashlib.sha256(part.content.encode()).hexdigest()[:32]
     archived = ToolResultArchive(tmp_path).archive_part(
-        session_id="sess_test",
-        part=part,
-        archive_id="ar_existing",
+        session_id="sess_test", part=part, archive_id=archive_id
     )
 
     archive_dir = tmp_path / "archives" / "sess_test"
-    assert archived.metadata["archive_id"] == "ar_existing"
-    assert (archive_dir / "ar_existing.txt").exists()
-    assert (archive_dir / "ar_existing.json").exists()
+    assert archived.metadata["archive_id"] == archive_id
+    assert (archive_dir / f"{archive_id}.txt").exists()
+    assert (archive_dir / f"{archive_id}.json").exists()
+
+
+def test_archive_part_rejects_non_content_addressed_caller_id(tmp_path) -> None:
+    with pytest.raises(ValueError, match="content-addressed"):
+        ToolResultArchive(tmp_path).archive_part(
+            session_id="sess_test", part=_part(), archive_id="ar_existing"
+        )
 
 
 def test_resume_projection_keeps_archive_placeholder(tmp_path) -> None:
     original = "very large output\n" * 200
     archived = ToolResultArchive(tmp_path, preview_chars=20).archive_part(
-        session_id="sess_test",
-        part=MessagePart(
-            id="part_result",
-            message_id="msg_tool",
-            kind="tool_result",
-            content=original,
-            metadata={"tool_name": "shell", "tool_call_id": "call_1"},
-        ),
+        session_id="sess_test", part=_part(original)
     )
     view = SessionView(
         session_id="sess_test",
@@ -124,20 +114,171 @@ def test_resume_projection_keeps_archive_placeholder(tmp_path) -> None:
                     )
                 ],
             ),
-            AgentMessage(
-                id="msg_tool",
-                session_id="sess_test",
-                role="tool",
-                parts=[archived],
-            )
+            AgentMessage(id="msg_tool", session_id="sess_test", role="tool", parts=[archived]),
         ],
     )
 
     messages = ContextBuilder().build_provider_messages(view)
-
     assert len(messages) == 2
     assert messages[0].role == "assistant"
     assert messages[1].role == "tool"
     assert messages[1].tool_call_id == "call_1"
     assert "archive_id=" in messages[1].content
     assert original not in messages[1].content
+
+
+def test_store_original_content_address_deduplicates(tmp_path) -> None:
+    archive = ToolResultArchive(tmp_path)
+    first = archive.store_original("sess_test", _part("same output"))
+    second = archive.store_original("sess_test", _part("same output"))
+
+    assert first == second
+    assert first.archive_id == "ar_" + hashlib.sha256(b"same output").hexdigest()[:32]
+    assert len(list((tmp_path / "archives" / "sess_test").glob("*.txt"))) == 1
+
+
+def test_store_original_uses_explicit_empty_content(tmp_path) -> None:
+    part = _part("nonempty")
+    record = ToolResultArchive(tmp_path).store_original("sess_test", part, original_content="")
+
+    assert record.original_chars == 0
+    assert (tmp_path / "archives" / "sess_test" / f"{record.archive_id}.txt").read_text() == ""
+
+
+@pytest.mark.parametrize("session_id,archive_id", [("../escape", "ar_safe"), ("sess", "../escape")])
+def test_archive_path_traversal_is_rejected(tmp_path, session_id, archive_id) -> None:
+    with pytest.raises(ValueError):
+        ToolResultArchive(tmp_path).archive_part(
+            session_id=session_id, part=_part(), archive_id=archive_id
+        )
+
+
+def test_preexisting_content_addressed_text_with_other_content_is_integrity_error(tmp_path) -> None:
+    content = "expected"
+    archive_id = "ar_" + hashlib.sha256(content.encode()).hexdigest()[:32]
+    path = tmp_path / "archives" / "sess_test" / f"{archive_id}.txt"
+    path.parent.mkdir(parents=True)
+    path.write_text("wrong", encoding="utf-8")
+
+    with pytest.raises(ArchiveIntegrityError):
+        ToolResultArchive(tmp_path).store_original("sess_test", _part(content))
+
+
+def test_each_session_has_its_own_content_addressed_files(tmp_path) -> None:
+    archive = ToolResultArchive(tmp_path)
+    record_one = archive.store_original("first", _part("same output"))
+    record_two = archive.store_original("second", _part("same output"))
+
+    assert record_one.archive_id == record_two.archive_id
+    assert (tmp_path / "archives" / "first" / f"{record_one.archive_id}.txt").exists()
+    assert (tmp_path / "archives" / "second" / f"{record_two.archive_id}.txt").exists()
+
+
+def test_legacy_random_id_archive_can_be_read(tmp_path) -> None:
+    path = tmp_path / "archives" / "sess_test"
+    path.mkdir(parents=True)
+    (path / "ar_random.txt").write_text("old output", encoding="utf-8")
+    (path / "ar_random.json").write_text(
+        json.dumps(
+            {
+                "archive_id": "ar_random",
+                "content_fingerprint": "legacy-fingerprint",
+                "original_tokens": 12,
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    record, original = ToolResultArchive(tmp_path).read("sess_test", "ar_random")
+    assert record.schema_version == "v1"
+    assert record.content_sha256 == hashlib.sha256(b"old output").hexdigest()
+    assert record.original_chars == len("old output")
+    assert original == "old output"
+
+
+def test_v2_placeholder_has_no_raw_preview_and_is_bounded(tmp_path) -> None:
+    raw = "SECRET_RESULT_SHOULD_NOT_APPEAR " * 100
+    archive = ToolResultArchive(tmp_path)
+    record = archive.store_original("sess_test", _part(raw))
+    placeholder = archive.make_placeholder(
+        _part(raw), record, summary="x" * 600, key_errors=("first", "second", "third", "fourth")
+    )
+
+    assert len(placeholder.content) <= 480
+    assert raw not in placeholder.content
+    assert "SECRET_RESULT_SHOULD_NOT_APPEAR" not in placeholder.content
+    assert "preview" not in placeholder.content
+    assert "preview" not in placeholder.metadata
+    assert placeholder.metadata["compacted_by"] == "l3_archive"
+    assert placeholder.content.endswith("Use retrieve_archive(archive_id, ...) to inspect the original.")
+
+
+def test_v2_placeholder_retains_required_details_inside_limit(tmp_path) -> None:
+    part = _part("source that must not be repeated")
+    part.metadata.update({"ok": False, "tool_name": "run_command"})
+    archive = ToolResultArchive(tmp_path)
+    record = archive.store_original("sess_test", part)
+
+    placeholder = archive.make_placeholder(
+        part,
+        record,
+        lifecycle="superseded",
+        summary="summary",
+        key_errors=("first", "second", "third", "ignored"),
+    )
+
+    assert len(placeholder.content) <= 480
+    assert f"archive_id={record.archive_id}" in placeholder.content
+    assert "tool=run_command" in placeholder.content
+    assert "status=failed" in placeholder.content
+    assert "lifecycle=superseded" in placeholder.content
+    assert f"original_tokens={record.original_tokens}" in placeholder.content
+    assert "summary=summary" in placeholder.content
+    assert placeholder.content.count("key_errors=") == 3
+    assert "key_errors=first" in placeholder.content
+    assert placeholder.content.endswith("Use retrieve_archive(archive_id, ...) to inspect the original.")
+
+
+@pytest.mark.parametrize("metadata", [{"status": "error"}, {"status": "failed"}, {"is_error": True}])
+def test_v2_placeholder_normalizes_failure_signals(tmp_path, metadata) -> None:
+    part = _part("result")
+    part.metadata.update(metadata)
+    archive = ToolResultArchive(tmp_path)
+    record = archive.store_original("sess_test", part)
+
+    placeholder = archive.make_placeholder(part, record)
+
+    assert "status=failed" in placeholder.content
+
+
+def test_v2_placeholder_normalizes_unknown_status_to_success(tmp_path) -> None:
+    part = _part("result")
+    part.metadata["status"] = "completed"
+    archive = ToolResultArchive(tmp_path)
+    record = archive.store_original("sess_test", part)
+
+    assert "status=success" in archive.make_placeholder(part, record).content
+
+
+def test_v2_read_rejects_non_content_addressed_id(tmp_path) -> None:
+    path = tmp_path / "archives" / "sess_test"
+    path.mkdir(parents=True)
+    raw = "content"
+    (path / "ar_notcontentaddressed.txt").write_text(raw, encoding="utf-8")
+    (path / "ar_notcontentaddressed.json").write_text(
+        json.dumps(
+            {
+                "archive_id": "ar_notcontentaddressed",
+                "content_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                "original_chars": len(raw),
+                "original_tokens": 1,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "schema_version": ARCHIVE_SCHEMA_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ArchiveIntegrityError, match="archive id"):
+        ToolResultArchive(tmp_path).read("sess_test", "ar_notcontentaddressed")

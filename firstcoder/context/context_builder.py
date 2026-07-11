@@ -42,8 +42,18 @@ class ContextBuilder:
         # provider 对 tool calling 序列很严格：assistant tool_call 后必须紧跟对应 tool result。
         # 压缩/checkpoint 不能把这个配对切断。
         validate_tool_call_sequence(tail_messages)
+        if _has_trimmed_text(tail_messages):
+            # One aggregate marker keeps the provider informed without adding a
+            # synthetic message for each forgotten part or splitting a tool
+            # transaction.  It belongs after the checkpoint and before the
+            # real tail, therefore it cannot become an orphan tool result.
+            messages.append(ChatMessage(role="user", content="[Earlier dialogue trimmed]"))
+        latest_user_message_id = _latest_user_message_id(tail_messages)
         for message in tail_messages:
-            projected = self._project_message(message)
+            projected = self._project_message(
+                message,
+                preserve_trimmed_text=message.id == latest_user_message_id,
+            )
             messages.extend(projected)
         return messages
 
@@ -67,7 +77,12 @@ class ContextBuilder:
             f"checkpoint tail_start_message_id not found: {checkpoint.tail_start_message_id}",
         )
 
-    def _project_message(self, message: AgentMessage) -> list[ChatMessage]:
+    def _project_message(
+        self,
+        message: AgentMessage,
+        *,
+        preserve_trimmed_text: bool = False,
+    ) -> list[ChatMessage]:
         if message.role == "system_meta":
             # system_meta 是内部状态，不应该作为普通对话消息发给 provider。
             return []
@@ -82,10 +97,18 @@ class ContextBuilder:
             ]
 
         if message.role == "assistant":
-            return [_project_assistant_message(message)]
+            projected = _project_assistant_message(
+                message,
+                preserve_trimmed_text=preserve_trimmed_text
+                or any(part.kind == "tool_call" for part in message.parts),
+            )
+            # A fully trimmed ordinary assistant turn must not become a blank
+            # provider message.  Assistant messages with tool calls are still
+            # emitted even when their visible text happens to be empty.
+            return [projected] if projected.content or projected.tool_calls else []
 
         if message.role == "user":
-            content = _join_visible_text(message.parts)
+            content = _join_visible_text(message.parts, preserve_trimmed_text=preserve_trimmed_text)
             # basis_message_id 是给 task_boundary 工具用的锚点。模型只能引用真实存在的
             # message id，程序侧再据此生成稳定 task hash。
             return [ChatMessage(role="user", content=_with_basis_message_id(message.id, content))] if content else []
@@ -93,10 +116,20 @@ class ContextBuilder:
         return []
 
 
-def _project_assistant_message(message: AgentMessage) -> ChatMessage:
+def _project_assistant_message(
+    message: AgentMessage,
+    *,
+    preserve_trimmed_text: bool = False,
+) -> ChatMessage:
     """把内部 assistant parts 合并成 provider assistant message。"""
 
-    text_parts = [part.content for part in message.parts if part.kind == "text" and part.content]
+    text_parts = [
+        part.content
+        for part in message.parts
+        if part.kind == "text"
+        and (preserve_trimmed_text or _is_visible_text_part(part))
+        and part.content
+    ]
     tool_calls = [
         ToolCall(
             id=str(part.metadata["tool_call_id"]),
@@ -131,8 +164,33 @@ def _validate_tail_boundary(messages: list[AgentMessage]) -> None:
         )
 
 
-def _join_visible_text(parts: list[MessagePart]) -> str:
-    return "\n".join(part.content for part in parts if part.kind in {"text", "archive_placeholder"} and part.content)
+def _join_visible_text(parts: list[MessagePart], *, preserve_trimmed_text: bool = False) -> str:
+    return "\n".join(
+        part.content
+        for part in parts
+        if part.kind in {"text", "archive_placeholder"}
+        and (preserve_trimmed_text or _is_visible_text_part(part))
+        and part.content
+    )
+
+
+def _has_trimmed_text(messages: list[AgentMessage]) -> bool:
+    return any(
+        part.kind == "text" and part.metadata.get("compaction_state") == "trimmed"
+        for message in messages
+        for part in message.parts
+    )
+
+
+def _is_visible_text_part(part: MessagePart) -> bool:
+    return part.metadata.get("compaction_state") != "trimmed"
+
+
+def _latest_user_message_id(messages: list[AgentMessage]) -> str | None:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.id
+    return None
 
 
 def _with_basis_message_id(message_id: str, content: str) -> str:

@@ -5,11 +5,13 @@ from __future__ import annotations
 import re
 
 from firstcoder.context.llm_compact import (
+    CODING_HANDOFF_HEADINGS,
     CompactTimeoutError,
     LlmCompactSummarizer,
     LlmCompactSummary,
     NoSummaryError,
     PromptTooLongError,
+    normalize_coding_handoff,
 )
 from firstcoder.context.models import AgentMessage
 from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
@@ -40,8 +42,9 @@ class ProviderLlmCompactSummarizer(LlmCompactSummarizer):
                         ChatMessage(
                             role="system",
                             content=(
-                                "你是 FirstCoder 的上下文压缩器。请只输出一段中文摘要，"
-                                "保留用户目标、已完成决策、关键文件、未解决问题和下一步。"
+                                "你是 FirstCoder 的上下文压缩器。输出简洁的 coding handoff；"
+                                "必须且只能使用指定的七个 Markdown 标题，每个恰好一次；"
+                                "只在标题下写有证据支持的事实。不要选择 checkpoint 边界。"
                             ),
                         ),
                         ChatMessage(role="user", content=prompt),
@@ -61,7 +64,7 @@ class ProviderLlmCompactSummarizer(LlmCompactSummarizer):
         if not summary:
             raise NoSummaryError("empty summary")
         return LlmCompactSummary(
-            summary=summary,
+            summary=normalize_coding_handoff(summary),
             tail_start_message_id=tail.tail_start_message_id,
             covered_until_message_id=tail.covered_until_message_id,
         )
@@ -101,7 +104,16 @@ def _boundary_candidates(messages: list[AgentMessage]) -> list[AgentMessage]:
 
 def _build_summary_prompt(messages: list[AgentMessage], *, summary_mode: str) -> str:
     mode_hint = "更强压缩，优先保留可恢复事实。" if summary_mode == "stronger" else "常规压缩。"
-    sections = [f"摘要模式：{mode_hint}", "", "需要压缩的会话历史："]
+    headings = "\n".join(CODING_HANDOFF_HEADINGS)
+    sections = [
+        f"摘要模式：{mode_hint}",
+        "",
+        "只能按以下 coding handoff 格式输出。每个标题必须恰好出现一次；"
+        "若历史中没有某项的证据，写“无”：",
+        headings,
+        "",
+        "需要压缩的会话历史：",
+    ]
     for message in messages:
         content = _message_text(message)
         if not content:

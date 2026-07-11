@@ -20,27 +20,31 @@ from firstcoder.context.versions import COMPACTION_STRATEGY_VERSION
 
 
 def compact_old_task_part(part: MessagePart) -> MessagePart:
-    metadata = _compacted_metadata(part, state="micro_compacted", compacted_by="l1_old_task")
-    content = "\n".join(
-        [
-            "[Old task content compacted]",
-            f"part_id={part.id}",
-            f"original_tokens={metadata['original_tokens']}",
-            f"task_hash={part.metadata.get('task_hash')}",
-        ]
+    """Return the L1 representation for an old-task dialogue part.
+
+    L1 is deliberate forgetting, rather than a tiny natural-language summary.
+    The original event remains in JSONL, but the effective view has no visible
+    text for this part.  ``ContextBuilder`` emits one aggregate marker for a
+    tail containing any such part.
+    """
+
+    metadata = _compacted_metadata(
+        part,
+        state="trimmed",
+        compacted_by="l1_old_task_dialogue",
     )
     return MessagePart(
         id=part.id,
         message_id=part.message_id,
         kind=part.kind,
-        content=content,
+        content="",
         metadata=metadata,
     )
 
 
 def compact_cold_text_part(part: MessagePart, *, preview_chars: int = 160) -> MessagePart:
     preview = part.content[:preview_chars]
-    metadata = _compacted_metadata(part, state="route_compacted", compacted_by="l3_current_task_cold")
+    metadata = _compacted_metadata(part, state="route_compacted", compacted_by="l2_current_task_cold")
     metadata["preview"] = preview
     metadata["preview_tokens"] = estimate_text_tokens(preview)
     content = "\n".join(
@@ -62,10 +66,11 @@ def compact_cold_text_part(part: MessagePart, *, preview_chars: int = 160) -> Me
 
 
 class PlainTextRouteCompressor:
-    """L3 路由框架的兼容压缩器。
+    """派生工具输出的确定性 fallback compressor。
 
-    第 14 步会逐个补齐 search、diff、build、json、code、html 等专用压缩器。
-    plain_text 先保留旧版 L3 的 preview 语义，确保 pipeline 接入 router 后行为不漂移。
+    专用 search、diff、build、json、code、html compressor 不适用时，保留首尾和
+    明确的 token 元数据。它只由 L2 的 tool-result 路由调用，不能用于普通对话或
+    fresh source read。
     """
 
     def compact(self, part: MessagePart, context: RouteContext) -> RouteCompactResult | None:
@@ -75,7 +80,7 @@ class PlainTextRouteCompressor:
         tail_preview_tokens = estimate_text_tokens(tail_preview) if tail_preview else 0
         content = "\n".join(
             [
-                "[Current task cold content compacted]",
+                "[Derived tool result compacted]",
                 f"part_id={part.id}",
                 f"original_tokens={estimate_text_tokens(part.content)}",
                 f"preview_tokens={preview_tokens}",
@@ -87,7 +92,7 @@ class PlainTextRouteCompressor:
         return RouteCompactResult(
             content=content,
             content_type=RouteContentType.PLAIN_TEXT,
-            compacted_by="l3_current_task_cold",
+            compacted_by="l2_current_task_cold",
             metadata={
                 "preview": preview,
                 "preview_tokens": preview_tokens,

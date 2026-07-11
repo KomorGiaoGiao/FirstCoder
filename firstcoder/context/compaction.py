@@ -6,15 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from firstcoder.context.archive import ToolResultArchive
+from firstcoder.context.archive import ArchiveIntegrityError, ToolResultArchive
 from firstcoder.context.checkpoint import CheckpointIndex
 from firstcoder.context.content.build import BuildOutputRouteCompressor
 from firstcoder.context.content.code import SourceCodeRouteCompressor
 from firstcoder.context.content.compressors import PlainTextRouteCompressor, compact_old_task_part
 from firstcoder.context.content.detector import (
     is_already_compacted,
-    is_current_task_cold_part,
-    is_large_tool_result,
     is_old_task_part,
 )
 from firstcoder.context.content.diff import GitDiffRouteCompressor
@@ -25,6 +23,11 @@ from firstcoder.context.content.search import SearchResultsRouteCompressor
 from firstcoder.context.identity import stable_json_hash
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView, utc_now_iso
 from firstcoder.context.token_budget import estimate_text_tokens
+from firstcoder.context.tool_lifecycle import (
+    ToolResultLifecycle,
+    ToolResultLifecycleRecord,
+    index_tool_result_lifecycles,
+)
 from firstcoder.context.versions import COMPACTION_STRATEGY_VERSION, CONTEXT_EVENT_SCHEMA_VERSION
 
 
@@ -38,6 +41,8 @@ class CompactionRequest:
     target_tokens: int
     current_turn: int
     enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")
+    required_levels: tuple[CompactionLevel, ...] = ()
+    l2_result_target_tokens: int | None = None
     force_route_current_text: bool = False
     force_old_task_compaction: bool = False
 
@@ -64,6 +69,9 @@ class CompactionEvent:
     created_at: str = field(default_factory=utc_now_iso)
     noop: bool = False
     deduped: bool = False
+    lifecycle_counts: dict[str, int] = field(default_factory=dict)
+    level_metrics: dict[str, dict[str, int]] = field(default_factory=dict)
+    archive_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -84,7 +92,39 @@ class CompactionPipeline:
         view = _clone_view(request.view)
         input_fingerprint = _view_fingerprint(request.view)
         before_tokens = _estimate_view_tokens(view)
-        if before_tokens <= request.target_tokens and not request.force_old_task_compaction:
+        lifecycle_records = index_tool_result_lifecycles(
+            _effective_tail_messages(view),
+            current_turn=request.current_turn,
+        )
+        lifecycle_counts = _lifecycle_counts(lifecycle_records)
+        required_levels = set(request.required_levels).intersection(request.enabled_levels)
+        per_result_target = _per_result_target(
+            request.l2_result_target_tokens,
+            fallback=self.large_tool_result_tokens,
+        )
+
+        has_l3_mandatory_candidates = _has_l3_mandatory_candidates(
+            _effective_tail_messages(view),
+            lifecycle_records=lifecycle_records,
+            current_turn=request.current_turn,
+        )
+        has_l3_per_result_pressure = _has_l3_per_result_pressure(
+            _effective_tail_messages(view),
+            lifecycle_records=lifecycle_records,
+            current_turn=request.current_turn,
+            per_result_target=per_result_target,
+        )
+
+        if (
+            before_tokens <= request.target_tokens
+            and not request.force_old_task_compaction
+            and not required_levels
+            and not ("l3" in request.enabled_levels and has_l3_mandatory_candidates)
+            and not (
+                {"l2", "l3"}.intersection(request.enabled_levels)
+                and has_l3_per_result_pressure
+            )
+        ):
             deduped = input_fingerprint in self._seen_noop_fingerprints
             self._seen_noop_fingerprints.add(input_fingerprint)
             return CompactionResult(
@@ -100,18 +140,53 @@ class CompactionPipeline:
                     target_tokens=request.target_tokens,
                     noop=True,
                     deduped=deduped,
+                    lifecycle_counts=lifecycle_counts,
                 ),
             )
 
         levels_attempted: list[str] = []
         replacements: list[dict[str, object]] = []
+        level_metrics: dict[str, dict[str, int]] = {}
         stopped_at = "not_reached"
 
-        for level in request.enabled_levels:
+        for level_index, level in enumerate(request.enabled_levels):
             levels_attempted.append(level)
-            replacements.extend(self._apply_level(view, request=request, level=level))
+            before_level_tokens = _estimate_view_tokens(view)
+            level_replacements = self._apply_level(
+                view,
+                request=request,
+                level=level,
+                lifecycle_records=lifecycle_records,
+            )
+            replacements.extend(level_replacements)
             after_level_tokens = _estimate_view_tokens(view)
-            if after_level_tokens <= request.target_tokens:
+            level_metrics[level] = {
+                "before_tokens": before_level_tokens,
+                "after_tokens": after_level_tokens,
+                "saved_tokens": max(0, before_level_tokens - after_level_tokens),
+                "changed_parts": len(level_replacements),
+            }
+            remaining_levels = request.enabled_levels[level_index + 1 :]
+            if (
+                after_level_tokens <= request.target_tokens
+                and not required_levels.intersection(remaining_levels)
+                and not (
+                    "l3" in remaining_levels
+                    and (
+                        _has_l3_mandatory_candidates(
+                            _effective_tail_messages(view),
+                            lifecycle_records=lifecycle_records,
+                            current_turn=request.current_turn,
+                        )
+                        or _has_l3_per_result_pressure(
+                            _effective_tail_messages(view),
+                            lifecycle_records=lifecycle_records,
+                            current_turn=request.current_turn,
+                            per_result_target=per_result_target,
+                        )
+                    )
+                )
+            ):
                 stopped_at = level
                 break
 
@@ -138,6 +213,9 @@ class CompactionPipeline:
                 replacements=replacements,
                 noop=noop,
                 deduped=deduped,
+                lifecycle_counts=lifecycle_counts,
+                level_metrics=level_metrics,
+                archive_ids=_archive_ids_from_replacements(replacements),
             ),
         )
 
@@ -147,39 +225,115 @@ class CompactionPipeline:
         *,
         request: CompactionRequest,
         level: CompactionLevel,
+        lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
         if level == "l1":
-            return self._apply_l1(view, active_task_hash=request.active_task_hash)
+            return self._apply_l1(
+                view,
+                active_task_hash=request.active_task_hash,
+                current_turn=request.current_turn,
+                force_old_task_compaction=request.force_old_task_compaction,
+            )
         if level == "l2":
-            return self._apply_l2(view)
+            return self._apply_l2(
+                view,
+                request=request,
+                lifecycle_records=lifecycle_records,
+            )
         if level == "l3":
             return self._apply_l3(
                 view,
                 request=request,
                 active_task_hash=request.active_task_hash,
                 current_turn=request.current_turn,
+                lifecycle_records=lifecycle_records,
             )
         return []
 
-    def _apply_l1(self, view: SessionView, *, active_task_hash: str | None) -> list[dict[str, object]]:
+    def _apply_l1(
+        self,
+        view: SessionView,
+        *,
+        active_task_hash: str | None,
+        current_turn: int,
+        force_old_task_compaction: bool,
+    ) -> list[dict[str, object]]:
+        """Trim only old-task ordinary dialogue that is safe to forget.
+
+        L1 eligibility is partly a property of the enclosing message.  In
+        particular, text in an assistant tool-call message must not be trimmed
+        independently: it is part of the provider-visible tool transaction.
+        """
+
         changed: list[dict[str, object]] = []
-        for message in _effective_tail_messages(view):
+        tail_messages = _effective_tail_messages(view)
+        latest_user_message_id = _latest_user_message_id(tail_messages)
+        for message in tail_messages:
+            if message.role not in {"user", "assistant"}:
+                continue
+            if message.id == latest_user_message_id:
+                continue
+            if message.role == "assistant" and any(part.kind == "tool_call" for part in message.parts):
+                continue
             for index, part in enumerate(message.parts):
-                if is_old_task_part(part, active_task_hash=active_task_hash):
-                    compacted = compact_old_task_part(part)
-                    if _replace_if_smaller(message.parts, index, compacted):
-                        changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
+                if not is_old_task_part(part, active_task_hash=active_task_hash):
+                    continue
+                if not force_old_task_compaction and not _is_cold_old_task_part(
+                    part,
+                    current_turn=current_turn,
+                    cold_turn_distance=self.cold_turn_distance,
+                ):
+                    continue
+                compacted = compact_old_task_part(part)
+                if _replace_l1_trimmed(message.parts, index, compacted):
+                    changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
         return changed
 
-    def _apply_l2(self, view: SessionView) -> list[dict[str, object]]:
+    def _apply_l2(
+        self,
+        view: SessionView,
+        *,
+        request: CompactionRequest,
+        lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
+    ) -> list[dict[str, object]]:
         changed: list[dict[str, object]] = []
         archive = ToolResultArchive(self.root)
+        router = _make_route_router(preview_chars=self.cold_preview_chars)
         for message in _effective_tail_messages(view):
             for index, part in enumerate(message.parts):
-                if is_large_tool_result(part, min_tokens=self.large_tool_result_tokens):
-                    archived = archive.archive_part(session_id=view.session_id, part=part)
-                    message.parts[index] = archived
-                    changed.append(_replacement_event(message_id=message.id, source=part, replacement=archived))
+                lifecycle = lifecycle_records.get((message.id, part.id))
+                if not _should_route_compact_l2_part(
+                    part,
+                    lifecycle=lifecycle,
+                    current_turn=request.current_turn,
+                ):
+                    continue
+
+                compacted = router.compact_part(part)
+                if compacted is None:
+                    continue
+                try:
+                    # This is backing, not L3 eviction: archive the exact raw
+                    # bytes before the route result becomes visible in the view.
+                    record = archive.store_original(view.session_id, part)
+                except (ArchiveIntegrityError, OSError, ValueError):
+                    continue
+
+                assert lifecycle is not None
+                compacted.metadata.update(
+                    {
+                        "archive_id": record.archive_id,
+                        "original_content_sha256": record.content_sha256,
+                        "original_tokens": record.original_tokens,
+                        "replacement_tokens": estimate_text_tokens(compacted.content),
+                        "lifecycle": lifecycle.lifecycle.value,
+                        "lifecycle_reason": lifecycle.reason,
+                        "compaction_state": "l2_route_compacted",
+                        "compacted_by": _l2_compacted_by(compacted.metadata.get("compacted_by")),
+                    }
+                )
+                if _replace_if_smaller(message.parts, index, compacted):
+                    changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
         return changed
 
     def _apply_l3(
@@ -189,36 +343,66 @@ class CompactionPipeline:
         request: CompactionRequest,
         active_task_hash: str | None,
         current_turn: int,
+        lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     ) -> list[dict[str, object]]:
         changed: list[dict[str, object]] = []
-        json_compressor = JsonRouteCompressor()
-        router = RouteCompactRouter(
-            compressors={
-                RouteContentType.BUILD_OUTPUT: BuildOutputRouteCompressor(),
-                RouteContentType.GIT_DIFF: GitDiffRouteCompressor(),
-                RouteContentType.HTML: HtmlRouteCompressor(),
-                RouteContentType.JSON_ARRAY: json_compressor,
-                RouteContentType.JSON_OBJECT: json_compressor,
-                RouteContentType.SEARCH_RESULTS: SearchResultsRouteCompressor(),
-                RouteContentType.SOURCE_CODE: SourceCodeRouteCompressor(),
-                RouteContentType.PLAIN_TEXT: PlainTextRouteCompressor(),
-            },
-            preview_chars=self.cold_preview_chars,
+        archive = ToolResultArchive(self.root)
+        del active_task_hash
+        candidates = _l3_candidates(
+            _effective_tail_messages(view),
+            lifecycle_records=lifecycle_records,
+            current_turn=current_turn,
+            target_tokens=request.target_tokens,
+            per_result_target=_per_result_target(
+                request.l2_result_target_tokens,
+                fallback=self.large_tool_result_tokens,
+            ),
         )
-        for message in _effective_tail_messages(view):
-            for index, part in enumerate(message.parts):
-                if _should_route_compact_part(
+        for candidate in candidates:
+            if (
+                not candidate.mandatory
+                and not candidate.over_per_result_target
+                and _estimate_view_tokens(view) <= request.target_tokens
+            ):
+                break
+
+            part = candidate.message.parts[candidate.part_index]
+            # A preceding candidate may have transformed this part in future
+            # refactors.  Re-check before touching durable backing.
+            if not _can_archive_l3_part(
+                part,
+                lifecycle=candidate.lifecycle,
+                current_turn=current_turn,
+            ):
+                continue
+            try:
+                record = _l3_backing_record(archive, view.session_id, part)
+                compacted = archive.make_placeholder(
                     part,
-                    request=request,
-                    active_task_hash=active_task_hash,
-                    current_turn=current_turn,
-                    cold_turn_distance=self.cold_turn_distance,
-                ):
-                    compacted = router.compact_part(part)
-                    if compacted is None:
-                        continue
-                    if _replace_if_smaller(message.parts, index, compacted):
-                        changed.append(_replacement_event(message_id=message.id, source=part, replacement=compacted))
+                    record,
+                    lifecycle=candidate.lifecycle.lifecycle.value,
+                    summary=_lifecycle_summary(part, candidate.lifecycle),
+                    key_errors=_lifecycle_key_errors(part),
+                )
+            except (ArchiveIntegrityError, OSError, ValueError):
+                # Archive backing is an all-or-nothing safety boundary: if
+                # persistence or validation fails, retain the current part.
+                continue
+            compacted.metadata.update(
+                {
+                    "lifecycle": candidate.lifecycle.lifecycle.value,
+                    "lifecycle_reason": candidate.lifecycle.reason,
+                    "replacement_tokens": estimate_text_tokens(compacted.content),
+                }
+            )
+            if _replace_if_smaller(candidate.message.parts, candidate.part_index, compacted):
+                changed.append(
+                    _replacement_event(
+                        message_id=candidate.message.id,
+                        source=part,
+                        replacement=compacted,
+                    )
+                )
         return changed
 
 
@@ -270,6 +454,15 @@ def _replacement_event(*, message_id: str, source: MessagePart, replacement: Mes
     }
 
 
+def _replace_l1_trimmed(parts: list[MessagePart], index: int, trimmed: MessagePart) -> bool:
+    """Apply L1 even when the resulting empty content has zero tokens."""
+
+    if parts[index].content == trimmed.content and parts[index].metadata == trimmed.metadata:
+        return False
+    parts[index] = trimmed
+    return True
+
+
 def _replace_if_smaller(parts: list[MessagePart], index: int, compacted: MessagePart) -> bool:
     original = parts[index]
     if estimate_text_tokens(compacted.content) >= estimate_text_tokens(original.content):
@@ -278,23 +471,318 @@ def _replace_if_smaller(parts: list[MessagePart], index: int, compacted: Message
     return True
 
 
-def _should_route_compact_part(
+def _latest_user_message_id(messages: list[AgentMessage]) -> str | None:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.id
+    return None
+
+
+def _is_cold_old_task_part(
     part: MessagePart,
     *,
-    request: CompactionRequest,
-    active_task_hash: str | None,
     current_turn: int,
     cold_turn_distance: int,
 ) -> bool:
-    if is_current_task_cold_part(
-        part,
-        active_task_hash=active_task_hash,
-        current_turn=current_turn,
-        cold_turn_distance=cold_turn_distance,
-    ):
-        return True
-    if not request.force_route_current_text:
+    created_turn = part.metadata.get("created_turn")
+    return (
+        isinstance(created_turn, int)
+        and not isinstance(created_turn, bool)
+        and current_turn - created_turn >= cold_turn_distance
+    )
+
+
+def _archive_ids_from_replacements(replacements: list[dict[str, object]]) -> list[str]:
+    archive_ids: list[str] = []
+    for replacement in replacements:
+        replacement_part = replacement.get("replacement_part")
+        if not isinstance(replacement_part, dict):
+            continue
+        metadata = replacement_part.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        archive_id = metadata.get("archive_id")
+        if isinstance(archive_id, str) and archive_id and archive_id not in archive_ids:
+            archive_ids.append(archive_id)
+    return archive_ids
+
+
+def _lifecycle_counts(
+    lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
+) -> dict[str, int]:
+    counts = {lifecycle.value: 0 for lifecycle in ToolResultLifecycle}
+    for record in lifecycle_records.values():
+        counts[record.lifecycle.value] += 1
+    return counts
+
+
+def _make_route_router(*, preview_chars: int) -> RouteCompactRouter:
+    json_compressor = JsonRouteCompressor()
+    return RouteCompactRouter(
+        compressors={
+            RouteContentType.BUILD_OUTPUT: BuildOutputRouteCompressor(),
+            RouteContentType.GIT_DIFF: GitDiffRouteCompressor(),
+            RouteContentType.HTML: HtmlRouteCompressor(),
+            RouteContentType.JSON_ARRAY: json_compressor,
+            RouteContentType.JSON_OBJECT: json_compressor,
+            RouteContentType.SEARCH_RESULTS: SearchResultsRouteCompressor(),
+            RouteContentType.SOURCE_CODE: SourceCodeRouteCompressor(),
+            RouteContentType.PLAIN_TEXT: PlainTextRouteCompressor(),
+        },
+        preview_chars=preview_chars,
+    )
+
+
+def _l2_compacted_by(value: object) -> str:
+    """Translate the existing route labels at the L2 ownership boundary.
+
+    Content compressors deliberately remain independently usable.  The
+    pipeline is where their output acquires its L2 semantic label.
+    """
+
+    label = str(value or "l2_route")
+    if label.startswith("l3_"):
+        return f"l2_{label[3:]}"
+    return label
+
+
+def _should_route_compact_l2_part(
+    part: MessagePart,
+    *,
+    lifecycle: ToolResultLifecycleRecord | None,
+    current_turn: int,
+) -> bool:
+    if part.kind != "tool_result" or lifecycle is None or is_already_compacted(part):
         return False
-    if is_already_compacted(part):
+    if _is_retrieval_protected(part, current_turn=current_turn):
         return False
-    return part.kind == "text"
+    return lifecycle.lifecycle is ToolResultLifecycle.DERIVED
+
+
+def _is_retrieval_protected(part: MessagePart, *, current_turn: int) -> bool:
+    metadata = part.metadata
+    retrieval_metadata: dict[str, object] = metadata
+    if metadata.get("archive_retrieval") is not True:
+        nested_data = metadata.get("data")
+        if not isinstance(nested_data, dict) or nested_data.get("archive_retrieval") is not True:
+            return False
+        retrieval_metadata = nested_data
+    protected_until_turn = retrieval_metadata.get("compaction_protected_until_turn")
+    return (
+        isinstance(protected_until_turn, int)
+        and not isinstance(protected_until_turn, bool)
+        and protected_until_turn >= current_turn
+    )
+
+
+def _lifecycle_summary(part: MessagePart, lifecycle: ToolResultLifecycleRecord) -> str:
+    tool_name = str(part.metadata.get("tool_name") or "tool").replace("\n", " ").strip() or "tool"
+    return f"{tool_name} result is {lifecycle.lifecycle.value}: {lifecycle.reason}."
+
+
+def _lifecycle_key_errors(part: MessagePart) -> tuple[str, ...]:
+    error = part.metadata.get("error")
+    return (error,) if isinstance(error, str) and error.strip() else ()
+
+
+@dataclass(frozen=True, slots=True)
+class _L3Candidate:
+    message: AgentMessage
+    part_index: int
+    lifecycle: ToolResultLifecycleRecord
+    mandatory: bool
+    over_per_result_target: bool
+    priority: int
+    tokens: int
+    created_turn: int
+    tail_index: int
+
+
+def _has_l3_mandatory_candidates(
+    messages: list[AgentMessage],
+    *,
+    lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
+    current_turn: int,
+) -> bool:
+    for message in messages:
+        for part in message.parts:
+            lifecycle = lifecycle_records.get((message.id, part.id))
+            if _is_l3_mandatory(lifecycle) and _can_archive_l3_part(
+                part,
+                lifecycle=lifecycle,
+                current_turn=current_turn,
+            ):
+                return True
+    return False
+
+
+def _has_l3_per_result_pressure(
+    messages: list[AgentMessage],
+    *,
+    lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
+    current_turn: int,
+    per_result_target: int | None,
+) -> bool:
+    """Whether an eligible derived result needs an L2/L3 pass below budget."""
+
+    if per_result_target is None:
+        return False
+    for message in messages:
+        for part in message.parts:
+            lifecycle = lifecycle_records.get((message.id, part.id))
+            if (
+                lifecycle is not None
+                and lifecycle.lifecycle is ToolResultLifecycle.DERIVED
+                and _can_archive_l3_part(part, lifecycle=lifecycle, current_turn=current_turn)
+                and estimate_text_tokens(part.content) > per_result_target
+            ):
+                return True
+    return False
+
+
+def _per_result_target(value: object, *, fallback: int) -> int | None:
+    """Resolve a positive per-result budget without treating bool as int."""
+
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if isinstance(fallback, int) and not isinstance(fallback, bool) and fallback > 0:
+        return fallback
+    return None
+
+
+def _l3_candidates(
+    messages: list[AgentMessage],
+    *,
+    lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
+    current_turn: int,
+    target_tokens: int,
+    per_result_target: int | None,
+) -> list[_L3Candidate]:
+    """Return deterministic tool-result-only L3 candidates.
+
+    Mandatory lifecycle cleanup is selected regardless of the overall target.
+    Derived output is optional: it is selected when an individual result still
+    exceeds its L2 budget or when the current context remains above target.
+    """
+
+    del target_tokens  # Selection below-budget is decided during application.
+    candidates: list[_L3Candidate] = []
+    tail_index = 0
+    for message in messages:
+        for part_index, part in enumerate(message.parts):
+            lifecycle = lifecycle_records.get((message.id, part.id))
+            if lifecycle is None or not _can_archive_l3_part(
+                part,
+                lifecycle=lifecycle,
+                current_turn=current_turn,
+            ):
+                tail_index += 1
+                continue
+
+            tokens = estimate_text_tokens(part.content)
+            mandatory = _is_l3_mandatory(lifecycle)
+            over_per_result_target = (
+                per_result_target is not None
+                and lifecycle.lifecycle is ToolResultLifecycle.DERIVED
+                and tokens > per_result_target
+            )
+            if mandatory:
+                priority = _l3_priority(lifecycle.lifecycle)
+            elif over_per_result_target:
+                priority = _l3_priority(lifecycle.lifecycle, over_per_result_target=True)
+            elif lifecycle.lifecycle is ToolResultLifecycle.DERIVED:
+                priority = _l3_priority(lifecycle.lifecycle)
+            else:
+                tail_index += 1
+                continue
+
+            created_turn = part.metadata.get("created_turn")
+            candidates.append(
+                _L3Candidate(
+                    message=message,
+                    part_index=part_index,
+                    lifecycle=lifecycle,
+                    mandatory=mandatory,
+                    over_per_result_target=over_per_result_target,
+                    priority=priority,
+                    tokens=tokens,
+                    created_turn=created_turn
+                    if isinstance(created_turn, int) and not isinstance(created_turn, bool)
+                    else 0,
+                    tail_index=tail_index,
+                )
+            )
+            tail_index += 1
+
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            candidate.priority,
+            -candidate.tokens,
+            candidate.created_turn,
+            candidate.tail_index,
+        ),
+    )
+
+
+def _can_archive_l3_part(
+    part: MessagePart,
+    *,
+    lifecycle: ToolResultLifecycleRecord | None,
+    current_turn: int,
+) -> bool:
+    if part.kind != "tool_result" or lifecycle is None:
+        return False
+    # L3 may turn a raw result or its L2 projection into a placeholder.  It
+    # must not consume a pinned/retrieved result or replay a legacy/terminal
+    # compaction projection whose backing is not this L2 flow's raw record.
+    state = str(part.metadata.get("compaction_state") or "raw")
+    if state not in {"raw", "l2_route_compacted"}:
+        return False
+    if _is_retrieval_protected(part, current_turn=current_turn):
+        return False
+    return lifecycle.lifecycle in {
+        ToolResultLifecycle.STALE,
+        ToolResultLifecycle.SUPERSEDED,
+        ToolResultLifecycle.DUPLICATE,
+        ToolResultLifecycle.DERIVED,
+    }
+
+
+def _is_l3_mandatory(lifecycle: ToolResultLifecycleRecord | None) -> bool:
+    return lifecycle is not None and lifecycle.lifecycle in {
+        ToolResultLifecycle.DUPLICATE,
+        ToolResultLifecycle.SUPERSEDED,
+        ToolResultLifecycle.STALE,
+    }
+
+
+def _l3_priority(lifecycle: ToolResultLifecycle, *, over_per_result_target: bool = False) -> int:
+    if lifecycle is ToolResultLifecycle.DUPLICATE:
+        return 0
+    if lifecycle is ToolResultLifecycle.SUPERSEDED:
+        return 1
+    if lifecycle is ToolResultLifecycle.STALE:
+        return 2
+    if over_per_result_target:
+        return 3
+    return 4
+
+
+def _l3_backing_record(
+    archive: ToolResultArchive,
+    session_id: str,
+    part: MessagePart,
+):
+    """Return raw backing for a candidate without archiving L2 text as raw.
+
+    L2 retains its original archive id and payload.  A later L3 projection
+    must use exactly that backing so `retrieve_archive` always returns the
+    pre-route result rather than a compact derivative.
+    """
+
+    archive_id = part.metadata.get("archive_id")
+    if isinstance(archive_id, str) and archive_id:
+        record, _raw = archive.read(session_id, archive_id)
+        return record
+    return archive.store_original(session_id, part)

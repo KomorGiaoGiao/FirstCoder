@@ -20,6 +20,8 @@ class ContextCompactionConfig:
     auto_compact_threshold: int = 32_000
     target_tokens: int = 24_000
     blocking_target_tokens: int | None = None
+    task_switch_target_tokens: int | None = None
+    l2_result_target_tokens: int = 800
     large_tool_result_tokens: int = 1_200
     max_turn_tool_result_tokens: int = 4_000
     max_tail_messages: int = 120
@@ -51,6 +53,10 @@ class ContextCompactionConfig:
     def target_for_trigger(self, trigger: str) -> int:
         if trigger == "prompt_too_long" and self.blocking_target_tokens is not None:
             return self.blocking_target_tokens
+        if trigger == "task_hash_changed":
+            if self.task_switch_target_tokens is not None:
+                return self.task_switch_target_tokens
+            return max(1, self.target_tokens * 2 // 3)
         return self.target_tokens
 
 

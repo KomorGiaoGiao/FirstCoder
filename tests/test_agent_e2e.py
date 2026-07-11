@@ -550,7 +550,14 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
         if part.metadata.get("task_hash") == first_task_hash
     ]
     assert old_task_parts
-    assert any(part.metadata.get("compacted_by") == "l1_old_task" for part in old_task_parts)
+    trimmed_old_parts = [
+        part
+        for part in old_task_parts
+        if part.metadata.get("compacted_by") == "l1_old_task_dialogue"
+    ]
+    assert trimmed_old_parts
+    assert all(part.metadata.get("compaction_state") == "trimmed" for part in trimmed_old_parts)
+    assert all(part.content == "" for part in trimmed_old_parts)
     latest_user = [message for message in view.messages if message.role == "user"][-1]
     assert latest_user.parts[0].metadata.get("task_hash") == session.runtime_state.active_task_hash
     assert latest_user.parts[0].metadata.get("task_hash") != first_task_hash
@@ -640,7 +647,7 @@ def test_task_boundary_e2e_confirms_pending_new_when_next_turn_is_same_task(tmp_
     assert all(part.metadata.get("task_hash") == session.runtime_state.active_task_hash for part in new_task_user_parts)
 
 
-def test_manual_compact_command_e2e_writes_manual_route_compaction(tmp_path) -> None:
+def test_manual_compact_command_e2e_writes_l4_handoff_when_only_current_plain_dialogue_remains(tmp_path) -> None:
     provider = FakeProvider(
         [
             ChatResponse(provider="fake", model="fake-model", content="旧回复"),
@@ -664,6 +671,11 @@ def test_manual_compact_command_e2e_writes_manual_route_compaction(tmp_path) -> 
     compact = _compact_events(store, "sess_manual_compact")[0]
     assert compact.payload["trigger"] == "manual"
     event = compact.payload["event"]
-    assert event["changed_parts"] >= 1
-    assert event["replacements"][0]["replacement_part"]["metadata"]["compaction_state"] == "route_compacted"
-    assert event["replacements"][0]["replacement_part"]["metadata"]["compacted_by"].startswith("l3_")
+    # L1-L3 must not route/trim current plain dialogue. It remains for the
+    # semantic L4 checkpoint, rather than becoming the old L3 text preview.
+    assert event["changed_parts"] == 0
+    assert event["replacements"] == []
+    checkpoints = _checkpoint_events(store, "sess_manual_compact")
+    assert len(checkpoints) == 1
+    assert checkpoints[0].payload["summary"].count("## ") == 7
+    assert _llm_compact_events(store, "sess_manual_compact")[-1].payload["status"] == "success"

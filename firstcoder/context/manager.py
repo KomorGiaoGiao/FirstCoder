@@ -144,6 +144,9 @@ class ContextWindowManager:
 
         target_tokens = request.target_tokens or self.config.target_for_trigger(trigger.value)
         force_route_current_text = _force_route_current_text_for_trigger(trigger)
+        required_levels: tuple[Literal["l1", "l2", "l3"], ...] = (
+            ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
+        )
         # 先跑确定性的 L1-L3。它们不依赖模型，成本低、结果可重放；只有仍然超预算时
         # 才进入 L4 LLM 摘要。
         programmatic = self.pipeline.compact(
@@ -152,6 +155,8 @@ class ContextWindowManager:
                 active_task_hash=request.runtime_state.active_task_hash,
                 target_tokens=target_tokens,
                 current_turn=request.current_turn,
+                required_levels=required_levels,
+                l2_result_target_tokens=self.config.l2_result_target_tokens,
                 force_route_current_text=force_route_current_text,
                 force_old_task_compaction=trigger == ContextWindowTrigger.TASK_HASH_CHANGED,
             )
@@ -317,7 +322,10 @@ class ContextWindowManager:
                     target_tokens=target_tokens,
                     current_turn=request.current_turn,
                     enabled_levels=("l1", "l2", "l3"),
+                    required_levels=("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else (),
+                    l2_result_target_tokens=self.config.l2_result_target_tokens,
                     force_route_current_text=_force_route_current_text_for_trigger(trigger),
+                    force_old_task_compaction=trigger == ContextWindowTrigger.TASK_HASH_CHANGED,
                 )
             )
             self._record_programmatic_event(

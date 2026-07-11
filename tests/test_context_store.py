@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from firstcoder.context.archive import ToolResultArchive
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
@@ -116,7 +117,29 @@ def test_programmatic_compaction_rebuilds_replaced_parts(tmp_path: Path) -> None
             payload={"message_id": message.id, "parts": [message.parts[0].to_dict()]},
         )
     )
-    view = SessionView(session_id=session_id, messages=[message])
+    latest_message = AgentMessage(
+        id="msg_latest",
+        session_id=session_id,
+        role="user",
+        parts=[
+            MessagePart(
+                id="part_latest",
+                message_id="msg_latest",
+                kind="text",
+                content="new task",
+                metadata={"task_hash": "task_current", "created_turn": 10},
+            )
+        ],
+    )
+    store.append_event(
+        SessionEvent(
+            id="evt_latest",
+            session_id=session_id,
+            type="user_message",
+            payload={"message_id": latest_message.id, "parts": [latest_message.parts[0].to_dict()]},
+        )
+    )
+    view = SessionView(session_id=session_id, messages=[message, latest_message])
     result = CompactionPipeline(root=tmp_path).compact(
         CompactionRequest(view=view, active_task_hash="task_current", target_tokens=1, current_turn=10)
     )
@@ -128,11 +151,11 @@ def test_programmatic_compaction_rebuilds_replaced_parts(tmp_path: Path) -> None
 
     rebuilt = store.rebuild_session_view(session_id)
 
-    assert rebuilt.messages[0].parts[0].metadata["compaction_state"] == "micro_compacted"
+    assert rebuilt.messages[0].parts[0].metadata["compaction_state"] == "trimmed"
     assert rebuilt.messages[0].parts[0].content == result.view.messages[0].parts[0].content
 
 
-def test_l2_archive_placeholder_survives_rebuild_without_l4(tmp_path: Path) -> None:
+def test_l2_route_result_with_raw_backing_survives_rebuild_without_l4(tmp_path: Path) -> None:
     store = JsonlSessionStore(tmp_path)
     session_id = "sess_test"
     message = AgentMessage(
@@ -144,8 +167,11 @@ def test_l2_archive_placeholder_survives_rebuild_without_l4(tmp_path: Path) -> N
                 id="part_tool",
                 message_id="msg_tool",
                 kind="tool_result",
-                content="large tool output\n" * 200,
-                metadata={"tool_name": "shell", "tool_call_id": "call_1"},
+                content="\n".join(
+                    f"firstcoder/context.py:{line}: def function_{line}(): pass"
+                    for line in range(1, 160)
+                ),
+                metadata={"tool_name": "grep", "tool_call_id": "call_1", "ok": True, "data": {}},
             )
         ],
     )
@@ -176,9 +202,11 @@ def test_l2_archive_placeholder_survives_rebuild_without_l4(tmp_path: Path) -> N
     rebuilt = store.rebuild_session_view(session_id)
     part = rebuilt.messages[0].parts[0]
 
-    assert part.metadata["compaction_state"] == "archived"
+    assert part.metadata["compaction_state"] == "l2_route_compacted"
     assert part.metadata["archive_id"]
-    assert "archive_id=" in part.content
+    assert part.metadata["compacted_by"] == "l2_search_results"
+    assert part.content == result.view.messages[0].parts[0].content
+    assert ToolResultArchive(tmp_path).read(session_id, part.metadata["archive_id"])[1] == message.parts[0].content
 
 
 def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
@@ -193,8 +221,11 @@ def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
                 id="part_tool",
                 message_id="msg_tool",
                 kind="tool_result",
-                content="large tool output\n" * 200,
-                metadata={"tool_name": "shell", "tool_call_id": "call_1"},
+                content="\n".join(
+                    f"firstcoder/context.py:{line}: def function_{line}(): pass"
+                    for line in range(1, 160)
+                ),
+                metadata={"tool_name": "grep", "tool_call_id": "call_1", "ok": True, "data": {}},
             )
         ],
     )
@@ -220,4 +251,5 @@ def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
 
     assert (tmp_path / "sessions" / "sess_test.jsonl").exists()
     assert (tmp_path / "archives" / "sess_test" / f"{archive_id}.txt").exists()
+    assert ToolResultArchive(store.root).read(session_id, archive_id)[1] == message.parts[0].content
     assert not (tmp_path / ".firstcoder").exists()

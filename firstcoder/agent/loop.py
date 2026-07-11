@@ -30,7 +30,7 @@ from firstcoder.permissions.types import PermissionDecisionKind, PermissionReque
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall, ToolChoiceFunction
 from firstcoder.skills.loader import SkillLoadError, SkillLoader
 from firstcoder.skills.router import SkillRouter
 from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
@@ -191,7 +191,10 @@ class AgentLoop:
         # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
-        return self._run_tool_loop_interactive(self._complete_once_with_recovery)
+        return self._run_tool_loop_interactive(
+            self._complete_once_with_recovery,
+            initial_tool_choice=self._task_boundary_tool_choice_for_user_turn(),
+        )
 
     def resume_with_user_input(self, request_id: str, answer: str) -> AgentTurnResult:
         """用用户回答恢复一个暂停中的权限确认。
@@ -243,7 +246,10 @@ class AgentLoop:
         self._initialize_active_task_if_missing(message_id)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
-        result = await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
+        result = await self._run_tool_loop_interactive_async(
+            self._stream_once_with_recovery,
+            initial_tool_choice=self._task_boundary_tool_choice_for_user_turn(),
+        )
         if result.response is not None:
             return result.response
         pending = result.pending_input
@@ -585,7 +591,7 @@ class AgentLoop:
             del self.last_stream_events[start_event_count:]
             raise
 
-    def _run_tool_loop_interactive(self, complete_once) -> AgentTurnResult:
+    def _run_tool_loop_interactive(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """核心工具循环：问模型，执行工具，再把工具结果回喂给模型。
 
         退出条件只有三类：
@@ -595,7 +601,7 @@ class AgentLoop:
         """
 
         try:
-            response = self._drop_unsupported_tool_calls(complete_once())
+            response = self._drop_unsupported_tool_calls(complete_once(tool_choice=initial_tool_choice))
             tool_rounds = 0
             response, pending_input = self._continue_tool_loop_from_response(response, complete_once, tool_rounds)
             if pending_input is not None:
@@ -621,11 +627,11 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
-    async def _run_tool_loop_interactive_async(self, complete_once) -> AgentTurnResult:
+    async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """streaming 版本的工具循环，语义与同步版本一致。"""
 
         try:
-            response = self._drop_unsupported_tool_calls(await complete_once())
+            response = self._drop_unsupported_tool_calls(await complete_once(tool_choice=initial_tool_choice))
             tool_rounds = 0
             response, pending_input = await self._continue_tool_loop_from_response_async(response, complete_once, tool_rounds)
             if pending_input is not None:
@@ -1144,6 +1150,27 @@ class AgentLoop:
         if capabilities is not None and not capabilities.supports_tools:
             return []
         return self.session.tool_registry.definitions()
+
+    def _task_boundary_tool_choice_for_user_turn(self):
+        """Return the first-request boundary choice when the provider supports it.
+
+        The system prompt tells the model to classify every real user turn, but
+        providers that implement forced tool choice should not be left to
+        probabilistic prompt following.  This helper is intentionally used only
+        for the first request created by ``run_user_turn_*``: tool-loop
+        continuations, runtime reminders, and permission resumes are not new
+        user turns.  Providers that explicitly cannot force a function retain
+        ``auto`` so we never send an unsupported wire-format request.
+        """
+
+        capabilities = getattr(self.provider, "capabilities", None)
+        if capabilities is not None and (
+            not capabilities.supports_tools or not capabilities.supports_forced_tool_choice
+        ):
+            return "auto"
+        if "task_boundary" not in self.session.tool_registry.names():
+            return "auto"
+        return ToolChoiceFunction(name="task_boundary")
 
     def _begin_turn(self) -> None:
         self.provider_call_count = 0

@@ -183,10 +183,43 @@ def test_manager_runs_pipeline_when_task_hash_changed(tmp_path: Path) -> None:
     assert result.programmatic_event == pipeline_result.event
     assert len(pipeline.calls) == 1
     assert pipeline.calls[0].active_task_hash == "task_new"
-    assert pipeline.calls[0].target_tokens == 200
+    assert pipeline.calls[0].target_tokens == 133
+    assert pipeline.calls[0].required_levels == ("l2", "l3")
+    assert pipeline.calls[0].l2_result_target_tokens == 800
     assert pipeline.calls[0].force_route_current_text is False
     assert pipeline.calls[0].force_old_task_compaction is True
     assert [event.type for event in store.list_events("sess_test")] == ["compaction_completed"]
+
+
+def test_task_switch_uses_explicit_lower_target_and_requires_l2_l3_below_budget(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    view = _view(_message("msg_1", "short"))
+    pipeline = FakePipeline(_programmatic_result(view, before_tokens=5, after_tokens=5, stopped_at="l3"))
+    manager = ContextWindowManager(
+        store=store,
+        pipeline=pipeline,
+        l4_service=FakeL4(_l4_result()),
+        config=ContextCompactionConfig(
+            auto_compact_threshold=10_000,
+            target_tokens=900,
+            task_switch_target_tokens=600,
+            l2_result_target_tokens=77,
+        ),
+    )
+
+    result = manager.compact_if_needed(
+        ContextCompactRequest(
+            view=view,
+            runtime_state=SessionRuntimeState(session_id="sess_test", active_task_hash="task_new"),
+            trigger=ContextWindowTrigger.TASK_HASH_CHANGED,
+        )
+    )
+
+    assert result.status == "success"
+    assert pipeline.calls[0].target_tokens == 600
+    assert pipeline.calls[0].required_levels == ("l2", "l3")
+    assert pipeline.calls[0].l2_result_target_tokens == 77
+    assert pipeline.calls[0].force_old_task_compaction is True
 
 
 def test_manual_and_prompt_too_long_enable_forced_route_compaction(tmp_path: Path) -> None:

@@ -89,7 +89,7 @@ class GitDiffRouteCompressor:
         return RouteCompactResult(
             content="\n".join(compressed).strip(),
             content_type=RouteContentType.GIT_DIFF,
-            compacted_by="l3_git_diff",
+            compacted_by="l2_git_diff",
             metadata={
                 "diff_files_affected": files_affected,
                 "diff_hidden_files": hidden_files,

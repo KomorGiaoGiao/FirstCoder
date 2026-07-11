@@ -59,7 +59,7 @@ class SearchResultsRouteCompressor:
         return RouteCompactResult(
             content="\n".join(lines),
             content_type=RouteContentType.SEARCH_RESULTS,
-            compacted_by="l3_search_results",
+            compacted_by="l2_search_results",
             metadata={
                 "search_original_matches": len(matches),
                 "search_kept_matches": kept_count,

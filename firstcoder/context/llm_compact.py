@@ -19,6 +19,17 @@ from firstcoder.context.versions import CHECKPOINT_STRATEGY_VERSION
 CompactMode = Literal["auto", "manual"]
 
 
+CODING_HANDOFF_HEADINGS: tuple[str, ...] = (
+    "## 当前目标",
+    "## 已知事实与硬约束",
+    "## 已确认的决定及理由",
+    "## 相关文件与当前实现状态",
+    "## 已运行命令及有效结果",
+    "## 当前错误与未解决事项",
+    "## 下一步（可立即执行）",
+)
+
+
 class PromptTooLongError(RuntimeError):
     pass
 
@@ -320,11 +331,54 @@ def _summarize(
     """调用 summarizer，并兼容暂未接收 summary_mode 的旧实现。"""
 
     try:
-        return summarizer.summarize(messages, summary_mode=summary_mode)
+        summary = summarizer.summarize(messages, summary_mode=summary_mode)
     except TypeError as error:
         if "summary_mode" not in str(error):
             raise
-        return summarizer.summarize(messages)
+        summary = summarizer.summarize(messages)
+    return LlmCompactSummary(
+        summary=normalize_coding_handoff(summary.summary),
+        tail_start_message_id=summary.tail_start_message_id,
+        covered_until_message_id=summary.covered_until_message_id,
+    )
+
+
+def normalize_coding_handoff(summary: str) -> str:
+    """Normalize provider output into the stable L4 coding-handoff contract.
+
+    The model supplies only prose; local code owns the public checkpoint
+    structure.  Matching sections retain their supplied body (including a
+    repeated section's later body), while missing sections are explicitly
+    marked as `无`. Unknown Markdown headings are converted to ordinary
+    body text so the resulting handoff has exactly the seven supported
+    headings once each.
+    """
+
+    bodies: dict[str, list[str]] = {heading: [] for heading in CODING_HANDOFF_HEADINGS}
+    current: str | None = None
+    preamble: list[str] = []
+    for line in summary.strip().splitlines():
+        heading = line.strip()
+        if heading in bodies:
+            current = heading
+            continue
+        if heading.startswith("##"):
+            # Do not emit an extra heading into a checkpoint whose schema is
+            # deliberately fixed. Keep the model's information as body text.
+            line = heading.lstrip("#").strip()
+        if current is None:
+            preamble.append(line)
+        else:
+            bodies[current].append(line)
+
+    if preamble:
+        bodies[CODING_HANDOFF_HEADINGS[0]].extend(preamble)
+
+    sections: list[str] = []
+    for heading in CODING_HANDOFF_HEADINGS:
+        body = "\n".join(bodies[heading]).strip()
+        sections.append(f"{heading}\n{body or '无'}")
+    return "\n\n".join(sections)
 
 
 def _failure_reason(error: Exception) -> str:

@@ -40,6 +40,7 @@ class ProviderCapabilities:
     """
 
     supports_tools: bool = True
+    supports_forced_tool_choice: bool = True
     supports_streaming: bool = False
     supports_parallel_tool_calls: bool = False
     supports_json_mode: bool = False

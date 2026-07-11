@@ -60,7 +60,7 @@ class BuildOutputRouteCompressor:
         return RouteCompactResult(
             content="\n".join(output),
             content_type=RouteContentType.BUILD_OUTPUT,
-            compacted_by="l3_build_output",
+            compacted_by="l2_build_output",
             metadata={
                 "build_original_lines": len(lines),
                 "build_kept_lines": len(selected),

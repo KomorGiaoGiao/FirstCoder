@@ -111,6 +111,7 @@ class AgentSession:
 
         runtime_state = SessionRuntimeState(session_id=session_id)
         known_message_ids: set[str] = set()
+        writer = SessionEventWriter(store=store, session_id=session_id)
         registry = create_session_tool_registry(
             session_id=session_id,
             runtime_state=runtime_state,
@@ -118,13 +119,15 @@ class AgentSession:
             known_message_ids=known_message_ids,
             task_boundary_required_stable_count=_task_boundary_required_stable_count(permission_manager),
             permission_manager=permission_manager,
+            archive_root=store.root,
+            current_turn=lambda: writer.current_turn,
         )
         session = cls(
             session_id=session_id,
             store=store,
             runtime_state=runtime_state,
             tool_registry=registry,
-            writer=SessionEventWriter(store=store, session_id=session_id),
+            writer=writer,
             agents_md=agents_md,
             skill_catalog=skill_catalog or SkillCatalog(),
             known_message_ids=known_message_ids,
@@ -193,6 +196,7 @@ class AgentSession:
         view = store.rebuild_session_view(session_id)
         known_message_ids = {message.id for message in view.messages}
         turn_counter = _infer_turn_counter(view.messages)
+        writer = SessionEventWriter(store=store, session_id=session_id, current_turn=turn_counter)
         registry = create_session_tool_registry(
             session_id=session_id,
             runtime_state=runtime_state,
@@ -200,13 +204,15 @@ class AgentSession:
             known_message_ids=known_message_ids,
             task_boundary_required_stable_count=_task_boundary_required_stable_count(permission_manager),
             permission_manager=permission_manager,
+            archive_root=store.root,
+            current_turn=lambda: writer.current_turn,
         )
         session = cls(
             session_id=session_id,
             store=store,
             runtime_state=runtime_state,
             tool_registry=registry,
-            writer=SessionEventWriter(store=store, session_id=session_id, current_turn=turn_counter),
+            writer=writer,
             agents_md=agents_md,
             skill_catalog=skill_catalog or SkillCatalog(),
             known_message_ids=known_message_ids,

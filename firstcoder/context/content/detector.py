@@ -6,7 +6,15 @@ from firstcoder.context.models import MessagePart
 from firstcoder.context.token_budget import estimate_text_tokens
 
 
-COMPACTED_STATES = {"archived", "micro_compacted", "route_compacted", "checkpointed", "pinned"}
+COMPACTED_STATES = {
+    "archived",
+    "trimmed",
+    "micro_compacted",
+    "route_compacted",
+    "l2_route_compacted",
+    "checkpointed",
+    "pinned",
+}
 
 
 def is_already_compacted(part: MessagePart) -> bool:
