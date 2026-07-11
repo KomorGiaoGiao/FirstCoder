@@ -1,31 +1,73 @@
 # 代码阅读指南
 
-这份指南适合想从外到内理解 FirstCoder 的读者。
+[English](CODEBASE_READING_GUIDE.md)
 
-## 推荐顺序
+这不是目录背诵表，而是一条沿着真实运行系统读代码的路线。适用于你想回答“这个需求到底该改哪”而不想在相邻文件里玄学试错时。
 
-1. 先读 [../README.zh-CN.md](../README.zh-CN.md)，理解项目定位和快速开始方式。
-2. 再读 [CLI / TUI 设计](CLI_TUI_DESIGN.md)，理解运行时如何组装、如何暴露给用户。
-3. 再读 [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md) 和 [工具系统设计](TOOLS_DESIGN.md)，理解主执行循环。
-4. 再读 [权限系统设计](PERMISSIONS_DESIGN.md) 和 [上下文管理设计](CONTEXT_MANAGEMENT_DESIGN.md)，理解安全边界和长会话行为。
-5. 最后读 [Providers 设计](PROVIDERS_DESIGN.md) 和 [技能系统设计](SKILL_SYSTEM_DESIGN.md)，理解扩展边界。
+## 先跟一轮真实任务
 
-## 文档到源码的映射
+用“找出 loop limit 并解释”作为样例，调用链是：
 
-读完上面的文档后，可以按下面的映射进入代码：
+```text
+firstcoder/cli.py
+  -> firstcoder/app/factory.py:create_firstcoder_app
+  -> firstcoder/app/runtime.py:AgentChatRunner
+  -> firstcoder/agent/loop.py:AgentLoop
+  -> ContextBuilder 组装 ChatRequest(messages, tools)
+  -> provider.complete/astream
+  -> session.tool_registry.execute
+  -> 事实追加写入 .firstcoder 的 session JSONL
+  -> runtime 发送界面更新
+```
 
-- `firstcoder/app/`：Textual TUI、命令路由和运行时组装
-- `firstcoder/agent/`：agent loop、运行时编排和 turn 处理
-- `firstcoder/tools/`：内置工具、schema 和工具执行流程
-- `firstcoder/permissions/`：权限策略、审批和 grants
-- `firstcoder/context/`：事件日志、投影、checkpoint 和压缩
-- `firstcoder/session/`：session catalog、恢复流程、transcript 和分享
-- `firstcoder/providers/`：provider 抽象和具体适配器
-- `firstcoder/skills/`：skill 的发现、加载和路由
+这条链给出最重要的分工：loop 负责协调；provider 翻译模型协议；tool 做本地操作；context 保存并投影事实；TUI 只负责展示。不要在 loop 里直接调用厂商 SDK，也不要让 tool 执行器改 UI——那种“先跑起来再说”很容易变成祖传屎山。
 
-## 阅读建议
+## 模块地图
 
-- 先看运行时组装，再分别看各个子系统，不要一开始就横跳所有模块。
-- 一次读完一个子系统，比在多个目录之间来回切换更容易建立整体理解。
-- 读源码时把对应设计文档一起打开，效果最好。
-- benchmark 和 runbook 更适合在主架构看清楚之后再读。
+| 区域 | 先读 | 负责什么 | 不负责什么 |
+| --- | --- | --- | --- |
+| `app/` | `factory.py`、`runtime.py`、`tui.py` | 应用装配和终端展示 | 模型协议转换 |
+| `agent/` | `loop.py`、`session.py`、`loop_limits.py` | 单轮编排、暂停与恢复 | shell/HTTP 的具体实现 |
+| `context/` | `store.py`、`writer.py`、`context_builder.py` | 事实持久化和模型可见投影 | UI widget |
+| `tools/` | `builtin.py`、`registry.py`、`session_registry.py` | schema、分发和会话包装 | 最终权限策略 |
+| `permissions/` | `manager.py`、`policy.py`、`grants.py` | allow/ask/deny 决策与授权 | 真正执行工具 |
+| `providers/` | `types.py`、`factory.py`、各 adapter | 内部格式到厂商协议的转换 | 会话存储 |
+| `skills/` | `discovery.py`、`router.py`、`loader.py` | Skill 发现、路由与加载审计 | 注册工具 |
+| `session/` | `catalog.py`、`resume.py`、`fork.py` | 会话发现与生命周期服务 | agent 轮次语义 |
+
+## 四步读法
+
+1. **先命名行为。** 用 `rg -n "关键词" firstcoder tests` 搜可见命令、工具名或错误，不要先猜文件。
+2. **再找边界。** 顺着 import 找到接口（`ChatProvider`、`ToolRegistryLike`、数据类），然后才进入具体实现。
+3. **跟数据走。** 重点看 `ChatRequest`、`ChatResponse`、`ToolCall`、`ToolResult`、session event。它们比单看控制流更能说明边界。
+4. **紧接着读测试。** 异常路径和不变量通常在测试里说得最清楚；改前先跑最小相关测试。
+
+## 常用入口命令
+
+```sh
+rg -n "class AgentLoop|def create_firstcoder_app" firstcoder tests
+rg -n "ChatRequest\(|tool_registry\.execute|preflight\(" firstcoder tests
+.venv/bin/python -m pytest tests -q
+```
+
+请用 `pytest tests`，不要在仓库根目录裸跑 `pytest`：基准运行产物里可能有自己无关的 `tests/`，会被误收集。
+
+## 第一次改动怎样选层
+
+- 新厂商参数放 `providers/` 和配置层，不要污染 loop。
+- 新本地能力从一个 `Tool` 开始，并声明权限 spec；别在 `AgentLoop` 里写一堆特判。
+- 审批规则改 `permissions/policy.py` 或 grant。
+- 历史可见性改 context 的投影/压缩，不能破坏性删除原 event log。
+- 新 slash command 放 `app/` 命令 handler，并复用 session 服务。
+
+## 三个高频误解
+
+**“system prompt 就是全部上下文。”** 不是。它是稳定前缀；`ContextBuilder` 会单独投影会话历史，工具 schema 在 `ChatRequest.tools`。
+
+**“bypass 就是没有安全代码。”** 不是。它只是 policy mode；工具仍经 registry，并返回结构化结果。
+
+**“压缩把历史删了。”** 不是。JSONL 事实还在；checkpoint 改的是本次 provider 看见的视图。
+
+## 一个上手练习
+
+打开 `firstcoder/agent/loop_limits.py`，先不改任何代码，用 `rg -n "max_tool_rounds|TOOL_ROUND_LIMIT" tests` 找到测试并运行，再沿 stop reason 回读 `loop.py`。这就是本项目推荐的工作方式：先说清一个小不变量、用测试确认、再只改拥有该职责的最小层。

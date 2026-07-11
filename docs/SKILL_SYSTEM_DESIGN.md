@@ -2,137 +2,104 @@
 
 [中文版本](SKILL_SYSTEM_DESIGN.zh-CN.md)
 
-## Overview
+## What a Skill Is
 
-The skill system is a deterministic instruction-loading layer for reusable workflows. A skill is not just a text prompt fragment. It is a discovered file, routed through explicit rules, optionally expanded with required files, and written into session events when loaded.
+A skill is a reusable, filesystem-backed instruction workflow. It is not an
+executable plugin and it is not an arbitrary prompt fragment pasted without
+trace. The system discovers candidates, routes deterministically, safely loads
+the selected file and its declared supporting files, records audit events, then
+adds the content to the stable prompt-prefix inputs.
 
-This gives FirstCoder a lightweight workflow-extension mechanism without turning skills into arbitrary executable plugins.
+## One Turn With a Skill
 
-## Key Files
+```text
+user message + AGENTS.md
+  -> discover_all_skills(project root and optional global roots)
+  -> SkillRouter chooses explicit/AGENTS/metadata match
+  -> SkillLoader validates root-relative paths and loads content
+  -> append skill_selected / skill_loaded / required-file events
+  -> system-prefix build receives loaded skill context
+  -> provider sees the instructions for this turn
+```
 
-- `firstcoder/skills/models.py`: skill catalog and definition models
-- `firstcoder/skills/discovery.py`: filesystem discovery
-- `firstcoder/skills/router.py`: deterministic routing
-- `firstcoder/skills/loader.py`: content loading and required-file extraction
-- `firstcoder/skills/session.py`: session-event append helpers for skill audit
-- `firstcoder/agent/loop.py`: turn-time routing and loading integration
-- `firstcoder/agent/session.py`: loaded-skill retention in runtime state
+Routing is model-free. This makes the selection reproducible and avoids spending
+another model call merely to choose a local instruction file.
 
-## Skill Sources
+## Discovery: Where Skills Come From
 
-Current discovery supports both project-local and machine-global skill roots.
+| Priority | Location | Source |
+| ---: | --- | --- |
+| 1 | `<project>/.agents/skills/*/SKILL.md` | project agent skill |
+| 2 | `<project>/skills/*.md` | project markdown skill |
+| 3 | `~/.agents/skills`, `~/.codex/skills`, `~/.firstcoder/skills` | global agent/markdown skill |
+| 4 | `FIRSTCODER_SKILL_ROOTS` comma-separated roots | additional global roots |
 
-Project-local sources:
+`<project>/skills/INDEX.md` is catalog text, not a runnable skill. Set
+`FIRSTCODER_DISABLE_GLOBAL_SKILLS=1` to keep discovery project-only. Frontmatter
+may supply `name`, `description`, and comma-separated `triggers`; discovery is
+sorted and deduplicated so repeated roots do not produce unstable catalogs.
 
-- `<project>/skills/*.md`
-- `<project>/.agents/skills/*/SKILL.md`
+## Core Data and Routing Rules
 
-Global roots include:
+`SkillDefinition` identifies a candidate (name, path, source, root,
+description, triggers). `SkillCatalog` contains candidates, index text, and a
+fingerprint. `SkillRoutingDecision` records selection, candidates, reason, and
+string confidence.
 
-- `~/.agents/skills`
-- `~/.codex/skills`
-- `~/.firstcoder/skills`
-- extra roots from `FIRSTCODER_SKILL_ROOTS`
+`SkillRouter` checks in strict order:
 
-Global skill discovery can be disabled with `FIRSTCODER_DISABLE_GLOBAL_SKILLS`.
+1. explicit name or path mentioned by the user;
+2. meaningful overlap on an `AGENTS.md` line that references a skill path;
+3. token overlap against skill name, description, and triggers.
 
-## Core Models
+An ambiguous metadata match deliberately selects nothing. When identical names
+match, project sources win over global sources. That “no selection” outcome is
+safer than silently loading unrelated instructions.
 
-`SkillDefinition` currently includes:
+## Loading Is Root-Constrained
 
-- `name`
-- `path`
-- `source`
-- `root`
-- `description`
-- `triggers`
+`SkillLoader` resolves the skill path relative to its registered root and
+rejects any path escape. It can then extract required-file references under
+headings such as “Required files”, “Must read”, or Chinese equivalents.
+Required files are again resolved beneath the same root.
 
-`SkillCatalog` contains:
+This is a containment rule, not a claim that skill content itself is trusted.
+A skill can instruct the model, but it cannot use a required-file reference to
+read arbitrary `../` paths.
 
-- discovered skills
-- optional project `INDEX.md` content
-- a computed fingerprint
+## Audit, Resume, and Change Semantics
 
-The current implementation does not store numeric confidence on each skill definition. Confidence is produced later by routing.
+Session events record `skill_selected`, `skill_loaded`, and
+`skill_required_file_loaded`. Loaded state is retained in runtime state and
+replayed on resume. Resume reconstructs what was selected but rereads files that
+still exist, so it is not a frozen content snapshot. If reproducibility across
+skill edits is required, version the skill files in the project alongside the
+session rather than assuming resume preserves old bytes.
 
-## Discovery Model
+## Add a Project Skill
 
-Discovery is purely filesystem-driven.
+1. Prefer `<project>/.agents/skills/<name>/SKILL.md` for a structured workflow
+   or `<project>/skills/<name>.md` for a simple one.
+2. Give it clear frontmatter description/triggers or an unambiguous heading.
+3. Put required relative files under the same root and list them under a
+   required-files heading.
+4. Add an `AGENTS.md` route hint only when automatic routing is truly wanted.
+5. Test discovery, explicit routing, ambiguity, and path-escape rejection.
 
-Important behavior in `firstcoder/skills/discovery.py`:
+```sh
+.venv/bin/python -m pytest tests/test_skill_discovery.py tests/test_skill_router.py \
+  tests/test_skill_loader.py tests/test_agent_skill_flow.py -q
+```
 
-- project `skills/INDEX.md` is read as catalog index content, not as a runnable skill
-- markdown skills are discovered as `.md` files
-- agent skills are discovered as nested `*/SKILL.md`
-- frontmatter metadata can provide `name`, `description`, and `triggers`
-- results are sorted and deduplicated deterministically
+## Debugging
 
-This keeps the catalog stable across runs and avoids accidental duplicates from overlapping roots.
+| Symptom | Check |
+| --- | --- |
+| skill missing | root layout, disable-global flag, filename, and discovery catalog |
+| wrong skill wins | explicit text first, then AGENTS line overlap, then metadata tie |
+| skill selected but content absent | loader error/audit events and system-prefix inputs |
+| required file unexpectedly readable | ensure it is root-relative; path traversal should fail |
+| resumed session behaves differently | skill file changed after the original session |
 
-## Routing Model
-
-Routing is deterministic and currently model-free.
-
-The router checks, in order:
-
-1. explicit skill name or path mention in the user message
-2. route-hint overlap from project instructions such as `AGENTS.md`
-3. metadata token overlap using name, description, and triggers
-
-The result is a routing decision that includes:
-
-- the selected skill or `None`
-- candidate list
-- routing reason
-- string confidence such as `high`, `medium`, or `none`
-
-The runtime prefers project-local skills over global ones when several matches exist.
-
-## Loading Model
-
-If a skill is selected for the current turn, `AgentLoop` loads it before the provider request is built.
-
-Loading behavior includes:
-
-1. read the skill file
-2. parse required-file references from the markdown body
-3. load those required files if they stay within the skill root
-4. append audit events to the session
-5. inject the loaded content into the system-prefix build path
-
-This makes skills part of prompt construction rather than a separate post-processing layer.
-
-## Audit And Session Behavior
-
-Skill-related audit events currently include:
-
-- `skill_selected`
-- `skill_loaded`
-- `skill_required_file_loaded`
-
-Loaded skills are retained in runtime state and also replayed during session resume.
-
-Resume behavior is important:
-
-- previously loaded skills are reconstructed from prior skill events
-- then the current skill files are re-read from disk if still present
-
-That means loaded-skill state is not a frozen snapshot of old file contents. It is partly reconstructed from the current filesystem.
-
-## Priority Rules
-
-The current effective priority order is:
-
-1. project agent skill
-2. project markdown skill
-3. global agent skill
-4. global markdown skill
-
-This lets project-local workflows override broader machine-global defaults without changing the router itself.
-
-## Design Notes
-
-- Skills are discovered and routed deterministically, not by another model call.
-- Required-file loading is content-driven and constrained to the skill root.
-- Skills leave audit traces in the session log so prompt construction can be understood later.
-- Resume prefers reconstructable workflow state over opaque hidden skill caches.
+Related: [Context Management](CONTEXT_MANAGEMENT_DESIGN.md) and
+[Codebase Reading Guide](CODEBASE_READING_GUIDE.md).

@@ -2,158 +2,117 @@
 
 [中文版本](PERMISSIONS_DESIGN.zh-CN.md)
 
-## Overview
+## What Permissions Guarantee
 
-The permission layer separates what the model asks to do from what the program is willing to execute. It is part of the real tool-execution control flow, not a passive policy helper.
+Permissions answer one program-side question before a sensitive tool operation:
+**may this concrete request run now?** They do not rely on model compliance.
+The enforcement chain is:
 
-In practice, permission preflight can do three things:
+```text
+ToolPermissionSpec -> PermissionRequest -> PermissionManager
+  -> matching grant or DefaultPermissionPolicy
+  -> ALLOW | ASK | DENY
+  -> PermissionAwareToolRegistry action
+```
 
-- allow a tool call to execute immediately
-- deny it and return a synthetic tool result
-- pause the turn and wait for user confirmation
+The tool executor runs only on the `ALLOW` branch. That is the boundary that
+matters when reviewing safety—not the wording in a system message.
 
-## Key Files
+## Concrete Example: Writing a File
 
-- `firstcoder/permissions/types.py`: core permission data types
-- `firstcoder/permissions/policy.py`: default policy implementation
-- `firstcoder/permissions/grants.py`: grant storage
-- `firstcoder/permissions/manager.py`: preflight, confirmation building, and confirmation resolution
-- `firstcoder/tools/permission_registry.py`: integration point between tools and permissions
-- `firstcoder/agent/session.py`: pending permission execution state
-- `firstcoder/agent/loop.py`: pause/resume integration in the loop
+1. A model asks to call `write(path, content)`.
+2. The permission-aware registry uses the write tool's spec to build a request
+   containing action, normalized target, cwd, and policy hints.
+3. `PermissionManager.preflight` first checks matching grants, then the default
+   policy under the active mode.
+4. `ALLOW` executes; `DENY` becomes a tool result; `ASK` becomes a structured
+   `UserInputRequest` and the turn pauses.
+5. After an answer, `resolve_confirmation` rechecks guards and either executes
+   the original pending call or appends a denied result.
 
-## Core Types
+The model sees the resulting tool message and can adapt. It never directly
+writes a grant file or calls an executor behind the registry.
 
-The main types are defined in `firstcoder/permissions/types.py`.
+## Data Model
 
-Important enums and dataclasses include:
+`permissions/types.py` contains the vocabulary:
 
-- `PermissionAction`
-- `PermissionMode`
-- `PermissionDecisionKind`
-- `PermissionPersistence`
-- `PermissionScopeType`
-- `PermissionConfirmationChoice`
-- `PermissionRequest`
-- `PermissionGrant`
-- `PermissionDecision`
+| Type | Role |
+| --- | --- |
+| `PermissionAction` | category such as filesystem, shell, network, or env access |
+| `PermissionRequest` | one concrete target/action to decide |
+| `PermissionDecisionKind` | `ALLOW`, `ASK`, or `DENY` for this request |
+| `PermissionPersistence` | whether an approval is once or durable |
+| `PermissionGrant` | a durable, scoped allow rule |
+| `PermissionScopeType` | exact path, command prefix, host, env key, and similar scope |
+| `PermissionMode` | conservative, standard, aggressive, or bypass policy setting |
 
-The important distinction is:
+Do not conflate decision and persistence: “allow this once” is an allowed
+decision with short persistence; “allow always” creates a scoped grant only
+when the request supports it.
 
-- `PermissionDecisionKind` answers whether the current execution is allowed, denied, or must ask
-- `PermissionPersistence` answers how long an approved decision should live
+## Policy, Modes, and Grants
 
-## Permission Manager
+`DefaultPermissionPolicy` makes the fallback decision after grants. The policy
+is target-aware: ordinary reads inside a project are generally safer than
+external deletion, sensitive environment reads, or a shell command with control
+operators. The exact rules live in `permissions/policy.py`; add tests instead
+of restating a partial copy in callers.
 
-`PermissionManager` is the central program-side entrypoint.
+Modes adjust that policy:
 
-Its job is to combine:
+- `conservative`: asks more often;
+- `standard`: normal project behavior;
+- `aggressive`: permits selected auto-eligible actions more readily;
+- `bypass`: a maximally permissive policy mode.
 
-- the default policy
-- persisted grants
-- the current permission mode
+`bypass` is not removal of code paths. Requests are still normalized, registry
+dispatch still occurs, results are still logged, and hard safety checks/policy
+rules still define the actual behavior. Treat it as an explicit operating mode,
+not an invisible model superpower.
 
-`preflight(request)` performs the real pre-execution decision path:
+`FilePermissionGrantStore` persists grants in the data root's `permissions.json`.
+An “allow always” is converted to a calculated scope via
+`default_scope_for_request`, never stored as an unbounded free-form approval.
 
-1. normalize the request against the project root
-2. check matching persisted grants
-3. if no grant matches, apply the default policy
+## Pause, Resume, and Replay
 
-`build_confirmation(request)` converts an `ASK` result into a structured `UserInputRequest` for the UI.
+`ASK` must preserve the assistant's original tool call. `AgentSession` records
+`PendingPermissionExecution`; the interactive caller receives `pending_input`.
+On resume, the loop resolves the user choice and completes the same tool-call
+transaction. This keeps the provider-visible sequence valid.
 
-`resolve_confirmation(request, choice)` converts the user’s answer back into a final decision and optionally persists an allow-always grant.
+Durable grants and pending calls have different lifetimes. Grants are stored as
+permission data. A pending action is reconstructed from unmatched assistant
+tool-call history during resume when possible, rather than creating a second
+parallel conversation log.
 
-## Permission Modes
+## Verification Exercises
 
-The current default-policy modes are:
+```sh
+.venv/bin/python -m pytest tests/test_permissions_policy.py \
+  tests/test_permissions_manager.py tests/test_permissions_grants.py \
+  tests/test_permission_registry.py tests/test_permission_commands.py -q
+```
 
-- `conservative`
-- `standard`
-- `aggressive`
-- `bypass`
+Read `tests/test_permission_registry.py` for the essential proof: the executor
+is not invoked for deny or ask until the correct resume path occurs.
 
-`bypass` is still a program-side mode, not a model capability. The model does not gain new powers directly; the program simply becomes more permissive in preflight.
+## Debugging Checklist
 
-## Default Policy
+| Symptom | Check |
+| --- | --- |
+| unexpected prompt | exact action/target derived by the tool spec, then policy mode |
+| expected durable approval ignored | grant scope normalization and grant store location |
+| user approved but tool did not run | pending execution id and resume call |
+| a dangerous action ran | registry wrapper was actually installed and tool has a permission spec |
+| permission result breaks provider history | matching tool call id was appended |
 
-The default behavior lives in `firstcoder/permissions/policy.py`.
+## Change Rules
 
-Important real rules include:
+Put classification rules in `policy.py`, scope calculation in manager/types, and
+tool-specific target extraction in `ToolPermissionSpec`. Do not have every tool
+reimplement a permission dialog. Add regression tests for both the intended
+allow path and the nearest unsafe neighbor.
 
-- reading ordinary project files is usually allowed
-- writing inside the project often asks, unless aggressive mode and tool metadata allow auto execution
-- deleting outside the project root is denied
-- reading sensitive environment variables is denied
-- readonly git commands inside the project are allowed
-- shell commands with control operators require confirmation
-- network requests ask by default
-
-Sensitive paths currently include things like:
-
-- `.git`
-- `.env`
-- `.pem`
-- `.key`
-
-## Grant Model
-
-Long-lived grants are represented by `PermissionGrant` and stored through `PermissionGrantStore` implementations.
-
-The project runtime typically uses `FilePermissionGrantStore`, which persists grants into a JSON file under the session data root.
-
-The grant model is scope-based. `allow always` decisions are not stored as free-form approvals; they are converted into a scope such as:
-
-- exact path
-- command prefix
-- host
-- env key
-
-The scope for a request is computed in `default_scope_for_request(...)`.
-
-## Tool Integration
-
-Permissions are enforced through `PermissionAwareToolRegistry`, not by asking tools to call the permission manager manually.
-
-The execution path is:
-
-1. a tool call is preflighted
-2. a `PermissionRequest` is built from the tool’s `ToolPermissionSpec`
-3. `PermissionManager.preflight(...)` returns `ALLOW`, `DENY`, or `ASK`
-4. the wrapper either:
-   - executes the tool
-   - returns a denied result
-   - returns a structured confirmation result
-
-This means permissions are coupled to the registry wrapper, not scattered across individual tool executors.
-
-## Pause And Resume
-
-`ASK` is a real pause state in the agent loop.
-
-When the loop encounters an `ASK` result:
-
-1. it stores a `PendingPermissionExecution`
-2. it returns `pending_input` to the caller
-3. the UI or interactive CLI collects the user answer
-4. `resume_with_user_input(...)` resolves that answer
-5. the original tool either executes or is turned into a denied result
-
-This behavior matters because provider-visible message sequences must stay legal. The loop guarantees that an assistant tool call will still get a matching tool result after the pause.
-
-## Persistence And Resume Behavior
-
-Long-lived grants are persisted, but pending permission state is not modeled as a dedicated top-level permission event stream.
-
-Instead, session resume reconstructs a pending permission execution from the unmatched tail of the assistant tool-call history.
-
-This design keeps permission persistence narrow:
-
-- durable grants live in grant storage
-- pending execution is reconstructed from conversation facts when possible
-
-## Design Notes
-
-- Permissions are part of the tool execution protocol, not just a UI prompt layer.
-- The manager combines grants and policy behind a single preflight entrypoint.
-- `ASK` pauses the turn and later resumes the original tool execution path.
-- Persisted grants are scope-based and intentionally conservative.
+Related: [Tools](TOOLS_DESIGN.md) and [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md).

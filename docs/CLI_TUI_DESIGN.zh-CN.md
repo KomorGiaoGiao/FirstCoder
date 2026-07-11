@@ -1,156 +1,106 @@
-# CLI / TUI 设计
+# CLI 与 TUI 运行时设计
 
-[English Version](CLI_TUI_DESIGN.md)
+[English](CLI_TUI_DESIGN.md)
 
-## 概述
+## 这篇解决什么
 
-FirstCoder 目前通过三种用户入口暴露同一套 agent 运行时：
+这篇解释 FirstCoder 怎样启动、怎样组装出可用 agent session、以及运行时事件怎样变成终端上的内容。它不定义工具安全和厂商协议；那两部分请看文末链接。
 
-- Textual TUI 交互式终端界面
-- 行式交互 CLI（`--interactive`）
-- 单轮 CLI（`--message` 或 stdin）
+核心结论是：终端界面只是已经装配好的 runtime 的客户端，不应该在 UI 里临时发明 provider、权限规则或会话存储。
 
-总入口在 `firstcoder/cli.py`。TUI 和 CLI 共享同一套核心运行时对象，但控制路径并不完全相同。TUI 通过 `AgentChatRunner` 走异步流式路径，单轮 CLI 走同步执行路径。
+## 一条请求如何到屏幕上
 
-## 关键文件
+```text
+firstcoder [flags]
+  -> cli.py 选择 TUI、REPL 或单轮模式
+  -> factory.py 组装 store + provider + tools + permissions + session
+  -> AgentChatRunner 为当前 session 启动 AgentLoop
+  -> stream/tool/input event 变成 TUI transcript/activity 更新
+  -> 事实持久化留在 <project>/.firstcoder
+```
 
-- `firstcoder/cli.py`：顶层参数解析、模式路由、config 命令、REPL、单轮执行
-- `firstcoder/app/factory.py`：组装主运行时对象图
-- `firstcoder/app/runtime.py`：`CurrentSessionState` 和 `AgentChatRunner`
-- `firstcoder/app/tui.py`：`FirstCoderApp` Textual 应用
-- `firstcoder/app/tui_state.py`：以 transcript 为中心的 TUI 状态模型
-- `firstcoder/app/commands.py`：slash command 协议
-- `firstcoder/app/session_commands.py`：session 相关命令
-- `firstcoder/app/permission_commands.py`：权限模式相关命令
-- `firstcoder/app/router.py`：命令组合辅助逻辑
-- `firstcoder/config/settings.py`：配置加载和优先级处理
+例如 `firstcoder --message "explain loop limits"` 走同步单轮路径；Textual 界面则通过 `AgentChatRunner` 走异步流式路径。两者共用 session、tool registry、provider type 和 agent loop，但展示、打断和确认交互不同。
 
-## 运行时组装
+## 启动与依赖装配
 
-当前实现中并没有 `AppFactory` 或 `RuntimeAssembly` 这类类式入口，运行时组装是函数式完成的。
+主组合根是 `firstcoder/app/factory.py:create_firstcoder_app`，按顺序创建：
 
-`firstcoder/app/factory.py` 中的 `create_firstcoder_app(...)` 会按顺序组装：
+1. 默认位于 `<project>/.firstcoder` 的 `JsonlSessionStore`（可由 `data_root` 覆盖）。
+2. `SandboxAccess` 与 `create_builtin_registry` 创建的内置工具。
+3. 已配置好的 `ChatProvider`。
+4. `FilePermissionGrantStore` 和项目级 `PermissionManager`。
+5. `AgentSession`，它会创建 session 级 registry。
+6. 带 provider L4 摘要能力的 `ContextWindowManager`。
+7. session catalog/new/resume/fork/share 服务与 slash command handler。
+8. `AgentChatRunner`、`RuntimeModelSwitcher`，最后才是 `FirstCoderApp`。
 
-1. JSONL session store
-2. sandbox access 和 builtin tool registry
-3. provider
-4. permission grant store 和 project permission manager
-5. `AgentSession`（新建或恢复）
-6. `CurrentSessionState`
-7. context compaction 相关服务
-8. session catalog、resume、share 服务
-9. slash command handlers
-10. `AgentChatRunner`
-11. `FirstCoderApp`
+这个顺序不是摆设：session 要先拿到工具和权限 manager，runner 又依赖 session 和 context manager。测试能给 factory 注入 fake provider 或小型 tools，不需要真打网络。
 
-因此，TUI 更像是一个已经装配好运行时后的显示层，而不是在 UI 内部临时创建各个子系统。
+## 跨层关键对象
 
-## CLI 模式
+| 对象 | 谁产生 | 谁消费 | 意义 |
+| --- | --- | --- | --- |
+| `AppConfig` | `config/settings.py` | factory/provider switcher | 解析后的配置，避免各处直接读环境变量 |
+| `AgentSession` | factory/session service | runner、command handler | 当前可持久化对话和 tool registry |
+| `CurrentSessionState` | `app/runtime.py` | TUI、runner | `/new`、`/fork`、resume 时可替换的当前指针 |
+| `ChatStreamEvent` | provider | runner/TUI | 规范化的文本、reasoning、tool-call 增量 |
+| `ToolExecutionEvent` | agent loop | runner/TUI | 本地执行和模型流是两条事件线 |
+| `UserInputRequest` | permission 或 `ask_user` | 交互 UI | 明确的暂停/恢复契约 |
 
-`firstcoder/cli.py` 目前支持这些模式：
+## 用户可见模式
 
-- `config` 命令：
-  - `firstcoder config path`
-  - `firstcoder config show`
-  - `firstcoder config init`
-- TUI 模式：
-  - `firstcoder`
-  - `firstcoder --tui`
-- 行式 REPL：
-  - `firstcoder --interactive`
-- 单轮执行：
-  - `firstcoder --message "..."`
-  - 未显式传 message 时也可从 stdin 读取
-- benchmark 模式：
-  - `firstcoder --benchmark`
+`firstcoder/cli.py` 当前会路由这些模式：
 
-常见运行时覆盖参数包括：
+| 调用方式 | 适用场景 | 关键限制 |
+| --- | --- | --- |
+| `firstcoder` 或 `--tui` | 完整 Textual 交互 | 需要交互终端 |
+| `--interactive` | 行式 REPL | 没有 TUI 那样的可视 transcript |
+| `--message "..."` | 脚本/CI 的单请求 | 没有长时间交互式审批对话 |
+| 不传 message 的 stdin | 管道输入一个请求 | 同样遵守单轮限制 |
+| `config path/show/init` | 查看/初始化配置 | 不启动 agent turn |
+| `--benchmark` | 基准入口 | 还需额外 benchmark 环境 |
 
-- `--project`
-- `--data-root`
-- `--session-id`
-- `--provider`
-- `--auto-approve`
-- `--max-tool-rounds`
+常用覆盖项包括 `--project`、`--data-root`、`--session-id`、`--provider`、`--auto-approve`、`--max-tool-rounds`。新增 flag 前先读 `cli.py`：配置优先级是按字段实现的，并不是“所有 CLI 参数无脑最大”。
 
-## TUI 结构
+## TUI 实际渲染什么
 
-Textual 应用主要由 `firstcoder/app/tui.py` 中的 `FirstCoderApp` 实现。
+`app/tui.py` 的 `FirstCoderApp` 渲染 `app/tui_state.py` 的 transcript 型状态：对话条目、工具活动、todo、provider/session 状态和 pending input。它会先缓冲 token，再批量刷新，避免一个 token 刷一次 widget。
 
-当前界面并不是由许多独立的“子系统 Widget 类”堆起来的，而是由少量具体控件构成：
+运行时有两条事件线：
 
-- 顶部状态栏
-- 可滚动 transcript 区域
-- todo 面板
-- activity 行
-- 输入框
+- provider event：reasoning/text/tool-call 增量和最终 response；
+- local event：工具 started、finished、skipped、denied、permission asked。
 
-真实的 TUI 状态模型在 `firstcoder/app/tui_state.py`，核心对象包括：
+分开后，模型没有新文本时 UI 仍可准确显示“shell 正在执行”。不要把本地工具运行伪造成 assistant 的一句话。
 
-- `TuiTranscript`
-- `TuiTranscriptEntry`
-- `TuiToolActivity`
-- `TuiTodoItem`
-- `TuiEntryKind`
+## 命令要经服务改状态
 
-也就是说，当前实现更接近“以 transcript 为中心的状态管理”，而不是旧文档里那种抽象的 `TUIState`。
+Slash command 经 `CompositeCommandHandler` 拼装。主要类别：session（`/new`、`/fork`、`/resume`、`/share`、`/rename`）、model（`/model`）、context（`/context`、`/compact`）、permission mode（`/mode`）、skills（`/skills`、`/skill`）。handler 应调用拥有职责的 service，再更新 `CurrentSessionState`；不要图省事直接改 JSONL 或 TUI state，后面必有回旋镖。
 
-## 流式输出与用户输入恢复
+## 动手验证
 
-TUI 路径通过 `AgentChatRunner` 的异步接口工作：
+```sh
+.venv/bin/python -m firstcoder --help
+.venv/bin/python -m pytest tests/test_cli.py tests/test_app_factory.py tests/test_app_runtime.py -q
+```
 
-- `arun_user_turn(...)`
-- `aresume_with_user_input(...)`
+没有凭证时，直接读 `tests/test_app_factory.py` 的 fake-provider case：它展示真实对象图，并验证首个 provider 请求前 `task_boundary` 已被按 session 注入。
 
-`firstcoder/app/tui.py` 中会：
+## 排障入口
 
-- 安装 stream event handler
-- 缓冲文本增量
-- 定时 flush 到 transcript
-- 把 tool activity 和最终文本插入到同一条对话流里
+| 现象 | 先看哪里 |
+| --- | --- |
+| 顶栏模型/provider 不对 | 解析后的 config，再看 `RuntimeModelSwitcher` |
+| 新 session 还显示旧历史 | `CurrentSessionState` 和 session command 的回调 |
+| 文字只在结束时出现 | provider streaming capability 与 runner 的 streaming 选择 |
+| 确认后无法继续 | pending `UserInputRequest` 与 `aresume_with_user_input` |
+| help 有命令但无行为 | 对应 handler 是否注册进 router |
 
-当工具执行因为权限或用户输入而暂停时，loop 会返回一个 `pending_input` 请求。TUI 负责展示该请求，并在用户回复后通过 `aresume_with_user_input(...)` 恢复执行。
+## 扩展规则
 
-## Slash Commands
+- 展示行为加在 `app/`，不要加到 provider adapter。
+- 可复用 runtime 构建放 factory，构造参数保持可注入，方便测试。
+- 不要混淆 stream event 与本地 tool event。
+- 改可见流程前加聚焦 `test_app_*` 或 `test_cli.py`。
 
-当前 TUI 中实际可用的命令包括：
-
-- `/sessions`
-- `/session <session_id>`
-- `/new [title]`
-- `/fork [title]`
-- `/help`
-- `/resume <session_id>`
-- `/share [session_id] [--tool-results]`
-- `/rename <title>`
-- `/model`
-- `/model <model|provider/model>`
-- `/skills` 打开选择器，并把选中的 skill 引用插入输入框
-- `/skill <name>`
-- `/context`
-- `/compact status`
-- `/compact`
-- `/mode`
-- `/mode <conservative|standard|aggressive|bypass>`
-
-这些都是真实存在的 handler，不只是帮助文本。
-
-## 配置优先级
-
-配置加载实现在 `firstcoder/config/settings.py`。
-
-当前优先级并不是一个统一的“所有 CLI 都压过所有配置”，而是按字段分别处理。
-
-例如：
-
-- provider 选择优先使用显式 CLI 覆盖，然后是 `FIRSTCODER_PROVIDER`，再是项目配置、全局配置和默认值
-- provider 凭证和 base URL 在有映射时优先使用环境变量
-- 顶层字段如 `model` 主要按项目配置、全局配置、默认值顺序解析
-
-这点很重要，因为当前代码并没有一个通用的 CLI merge 层。
-
-## 设计说明
-
-- TUI 和 CLI 共享 session、provider、tools、permissions 和 context 这些核心子系统。
-- TUI 路径比单轮 CLI 更强，因为它支持异步流式输出、中断和权限恢复。
-- 运行时装配集中在 factory 函数中，这让测试和替代入口更容易维护。
+关联：[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)、[权限设计](PERMISSIONS_DESIGN.zh-CN.md)、[Provider 设计](PROVIDERS_DESIGN.zh-CN.md)。

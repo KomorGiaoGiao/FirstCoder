@@ -1,143 +1,79 @@
-# 技能系统设计
+# Skill 系统设计
 
-[English Version](SKILL_SYSTEM_DESIGN.md)
+[English](SKILL_SYSTEM_DESIGN.md)
 
-## 概述
+## Skill 是什么
 
-技能系统是一个用于复用工作流指令的确定性加载层。skill 并不是简单的提示词片段，而是：
+Skill 是基于文件系统、可复用的指令工作流。它不是可执行 plugin，也不是一段没留痕就硬塞进 prompt 的文本。系统会发现候选、确定性路由、安全加载选中的文件及其声明的辅助文件、写入审计事件，再把内容放进稳定 prompt prefix 的输入。
 
-- 可发现的文件
-- 经过显式规则路由
-- 在需要时加载 required files
-- 在加载后写入 session events
+## 带 Skill 的一轮任务
 
-这让 FirstCoder 能扩展工作流能力，但不会把 skill 变成任意可执行插件系统。
+```text
+用户消息 + AGENTS.md
+  -> discover_all_skills（项目根与可选全局根）
+  -> SkillRouter 选 explicit/AGENTS/metadata 命中
+  -> SkillLoader 校验 root-relative path 并加载
+  -> 写 skill_selected / skill_loaded / required-file event
+  -> system-prefix 构建接收 loaded skill context
+  -> provider 在本轮看到这些指令
+```
 
-## 关键文件
+路由不调用模型，因此可复现，也不会为“选本地 instruction 文件”再多花一次模型调用。
 
-- `firstcoder/skills/models.py`：skill catalog 和 definition 模型
-- `firstcoder/skills/discovery.py`：基于文件系统的发现逻辑
-- `firstcoder/skills/router.py`：确定性路由
-- `firstcoder/skills/loader.py`：内容加载和 required-file 提取
-- `firstcoder/skills/session.py`：skill 审计事件写入辅助逻辑
-- `firstcoder/agent/loop.py`：每轮对话中的路由和加载集成
-- `firstcoder/agent/session.py`：运行时状态中的 loaded skills
+## 发现：Skill 从哪里来
 
-## Skill 来源
+| 优先级 | 位置 | 来源 |
+| ---: | --- | --- |
+| 1 | `<project>/.agents/skills/*/SKILL.md` | 项目 agent skill |
+| 2 | `<project>/skills/*.md` | 项目 markdown skill |
+| 3 | `~/.agents/skills`、`~/.codex/skills`、`~/.firstcoder/skills` | 全局 agent/markdown skill |
+| 4 | `FIRSTCODER_SKILL_ROOTS` 的逗号分隔目录 | 额外全局根 |
 
-当前 discovery 同时支持项目内和机器级 skill roots。
+`<project>/skills/INDEX.md` 是目录说明，不是可执行 skill。设 `FIRSTCODER_DISABLE_GLOBAL_SKILLS=1` 可仅发现项目 skill。frontmatter 可提供 `name`、`description`、逗号分隔 `triggers`；结果会排序去重，避免同一根重复出现导致目录不稳定。
 
-项目内来源：
+## 核心数据与路由顺序
 
-- `<project>/skills/*.md`
-- `<project>/.agents/skills/*/SKILL.md`
+`SkillDefinition` 描述候选（name、path、source、root、description、triggers）；`SkillCatalog` 含候选、index 文本、fingerprint；`SkillRoutingDecision` 记录选择、候选、原因、字符串 confidence。
 
-全局 roots 包括：
+`SkillRouter` 严格按以下顺序：
 
-- `~/.agents/skills`
-- `~/.codex/skills`
-- `~/.firstcoder/skills`
-- `FIRSTCODER_SKILL_ROOTS` 提供的额外路径
+1. 用户显式提到 name 或 path；
+2. `AGENTS.md` 某行引用了 skill path，且这行规则与用户消息有有效重叠；
+3. 用户消息与 name/description/triggers 的 token overlap。
 
-通过 `FIRSTCODER_DISABLE_GLOBAL_SKILLS` 可以关闭全局 skills 发现。
+metadata 命中歧义时会刻意不选。相同名称都命中则项目来源优先于全局来源。“不加载”比悄悄塞入无关指令安全得多。
 
-## 核心模型
+## 加载被限制在 Root 内
 
-当前 `SkillDefinition` 包括：
+`SkillLoader` 从登记 root 解析 skill path，越界即拒绝。它还会在“Required files”“Must read”及对应中文标题下提取 required file；这些文件再次要求位于同一个 root 内。
 
-- `name`
-- `path`
-- `source`
-- `root`
-- `description`
-- `triggers`
+这只是路径包含规则，并不宣称 skill 内容天然可信；skill 能指导模型，但不能用 `../` 形式的 required file 去读任意文件。
 
-`SkillCatalog` 包括：
+## 审计、Resume 与变更语义
 
-- 发现到的 skills
-- 可选的项目 `INDEX.md` 内容
-- 一个计算出来的 fingerprint
+Session 会写入 `skill_selected`、`skill_loaded`、`skill_required_file_loaded`。loaded state 会保留在 runtime state，并在 resume 时回放。resume 重建“选过什么”，但会重新读仍存在的 skill 文件，所以不是旧内容的字节级快照。若要跨 skill 修改可复现，请把 skill 版本和项目一起固化，别假设 resume 自带时光机。
 
-当前实现不会在 `SkillDefinition` 上保存数值型 confidence。confidence 是在后续路由阶段生成的。
+## 新增项目 Skill
 
-## 发现模型
+1. 结构化流程优先放 `<project>/.agents/skills/<name>/SKILL.md`；简单流程可放 `<project>/skills/<name>.md`。
+2. 写清 frontmatter description/triggers 或无歧义标题。
+3. required 相对文件必须同 root，并列在 required-files 标题下。
+4. 只有确实需要自动路由时才加 `AGENTS.md` route hint。
+5. 测 discovery、explicit routing、歧义、path escape 拒绝。
 
-discovery 完全由文件系统驱动。
+```sh
+.venv/bin/python -m pytest tests/test_skill_discovery.py tests/test_skill_router.py \
+  tests/test_skill_loader.py tests/test_agent_skill_flow.py -q
+```
 
-`firstcoder/skills/discovery.py` 中的重要行为包括：
+## 排障
 
-- 项目 `skills/INDEX.md` 会被读成 catalog index content，但它本身不是 skill
-- markdown skill 通过 `.md` 文件发现
-- agent skill 通过嵌套 `*/SKILL.md` 发现
-- frontmatter 可以提供 `name`、`description` 和 `triggers`
-- 结果会被稳定排序和去重
+| 现象 | 检查 |
+| --- | --- |
+| 找不到 skill | 根目录布局、disable-global flag、文件名、发现结果 |
+| 选错 skill | 先看 explicit，再看 AGENTS 行重叠，最后看 metadata tie |
+| 选中了但没进内容 | loader error/audit event 与 system-prefix input |
+| required file 不该可读却读到了 | 应为 root-relative；path traversal 必须失败 |
+| resume 行为不同 | 原 session 后 skill 文件已被修改 |
 
-这样可以保证 catalog 在多次运行之间保持稳定，并避免不同 root 重叠导致的重复项。
-
-## 路由模型
-
-当前 skill 路由是确定性的，不依赖额外模型调用。
-
-router 按顺序检查：
-
-1. 用户消息里是否显式提到 skill 名称或路径
-2. 项目说明（如 `AGENTS.md`）里的 route hint 是否命中
-3. name、description、triggers 的 token overlap
-
-最后会得到一个 routing decision，其中包括：
-
-- 选中的 skill 或 `None`
-- candidate 列表
-- 路由原因
-- 字符串形式的 confidence，例如 `high`、`medium`、`none`
-
-当多个 skill 都能匹配时，运行时会优先项目内 skill。
-
-## 加载模型
-
-当当前回合选中了某个 skill，`AgentLoop` 会在构造 provider request 之前先把它加载进来。
-
-加载行为包括：
-
-1. 读取 skill 文件
-2. 从 markdown 正文中提取 required-file 引用
-3. 只在这些文件仍位于 skill root 内时加载它们
-4. 把 skill 审计事件写入 session
-5. 在构造 system prefix 时把加载内容注入进去
-
-因此，skill 是 prompt 构造路径的一部分，而不是回答生成后的附加层。
-
-## 审计与 Session 行为
-
-当前 skill 相关审计事件包括：
-
-- `skill_selected`
-- `skill_loaded`
-- `skill_required_file_loaded`
-
-loaded skills 会保存在运行时状态中，并在 session resume 时重新恢复。
-
-这里有一个重要行为：
-
-- 先根据已有的 skill 事件重建已加载 skill 状态
-- 再从当前磁盘重新读取技能文件（如果文件仍存在）
-
-所以 loaded-skill 状态并不是“历史文件内容的完全快照”，而是部分依赖当前文件系统重建的。
-
-## 优先级规则
-
-当前有效优先级顺序是：
-
-1. 项目 agent skill
-2. 项目 markdown skill
-3. 全局 agent skill
-4. 全局 markdown skill
-
-这样项目内工作流就能覆盖机器级默认规则，而不需要把路由器本身写得很复杂。
-
-## 设计说明
-
-- skills 的发现和路由是确定性的，不再额外调用模型。
-- required-file 加载由内容驱动，并且严格限制在 skill root 内。
-- skills 会在 session log 中留下可审计痕迹，方便事后理解 prompt 是怎么构造的。
-- resume 更偏向“可重建的工作流状态”，而不是依赖黑盒技能缓存。
+关联：[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)、[代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)。

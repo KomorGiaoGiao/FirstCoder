@@ -1,150 +1,112 @@
-# Providers Design
+# Provider Design
 
 [中文版本](PROVIDERS_DESIGN.zh-CN.md)
 
-## Overview
+## Boundary
 
-The provider layer isolates the agent loop from vendor-specific APIs. FirstCoder normalizes provider requests and responses through shared internal types, then adapts them to the wire format of each backend.
+Providers are protocol adapters. The agent loop speaks FirstCoder's internal
+types; each provider converts those types to a vendor request and converts the
+response back. This keeps OpenAI SDK shapes, Anthropic blocks, and vendor error
+strings out of orchestration code.
 
-The current implementation supports two provider families:
+## Request/Response Story
 
-- OpenAI-compatible chat completions
-- an experimental Anthropic provider
+```text
+ContextBuilder + session registry
+  -> ChatRequest(messages, tools, tool_choice, ...)
+  -> ChatProvider.complete() or astream()
+  -> vendor request
+  -> vendor response/chunks
+  -> ChatResponse or ChatStreamEvent
+  -> AgentLoop and TUI
+```
 
-## Key Files
-
-- `firstcoder/providers/base.py`: `ChatProvider` abstract base class
-- `firstcoder/providers/types.py`: shared request, response, stream, usage, and capability types
-- `firstcoder/providers/factory.py`: provider creation from resolved config
-- `firstcoder/providers/presets.py`: static provider presets
-- `firstcoder/providers/openai_compatible.py`: OpenAI-compatible implementation
-- `firstcoder/providers/anthropic_provider.py`: experimental Anthropic implementation
-- `firstcoder/providers/tool_adapters.py`: provider-specific tool schema conversion
-- `firstcoder/providers/errors.py`: provider error taxonomy
-
-## Core Abstraction
-
-`ChatProvider` is an abstract base class, not a protocol. The essential interface is:
-
-- `name`
-- `model`
-- `complete(request)`
-
-Optional wrappers include:
-
-- `acomplete(request)`
-- `astream(request)`
-
-The default async completion path wraps the synchronous provider call with `asyncio.to_thread(...)`. Providers that support streaming override `astream(...)`.
+`ChatRequest.tools` is the sole internal carrier of tool definitions. For an
+OpenAI-compatible backend it becomes `tools=[{"type":"function", ...}]`; for
+Anthropic it becomes `tools=[{"name", "description", "input_schema"}]`.
+This is why schemas should not be copied into prompt text.
 
 ## Shared Types
 
-The provider layer uses concrete shared dataclasses from `firstcoder/providers/types.py`.
+`providers/types.py` defines the stable boundary:
 
-Important ones are:
+| Type | Purpose |
+| --- | --- |
+| `ChatMessage` | normalized system/user/assistant/tool message |
+| `ToolDefinition` / `ToolCall` | definition sent vs call returned |
+| `ChatRequest` | all input to an adapter, including native-tool-independent definitions |
+| `ChatResponse` | complete normalized result and finish reason |
+| `ChatStreamEvent` | normalized text/reasoning/tool-call stream event |
+| `ProviderCapabilities` | gates tools, forced selection, streaming, reasoning, etc. |
+| `ProviderDiagnostics` / `TokenUsage` | metadata kept separate from assistant content |
 
-- `ChatMessage`
-- `ToolDefinition`
-- `ToolCall`
-- `ChatRequest`
-- `ChatResponse`
-- `ChatStreamEvent`
-- `ProviderCapabilities`
-- `ProviderDiagnostics`
-- `TokenUsage`
+`ChatProvider` requires `complete`. Its default async route runs synchronous
+completion in a thread; streaming providers override `astream`.
 
-This normalization allows the rest of the runtime to work without branching on vendor-specific response formats.
+## Configuration and Factory
 
-## Provider Factory
+`load_config` resolves settings and `create_provider_from_config` constructs a
+provider. Static presets cover OpenAI, DeepSeek, Qwen, Moonshot, Zhipu,
+OpenRouter, Ollama, and Anthropic. There is no runtime provider-plugin registry,
+instance cache, or general health-check service today.
 
-Provider creation is function-based, not class-based.
+Keep provider credentials/base URLs in configured environment or config paths;
+do not inspect them in agent-loop code. A runtime `/model` switch rebuilds the
+provider and updates the same summarizer used for L4 context compaction.
 
-The real construction flow is:
+## OpenAI-Compatible Path
 
-1. resolve config through `load_config(...)`
-2. call `create_provider_from_config(config)`
-3. select either:
-   - an OpenAI-compatible preset or custom endpoint
-   - the Anthropic provider
+`OpenAICompatibleProvider` builds Chat Completions parameters with:
 
-There is currently:
+- projected messages;
+- tools only when `supports_tools` is true;
+- converted tool choice when the capability permits it;
+- configured token parameter and merged extra body;
+- optional `stream=True` for the streaming path.
 
-- no dynamic provider plugin registry
-- no provider instance cache
-- no separate health-check subsystem
+It parses tool calls defensively. Invalid JSON arguments cause the unsafe call
+batch to be discarded. If `finish_reason="length"` arrives alongside tool
+calls, they are also discarded because parameters may be truncated. This is an
+intentional correctness-over-optimism choice.
 
-Supported static presets are defined in `firstcoder/providers/presets.py` and include:
+Streaming chunks are accumulated inside the adapter until a complete tool call
+exists; callers receive stable `ChatStreamEvent` values rather than raw SDK
+chunks.
 
-- `openai`
-- `deepseek`
-- `qwen`
-- `moonshot`
-- `zhipu`
-- `openrouter`
-- `ollama`
-- `anthropic`
+## Anthropic Path: Explicitly Narrower
 
-## OpenAI-Compatible Provider
+`AnthropicProvider` is experimental. It supports normal completion and limited
+tool use, moves system messages to Anthropic's dedicated `system` field, and
+converts schemas with `input_schema`. It does not implement the same native
+streaming/thinking/cache-control surface as the OpenAI-compatible adapter.
 
-`firstcoder/providers/openai_compatible.py` is the mainline implementation.
+Do not market a capability merely because an internal type has a field for it;
+check the adapter and its `ProviderCapabilities`.
 
-Key behavior:
+## Error and Recovery Contract
 
-- uses the `openai` Python SDK
-- translates internal `ChatRequest` into Chat Completions parameters
-- sends tools only when provider capabilities allow them
-- supports streaming
-- merges preset-level and request-level `extra_body`
-- parses tool calls defensively
+Adapters classify failures into `ProviderErrorKind` (for example unsupported,
+prompt-too-long, auth/configuration, timeout/network, rate limit). The loop can
+make policy decisions from this normalized category—most importantly a bounded
+context recovery path for prompt-too-long—without parsing every vendor message.
 
-Notable defensive behavior:
+## Verification
 
-- invalid tool-call argument JSON causes the tool-call batch to be dropped
-- `finish_reason="length"` combined with tool calls is treated conservatively
+```sh
+.venv/bin/python -m pytest tests/test_providers.py tests/test_provider_errors.py \
+  tests/test_readme_provider_docs.py -q
+```
 
-Streaming is bridged into internal `ChatStreamEvent` values so the TUI and loop can handle streaming uniformly.
+When adding an adapter, fake the vendor client in tests and assert the outgoing
+wire parameters, normalized tool response, streaming behavior (if promised),
+and error classification. Never require a live API key for core tests.
 
-## Anthropic Provider
+## Extension Checklist
 
-`firstcoder/providers/anthropic_provider.py` is explicitly experimental.
+1. Declare honest capabilities.
+2. Convert every shared request field or explicitly reject unsupported fields.
+3. Convert system, tool calls, and tool results in both directions.
+4. Normalize errors; do not leak SDK-only exceptions past the adapter.
+5. Add fake-client tests for malformed and truncated tool calls.
 
-Current behavior:
-
-- supports normal completion
-- supports tool use in a limited form
-- extracts system prompts into Anthropic's separate `system` field
-- does not currently implement the same full streaming path as the OpenAI-compatible provider
-
-It should be treated as a narrower adapter than the OpenAI-compatible path.
-
-## Tool Adaptation
-
-Providers do not consume tool executors directly. They receive model-visible tool schemas through adapter functions in `firstcoder/providers/tool_adapters.py`.
-
-The real flow is:
-
-1. tools are exposed as internal `ToolDefinition`
-2. the provider adapter converts them to provider-native schema
-3. tool calls return to the agent loop as normalized internal `ToolCall` values
-
-This keeps provider-specific formatting out of the agent loop.
-
-## Error Model
-
-Provider errors are represented by `ProviderError` and `ProviderErrorKind` in `firstcoder/providers/errors.py`.
-
-The error model covers cases such as:
-
-- unsupported features
-- prompt too long
-- auth/configuration failures
-- timeouts and network errors
-- rate limiting
-
-This matters because prompt-too-long failures can trigger context compaction and retry behavior in the agent loop.
-
-## Design Notes
-
-- Provider capabilities are explicit and are used to gate tool exposure and streaming behavior.
-- The provider layer is richer in diagnostics than a minimal “request in / text out” adapter.
-- Extensibility today is static-factory based, not plugin-registry based.
+Related: [Tools](TOOLS_DESIGN.md) and [Context Management](CONTEXT_MANAGEMENT_DESIGN.md).

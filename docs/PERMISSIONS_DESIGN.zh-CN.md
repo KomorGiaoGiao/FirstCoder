@@ -1,159 +1,89 @@
-# 权限系统设计
+# 权限设计
 
-[English Version](PERMISSIONS_DESIGN.md)
+[English](PERMISSIONS_DESIGN.md)
 
-## 概述
+## 权限真正保证什么
 
-权限层负责把“模型想做什么”和“程序允许做什么”分离开来。它不是一个被动的策略辅助器，而是工具执行控制流的一部分。
+权限在敏感工具操作前回答一个程序侧问题：**这个具体请求现在能不能执行？** 它不依赖模型“自觉”。真实执行链是：
 
-一次权限预检在真实运行时里会产生三种结果：
+```text
+ToolPermissionSpec -> PermissionRequest -> PermissionManager
+  -> 匹配 grant 或 DefaultPermissionPolicy
+  -> ALLOW | ASK | DENY
+  -> PermissionAwareToolRegistry 采取动作
+```
 
-- 直接允许工具执行
-- 直接拒绝，并返回一个合成的 tool result
-- 暂停当前回合，等待用户确认
+只有 `ALLOW` 分支会进入工具 executor。做安全 review 时应该盯住这条边界，而不是 system prompt 里写得多严肃。
 
-## 关键文件
+## 具体例子：写文件
 
-- `firstcoder/permissions/types.py`：权限系统核心类型
-- `firstcoder/permissions/policy.py`：默认策略实现
-- `firstcoder/permissions/grants.py`：grant 存储
-- `firstcoder/permissions/manager.py`：预检、确认请求构造、确认结果解析
-- `firstcoder/tools/permission_registry.py`：tools 与 permissions 的集成入口
-- `firstcoder/agent/session.py`：pending permission execution 状态
-- `firstcoder/agent/loop.py`：loop 中的暂停 / 恢复逻辑
+1. 模型请求 `write(path, content)`。
+2. permission-aware registry 用 write 的 spec 构造 request，含 action、规范化 target、cwd、policy hint。
+3. `PermissionManager.preflight` 先匹配 grant，未命中才按当前 mode 进入默认 policy。
+4. `ALLOW` 执行；`DENY` 变 tool result；`ASK` 变结构化 `UserInputRequest`，turn 暂停。
+5. 用户回答后，`resolve_confirmation` 再做必要检查，然后执行原 pending call 或写 denied result。
 
-## 核心类型
+模型只会看到最后的 tool message；它不能越过 registry 执行工具，也不能自己写 grant 文件。
 
-主要类型定义在 `firstcoder/permissions/types.py` 中。
+## 数据模型
 
-关键枚举和 dataclass 包括：
+`permissions/types.py` 是词汇表：
 
-- `PermissionAction`
-- `PermissionMode`
-- `PermissionDecisionKind`
-- `PermissionPersistence`
-- `PermissionScopeType`
-- `PermissionConfirmationChoice`
-- `PermissionRequest`
-- `PermissionGrant`
-- `PermissionDecision`
+| 类型 | 作用 |
+| --- | --- |
+| `PermissionAction` | filesystem、shell、network、env 等动作分类 |
+| `PermissionRequest` | 一次具体 target/action 的决策输入 |
+| `PermissionDecisionKind` | 当前请求的 `ALLOW`、`ASK`、`DENY` |
+| `PermissionPersistence` | 批准是一次性的还是长期的 |
+| `PermissionGrant` | 可持久化、有范围的 allow 规则 |
+| `PermissionScopeType` | exact path、command prefix、host、env key 等范围 |
+| `PermissionMode` | conservative、standard、aggressive、bypass |
 
-这里最重要的区分是：
+不要混淆 decision 和 persistence：“本次允许”是 allow + 短期持久性；“始终允许”只有当前请求支持时才会生成有 scope 的 grant。
 
-- `PermissionDecisionKind` 决定这次执行是 allow、deny 还是 ask
-- `PermissionPersistence` 决定允许结果的生效范围有多长
+## Policy、Mode 与 Grant
 
-## Permission Manager
+`DefaultPermissionPolicy` 在未匹配 grant 时给出兜底决策。它会看目标：项目内普通读取通常比外部删除、读取敏感环境变量、含控制操作符的 shell 安全。完整规则以 `permissions/policy.py` 为准；调用方别复制半套逻辑，直接加测试。
 
-`PermissionManager` 是程序侧统一入口。
+Mode 影响 policy：
 
-它负责组合：
+- `conservative`：更常询问；
+- `standard`：常规项目模式；
+- `aggressive`：更容易允许被标记为可自动执行的动作；
+- `bypass`：最宽松的 policy mode。
 
-- 默认策略
-- 持久化 grants
-- 当前权限模式
+`bypass` 不是删除代码路径。请求仍会规范化、registry 仍会 dispatch、结果仍会记录，真正规则仍由 policy/hard check 定义。把它当成明确工作模式，不要当成模型偷偷开挂。
 
-`preflight(request)` 的真实流程是：
+`FilePermissionGrantStore` 将 grant 存到 data root 的 `permissions.json`。`allow always` 会通过 `default_scope_for_request` 算出 scope，不会保存成无限制的自然语言“以后都行”。
 
-1. 先根据 project root 规范化请求
-2. 检查是否命中持久化 grant
-3. 如果没有命中 grant，则走默认策略
+## 暂停、恢复与回放
 
-`build_confirmation(request)` 会把一个 `ASK` 结果转换成 UI 可展示的 `UserInputRequest`。
+`ASK` 必须保留 assistant 的原始 tool call。`AgentSession` 保存 `PendingPermissionExecution`，交互调用者得到 `pending_input`；恢复时 loop 解析选择并完成同一条 tool-call transaction，provider 序列因此合法。
 
-`resolve_confirmation(request, choice)` 则把用户回答解析成最终决策，并在需要时写入长期 grant。
+长期 grant 和 pending call 生命周期不同：grant 是权限数据；pending action 在可能时从 resume 的未匹配 assistant tool-call 历史恢复，不另起一套平行对话日志。
 
-## 权限模式
+## 可验证练习
 
-默认策略当前支持四种模式：
+```sh
+.venv/bin/python -m pytest tests/test_permissions_policy.py \
+  tests/test_permissions_manager.py tests/test_permissions_grants.py \
+  tests/test_permission_registry.py tests/test_permission_commands.py -q
+```
 
-- `conservative`
-- `standard`
-- `aggressive`
-- `bypass`
+重点读 `tests/test_permission_registry.py`：它证明 deny 或 ask 时 executor 不会被调用，只有正确 resume 才能进入执行。
 
-`bypass` 仍然是程序侧模式，而不是模型能力。模型并不会直接获得更多权限，只是程序在预检时变得更宽松。
+## 排障清单
 
-## 默认策略
+| 现象 | 检查 |
+| --- | --- |
+| 不该弹窗却弹了 | tool spec 派生的 action/target，再看 policy mode |
+| 已永久授权却无效 | grant 的 scope 规范化与 grant store 位置 |
+| 用户允许后未执行 | pending execution id 与 resume 调用 |
+| 危险动作直接跑了 | 是否实际安装 wrapper、tool 是否有 permission spec |
+| permission result 导致 provider 历史报错 | 是否追加了配对 tool call id |
 
-默认策略实现在 `firstcoder/permissions/policy.py`。
+## 改动规则
 
-当前的关键规则包括：
+动作分类规则放 `policy.py`，scope 算法放 manager/types，工具专属 target 提取放 `ToolPermissionSpec`。不要让每个工具都手搓确认弹窗。回归测试至少覆盖预期 allow 和最近的危险邻居。
 
-- 读取普通项目内文件通常允许
-- 项目内写入通常需要询问，除非是 aggressive 模式且工具元数据允许 auto 执行
-- 删除项目根目录外路径会被拒绝
-- 读取敏感环境变量会被拒绝
-- 项目内只读 git 命令默认允许
-- 含 shell 控制符的命令需要确认
-- 网络请求默认需要确认
-
-当前识别的敏感路径包括：
-
-- `.git`
-- `.env`
-- `.pem`
-- `.key`
-
-## Grant 模型
-
-长期 grant 通过 `PermissionGrant` 表示，并由 `PermissionGrantStore` 实现负责保存。
-
-项目级运行时通常使用 `FilePermissionGrantStore`，把 grants 持久化到 session 数据目录下的 JSON 文件中。
-
-grant 是按 scope 建模的，不是“随便记录一个已批准动作”。例如 `allow always` 会被转换成保守范围，例如：
-
-- exact path
-- command prefix
-- host
-- env key
-
-这个 scope 由 `default_scope_for_request(...)` 计算出来。
-
-## 与工具系统的集成
-
-权限不是靠每个工具自己调用 manager 实现的，而是通过 `PermissionAwareToolRegistry` 统一执行。
-
-真实执行路径是：
-
-1. 对工具调用做 preflight
-2. 根据工具的 `ToolPermissionSpec` 构造 `PermissionRequest`
-3. 调用 `PermissionManager.preflight(...)`
-4. wrapper 决定：
-   - 执行工具
-   - 返回拒绝结果
-   - 返回结构化确认结果
-
-也就是说，权限控制附着在 registry wrapper 上，而不是散落在每个 executor 里。
-
-## 暂停与恢复
-
-`ASK` 在 agent loop 里是一个真实暂停态。
-
-当 loop 遇到 `ASK` 时：
-
-1. 保存 `PendingPermissionExecution`
-2. 向调用方返回 `pending_input`
-3. UI 或交互式 CLI 收集用户回答
-4. `resume_with_user_input(...)` 解析回答
-5. 原始工具调用被继续执行，或者被转换成 denied result
-
-这个设计很重要，因为 provider 可见消息序列必须保持合法。即使中间暂停，loop 也会保证 assistant tool call 最终能得到匹配的 tool result。
-
-## 持久化与恢复行为
-
-长期 grants 会被持久化，但 pending permission 状态并没有被建模成独立的权限事件流。
-
-当前 resume 行为是从 assistant tool-call 历史尾部“未匹配的 tool call”中重建 pending permission execution。
-
-也就是说，这一层的持久化边界是：
-
-- grant 作为长期规则被持久化
-- pending execution 尽量从会话事实中恢复
-
-## 设计说明
-
-- 权限是工具执行协议的一部分，而不只是一个 UI 弹窗层。
-- manager 把 grants 和默认策略统一封装在一个 preflight 入口后面。
-- `ASK` 会暂停当前回合，并恢复原始工具执行路径。
-- 持久化 grants 采用基于 scope 的保守模型。
+关联：[工具设计](TOOLS_DESIGN.zh-CN.md)、[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)。

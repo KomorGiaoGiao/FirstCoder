@@ -1,16 +1,26 @@
 # Local Pytest Benchmark
 
-这是一个给 FirstCoder 用的轻量级 coding-agent benchmark。它不像 SWE-bench 那样拉 Docker 镜像，而是把每道题生成为一个本地小 Python 仓库，让 FirstCoder 修改代码，然后用本地 `pytest` 判分。
+[中文版本](LOCAL_PYTEST_BENCHMARK.zh-CN.md)
 
-它适合现在这个阶段：
+## What It Measures
 
-- 快速看 agent loop 是否会读题、找文件、改代码、跑测试、停止。
-- 不依赖 Docker，也不依赖远端镜像。
-- 可以自己追加题目，用很小成本持续调教提示词和工具循环。
+This is FirstCoder's fast local coding-agent probe. Each JSONL row becomes a
+small clean Git repository; the agent receives a task, edits that repository,
+and the runner executes that task's declared pytest command. It measures the
+full practical loop—read, edit, test, stop—not just whether a provider returns
+plausible text.
 
-## 运行
+It is not a leaderboard substitute for SWE-bench: tasks are small, local, and
+the runner does not emulate every real-world repository condition.
 
-先确保 provider 环境变量已经配置好，例如：
+## Prerequisites
+
+- install this repository's dependencies and use its virtual environment;
+- configure a FirstCoder provider through project configuration/environment;
+- have `git` and pytest available to the Python that runs the benchmark;
+- use a disposable output directory: the runner creates task repositories.
+
+For example:
 
 ```sh
 export FIRSTCODER_PROVIDER=openai
@@ -19,7 +29,9 @@ export FIRSTCODER_API_KEY=...
 export FIRSTCODER_MODEL=...
 ```
 
-然后跑样例题：
+Do not commit credentials or generated `runs/` artifacts.
+
+## Smallest Real Run
 
 ```sh
 .venv/bin/python benchmark/local_pytest/runner.py \
@@ -28,48 +40,79 @@ export FIRSTCODER_MODEL=...
   --max-tasks 1
 ```
 
-如果你用的是 Codex bundled Python，也可以替换成：
+If the work directory already contains that task id, rerun with `--force` only
+when you deliberately want to discard that generated task repository:
 
 ```sh
-/Users/x/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 \
-  benchmark/local_pytest/runner.py \
+.venv/bin/python benchmark/local_pytest/runner.py \
   --workdir runs/local-pytest-smoke \
   --summary-out runs/local-pytest-smoke-summary.json \
-  --max-tasks 1
+  --max-tasks 1 --force
 ```
 
-## 题目格式
+The process exits `0` only when every selected task passes; `2` means the run
+completed but at least one task's pytest command failed.
 
-题库是 JSONL，每行一道题：
+## Task Contract
+
+The default dataset is `benchmark/local_pytest/tasks.sample.jsonl`. Each JSONL
+row has this shape:
 
 ```json
 {
   "id": "string_normalize",
   "title": "Normalize Usernames",
-  "files": {
-    "src/text_tools.py": "def normalize_username(value: str) -> str:\n    return value.strip()\n",
-    "tests/test_text_tools.py": "from src.text_tools import normalize_username\n..."
-  },
+  "files": {"src/text_tools.py": "...", "tests/test_text_tools.py": "..."},
   "problem_statement": "Fix src/text_tools.py ...",
   "test_command": "python -m pytest -q"
 }
 ```
 
-默认样例在：
+`id` becomes the generated directory name. All `files` paths are checked to
+stay inside that directory. The runner initializes a Git repository and records
+the agent's final diff, including untracked files, so patch evidence remains
+available even when tests fail.
 
-```text
-benchmark/local_pytest/tasks.sample.jsonl
+## Outputs to Inspect
+
+The JSON summary contains, per task:
+
+| Field | Why inspect it |
+| --- | --- |
+| `passed`, `returncode`, `pytest_output` | the actual score evidence |
+| `repo_path`, `test_command` | reproduce the evaluator locally |
+| `transcript_path`, `raw_response` | diagnose model/loop behavior |
+| `model_patch` | see what was actually changed |
+| `elapsed_seconds` | detect regressions or stalled turns |
+
+Never report “passed” from agent prose alone. Open the summary, rerun the shown
+test command in `repo_path`, and inspect `model_patch` when a result surprises
+you.
+
+## Useful Options
+
+| Option | Effect |
+| --- | --- |
+| `--tasks PATH` | use another JSONL task set |
+| `--max-tasks N` | select the first N rows |
+| `--provider NAME` / `--model-name NAME` | label/configure adapter use |
+| `--session-root PATH` | separate benchmark session logs |
+| `--force` | recreate existing generated repos |
+
+## Debugging a Failure
+
+1. Read `pytest_output`; distinguish agent failure from an invalid task fixture.
+2. `cd` to `repo_path` and run the recorded `test_command` yourself.
+3. Inspect `model_patch` and the transcript. Did it edit the correct file, run
+   tests, or stop at an approval/tool failure?
+4. Rerun one task with a new workdir/session root before changing the agent.
+5. Convert the discovered failure into a focused unit/integration test.
+
+## Runner Tests
+
+```sh
+.venv/bin/python -m pytest tests/test_local_pytest_benchmark.py tests/test_eval_adapter.py -q
 ```
 
-## 输出
-
-summary 会记录：
-
-- 题目 id 和标题
-- 题目仓库路径
-- pytest 是否通过
-- FirstCoder transcript 路径
-- 生成的 git diff
-- 耗时和 pytest 输出
-
-这不是主流榜单分数，但很适合做本地调试探针。等这个小 benchmark 稳定后，再把同一套 loop 放回 SWE-bench Lite 或 `swe-bench-fast`。
+Related: [SWE-bench Lite Runbook](SWE_LITE_RUNBOOK.md) for a more realistic
+external evaluator.

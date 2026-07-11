@@ -1,31 +1,94 @@
 # Codebase Reading Guide
 
-This guide is for readers who want to understand FirstCoder from the outside in.
+[中文版本](CODEBASE_READING_GUIDE.zh-CN.md)
 
-## Recommended Order
+This is a route through the running system, not a list of folders. Use it when
+you need to answer “where should I change this?” without cargo-culting a nearby
+file.
 
-1. Read [../README.md](../README.md) for the project-level positioning and quickstart.
-2. Read [CLI / TUI Design](CLI_TUI_DESIGN.md) to understand how the runtime is assembled and exposed to the user.
-3. Read [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md) and [Tools Design](TOOLS_DESIGN.md) to understand the main execution loop.
-4. Read [Permissions Design](PERMISSIONS_DESIGN.md) and [Context Management Design](CONTEXT_MANAGEMENT_DESIGN.md) for safety and long-session behavior.
-5. Read [Providers Design](PROVIDERS_DESIGN.md) and [Skill System Design](SKILL_SYSTEM_DESIGN.md) for extension boundaries.
+## Start With One Real Turn
 
-## Source Tree Mapping
+Trace the request **“find the loop limit and explain it”**:
 
-After reading the docs above, use this mapping to move into the code:
+```text
+firstcoder/cli.py
+  -> firstcoder/app/factory.py:create_firstcoder_app
+  -> firstcoder/app/runtime.py:AgentChatRunner
+  -> firstcoder/agent/loop.py:AgentLoop
+  -> ContextBuilder builds ChatRequest(messages, tools)
+  -> provider.complete/astream
+  -> session.tool_registry.execute
+  -> append facts to .firstcoder session JSONL
+  -> runtime emits UI updates
+```
 
-- `firstcoder/app/`: Textual TUI, command routing, and runtime assembly
-- `firstcoder/agent/`: agent loop, runtime orchestration, and turn handling
-- `firstcoder/tools/`: built-in tools, schemas, and tool execution flow
-- `firstcoder/permissions/`: permission policies, approvals, and grants
-- `firstcoder/context/`: event log, projection, checkpointing, and compaction
-- `firstcoder/session/`: session catalog, resume flow, transcript, and sharing
-- `firstcoder/providers/`: provider abstraction and concrete adapters
-- `firstcoder/skills/`: skill discovery, loading, and routing
+That trace introduces the central contract: the loop coordinates; providers
+translate protocols; tools perform local work; the context package persists and
+projects facts; the TUI renders events. Do not make provider SDK calls from the
+loop or UI mutations from a tool executor.
 
-## Reading Tips
+## The Map
 
-- Start with runtime assembly before reading individual subsystems in isolation.
-- Read one subsystem end to end instead of jumping across all modules at once.
-- Keep the matching design doc open while reading the implementation.
-- Use the benchmark and runbook docs only after the main architecture is clear.
+| Area | Read first | Owns | Does not own |
+| --- | --- | --- | --- |
+| `app/` | `factory.py`, `runtime.py`, `tui.py` | application wiring and terminal presentation | model protocol translation |
+| `agent/` | `loop.py`, `session.py`, `loop_limits.py` | one-turn orchestration and pause/resume | concrete shell or HTTP behavior |
+| `context/` | `store.py`, `writer.py`, `context_builder.py` | durable facts and model-visible projection | UI widgets |
+| `tools/` | `builtin.py`, `registry.py`, `session_registry.py` | schemas, dispatch, session wrappers | final permission policy |
+| `permissions/` | `manager.py`, `policy.py`, `grants.py` | allow/ask/deny decisions and grants | executing a tool |
+| `providers/` | `types.py`, `factory.py`, adapters | internal-to-vendor protocol conversion | session persistence |
+| `skills/` | `discovery.py`, `router.py`, `loader.py` | skill catalog and loading audit | tool registration |
+| `session/` | `catalog.py`, `resume.py`, `fork.py` | session discovery and lifecycle services | agent turn semantics |
+
+## A Four-Pass Reading Method
+
+1. **Name the behavior.** Search the visible command, tool name, or error using
+   `rg -n "term" firstcoder tests`. Avoid guessing from filenames.
+2. **Find the seam.** Follow imports toward the interface (`ChatProvider`,
+   `ToolRegistryLike`, or a dataclass) before diving into an implementation.
+3. **Follow data, not control flow alone.** For a turn, inspect `ChatRequest`,
+   `ChatResponse`, `ToolCall`, `ToolResult`, and session events. These objects
+   show what crosses boundaries.
+4. **Read the test next.** Tests specify error handling and invariants far more
+   precisely than happy-path code. Run the narrow test before editing.
+
+## Useful Entry Commands
+
+```sh
+rg -n "class AgentLoop|def create_firstcoder_app" firstcoder tests
+rg -n "ChatRequest\(|tool_registry\.execute|preflight\(" firstcoder tests
+.venv/bin/python -m pytest tests -q
+```
+
+Use `pytest tests`, not a bare repository-wide `pytest`: generated benchmark
+runs can contain their own unrelated `tests/` directories.
+
+## First Changes: Choose the Correct Layer
+
+- A new vendor option belongs in `providers/` and configuration, not the loop.
+- A new local capability starts as a `Tool` and must declare its permission
+  spec; do not add an ad-hoc `if` in `AgentLoop`.
+- A different approval rule belongs in `permissions/policy.py` or grants.
+- Different history visibility belongs in context projection/compaction, never
+  destructive edits to the original event log.
+- A new slash command belongs in `app/` command handlers and should not bypass
+  session services.
+
+## Common Wrong Turns
+
+**“The system prompt is the whole context.”** No. It is a stable prefix.
+`ContextBuilder` separately projects session history and `ChatRequest.tools`
+carries tool schemas.
+
+**“Bypass means no safety code exists.”** No. Bypass is a policy mode. Tool
+execution still goes through the registry and produces structured results.
+
+**“Compaction deleted history.”** No. the JSONL facts remain; a checkpoint
+changes the current provider view.
+
+## A Practical First Exercise
+
+Open `firstcoder/agent/loop_limits.py`, change nothing, and run the relevant
+tests found by `rg -n "max_tool_rounds|TOOL_ROUND_LIMIT" tests`. Then trace the
+stop reason back into `loop.py`. You will see the project’s intended workflow:
+state a small invariant, test it, then change the smallest owning layer.

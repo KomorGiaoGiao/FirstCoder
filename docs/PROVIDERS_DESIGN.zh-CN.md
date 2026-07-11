@@ -1,150 +1,86 @@
-# Providers 设计
+# Provider 设计
 
-[English Version](PROVIDERS_DESIGN.md)
+[English](PROVIDERS_DESIGN.md)
 
-## 概述
+## 边界
 
-provider 层负责把 agent loop 和具体厂商 API 隔离开。FirstCoder 先把请求和响应规范化成一套内部类型，再由适配器转换成不同后端的实际协议。
+Provider 是协议 adapter。agent loop 只说 FirstCoder 的内部类型；每个 provider 负责把它们变成厂商请求，再把响应还原回来。这样 OpenAI SDK 对象、Anthropic block、厂商错误字符串都不会漏进编排层。
 
-当前实现主要支持两类 provider：
+## 一次请求与响应
 
-- OpenAI-compatible chat completions
-- 实验性的 Anthropic provider
+```text
+ContextBuilder + session registry
+  -> ChatRequest(messages, tools, tool_choice, ...)
+  -> ChatProvider.complete() 或 astream()
+  -> 厂商请求
+  -> 厂商响应/chunk
+  -> ChatResponse 或 ChatStreamEvent
+  -> AgentLoop 与 TUI
+```
 
-## 关键文件
-
-- `firstcoder/providers/base.py`：`ChatProvider` 抽象基类
-- `firstcoder/providers/types.py`：共享的 request、response、stream、usage 和 capability 类型
-- `firstcoder/providers/factory.py`：根据解析后的配置创建 provider
-- `firstcoder/providers/presets.py`：静态 provider presets
-- `firstcoder/providers/openai_compatible.py`：OpenAI-compatible 实现
-- `firstcoder/providers/anthropic_provider.py`：实验性的 Anthropic 实现
-- `firstcoder/providers/tool_adapters.py`：provider 侧的工具 schema 转换
-- `firstcoder/providers/errors.py`：provider 错误模型
-
-## 核心抽象
-
-`ChatProvider` 当前是抽象基类，不是 protocol。核心接口包括：
-
-- `name`
-- `model`
-- `complete(request)`
-
-可选异步包装包括：
-
-- `acomplete(request)`
-- `astream(request)`
-
-默认异步 completion 路径通过 `asyncio.to_thread(...)` 包装同步 provider 调用。支持流式输出的 provider 会自行实现 `astream(...)`。
+`ChatRequest.tools` 是内部唯一的工具定义载体。OpenAI-compatible 会把它变成 `tools=[{"type":"function", ...}]`；Anthropic 则是 `tools=[{"name", "description", "input_schema"}]`。因此 schema 不应该再复制进 prompt 正文。
 
 ## 共享类型
 
-provider 层使用 `firstcoder/providers/types.py` 里的具体 dataclass。
+`providers/types.py` 定义稳定边界：
 
-关键类型包括：
+| 类型 | 作用 |
+| --- | --- |
+| `ChatMessage` | 规范化 system/user/assistant/tool message |
+| `ToolDefinition` / `ToolCall` | 发送的定义 / 返回的调用 |
+| `ChatRequest` | adapter 的完整输入，含厂商无关工具定义 |
+| `ChatResponse` | 完整标准结果和 finish reason |
+| `ChatStreamEvent` | 标准化 text/reasoning/tool-call 流事件 |
+| `ProviderCapabilities` | 工具、强制选择、流、reasoning 等能力开关 |
+| `ProviderDiagnostics` / `TokenUsage` | 和 assistant 正文分离的诊断/用量 |
 
-- `ChatMessage`
-- `ToolDefinition`
-- `ToolCall`
-- `ChatRequest`
-- `ChatResponse`
-- `ChatStreamEvent`
-- `ProviderCapabilities`
-- `ProviderDiagnostics`
-- `TokenUsage`
+`ChatProvider` 必须实现 `complete`；默认异步路径把同步调用放在线程里，支持流的 provider 才覆盖 `astream`。
 
-这些内部统一类型让上层逻辑不需要直接处理厂商响应差异。
+## 配置与工厂
 
-## Provider Factory
+`load_config` 解析设置，`create_provider_from_config` 构造 provider。静态 preset 包含 OpenAI、DeepSeek、Qwen、Moonshot、Zhipu、OpenRouter、Ollama、Anthropic。当前没有运行时 provider plugin registry、实例缓存或通用 health-check 服务。
 
-当前 provider 创建是函数式的，不是类式工厂。
+凭证/base URL 留在配置和环境层，不要让 agent loop 自己读。`/model` 切换会重建 provider，并同步更新 L4 context compaction 所用的 summarizer。
 
-真实流程是：
+## OpenAI-Compatible 主路径
 
-1. 通过 `load_config(...)` 解析配置
-2. 调用 `create_provider_from_config(config)`
-3. 选择：
-   - OpenAI-compatible preset 或自定义 endpoint
-   - Anthropic provider
+`OpenAICompatibleProvider` 构造 Chat Completions 参数时会处理：
 
-目前没有：
+- context 投影出的 messages；
+- 仅在 `supports_tools` 为真时发送 tools；
+- capability 允许时转换 tool choice；
+- 选择 token 参数并合并 extra body；
+- 流式路径增加 `stream=True`。
 
-- 动态 provider 插件注册表
-- provider 实例缓存
-- 独立的健康检查子系统
+它会保守解析 tool call。arguments JSON 不合法时整批危险调用会被丢弃；若 `finish_reason="length"` 同时带 tool call，也会丢弃，因为参数可能只有半截。这是“宁可少做、不做半截危险动作”的明确选择。
 
-静态 preset 定义在 `firstcoder/providers/presets.py` 中，当前包括：
+原始 stream chunk 在 adapter 内聚合，直到 tool call 完整；上层拿到的是稳定的 `ChatStreamEvent`，不是 SDK 的一坨原始对象。
 
-- `openai`
-- `deepseek`
-- `qwen`
-- `moonshot`
-- `zhipu`
-- `openrouter`
-- `ollama`
-- `anthropic`
+## Anthropic 路径：能力更窄
 
-## OpenAI-Compatible Provider
+`AnthropicProvider` 是实验性实现：支持普通 completion 和有限 tool use；会把 system message 移到 Anthropic 独立 `system` 字段，用 `input_schema` 转 schema。它目前没有 OpenAI-compatible 那条路径完整的原生 streaming/thinking/cache-control 能力。
 
-`firstcoder/providers/openai_compatible.py` 是当前主线路径。
+内部类型有字段，不等于 provider 已支持。要看 adapter 实现与 `ProviderCapabilities`，别自我感动式宣布“全支持”。
 
-关键行为：
+## 错误与恢复契约
 
-- 使用 `openai` Python SDK
-- 把内部 `ChatRequest` 转成 Chat Completions 参数
-- 只有在 provider capabilities 允许时才发送 tools
-- 支持 streaming
-- 合并 preset 级和 request 级的 `extra_body`
-- 以防御性方式解析 tool calls
+adapter 将失败归类为 `ProviderErrorKind`（如 unsupported、prompt-too-long、auth/configuration、timeout/network、rate limit）。loop 因此可根据统一类别做决定，特别是 prompt-too-long 的有界 context recovery，而无需猜各家错误文案。
 
-几个重要的防御性处理：
+## 验证
 
-- tool call 参数 JSON 非法时会直接放弃这批 tool calls
-- 当 `finish_reason="length"` 且伴随 tool calls 时也会走保守路径
+```sh
+.venv/bin/python -m pytest tests/test_providers.py tests/test_provider_errors.py \
+  tests/test_readme_provider_docs.py -q
+```
 
-流式输出会被转换成内部 `ChatStreamEvent`，从而让 TUI 和 agent loop 用统一方式消费。
+新增 adapter 时，用 fake client 断言出站 wire 参数、规范化 tool response、承诺了就测 streaming、错误归类。核心测试不要依赖真实 API key。
 
-## Anthropic Provider
+## 扩展清单
 
-`firstcoder/providers/anthropic_provider.py` 当前是明确的实验性实现。
+1. 如实声明 capability。
+2. 每个共享 request 字段都转换，或明确拒绝不支持项。
+3. system、tool call、tool result 都要双向转换。
+4. 规范化 error，不能把 SDK 专属异常泄出 adapter。
+5. 给畸形与截断 tool call 加 fake-client 测试。
 
-现状包括：
-
-- 支持普通 completion
-- 以较有限形式支持 tool use
-- 会把 system prompt 抽取到 Anthropic 独立的 `system` 字段
-- 目前没有实现与 OpenAI-compatible 路径同级别的完整流式输出能力
-
-因此它更适合被看作一个窄一点的适配器，而不是当前主线路径。
-
-## 工具适配
-
-provider 不会直接消费 tool executor。它只接收模型可见的工具 schema，这层转换在 `firstcoder/providers/tool_adapters.py` 中完成。
-
-真实流程是：
-
-1. tools 在内部以 `ToolDefinition` 暴露
-2. provider adapter 把它们转成厂商原生 schema
-3. tool calls 再被规范化回内部 `ToolCall`
-
-这样 provider-specific 的格式差异不会渗透进 agent loop。
-
-## 错误模型
-
-provider 相关错误通过 `firstcoder/providers/errors.py` 中的 `ProviderError` 和 `ProviderErrorKind` 表示。
-
-这个错误模型覆盖了：
-
-- 不支持的能力
-- prompt 过长
-- 认证和配置失败
-- timeout 和网络错误
-- rate limit
-
-这很重要，因为 prompt-too-long 错误会直接影响 context compaction 和 retry 路径。
-
-## 设计说明
-
-- provider capabilities 是显式建模的，并用于控制工具暴露和 streaming 行为。
-- provider 层比最小的“请求进 / 文本出”适配器更重视 diagnostics。
-- 当前扩展方式是静态工厂 + preset，而不是插件式注册表。
+关联：[工具设计](TOOLS_DESIGN.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)。

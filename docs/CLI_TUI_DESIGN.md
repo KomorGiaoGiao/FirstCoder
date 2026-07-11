@@ -1,156 +1,133 @@
-# CLI / TUI Design
+# CLI and TUI Runtime Design
 
 [中文版本](CLI_TUI_DESIGN.zh-CN.md)
 
-## Overview
+## What This Explains
 
-FirstCoder exposes the same agent runtime through three user-facing modes:
+This document explains how FirstCoder starts, assembles a usable agent session,
+and turns runtime events into terminal output. It does not define tool safety or
+vendor wire formats; follow the links at the end for those layers.
 
-- Textual TUI for interactive terminal use
-- line-oriented interactive CLI (`--interactive`)
-- single-turn CLI (`--message` or stdin)
+The important idea is that the terminal UI is a client of a pre-assembled
+runtime. It is not the place where providers, permission rules, or session
+storage are improvised.
 
-The entrypoint is `firstcoder/cli.py`. The TUI and CLI share the same core runtime pieces, but they do not use identical control paths. The TUI uses async streaming through `AgentChatRunner`, while the single-turn CLI path is synchronous.
+## One Request, From Terminal to Screen
 
-## Key Files
+```text
+firstcoder [flags]
+  -> cli.py chooses TUI, REPL, or one-shot mode
+  -> factory.py builds store + provider + tools + permissions + session
+  -> AgentChatRunner starts AgentLoop for the current session
+  -> stream/tool/input events become TUI transcript/activity updates
+  -> durable events remain in <project>/.firstcoder
+```
 
-- `firstcoder/cli.py`: top-level CLI parser, mode routing, config commands, REPL, single-turn execution
-- `firstcoder/app/factory.py`: assembles the runtime graph for the app
-- `firstcoder/app/runtime.py`: `CurrentSessionState` and `AgentChatRunner`
-- `firstcoder/app/tui.py`: `FirstCoderApp` Textual application
-- `firstcoder/app/tui_state.py`: transcript-oriented TUI state model
-- `firstcoder/app/commands.py`: slash command handling contracts
-- `firstcoder/app/session_commands.py`: session-related slash commands
-- `firstcoder/app/permission_commands.py`: permission mode slash commands
-- `firstcoder/app/router.py`: command composition helpers
-- `firstcoder/config/settings.py`: config loading and precedence
+For example, `firstcoder --message "explain loop limits"` uses a synchronous
+one-shot path. The Textual application uses `AgentChatRunner`'s asynchronous
+streaming path. Both reuse the same session, tool registry, provider types, and
+agent loop; their presentation and interruption behavior differ.
 
-## Runtime Assembly
+## Startup and Dependency Assembly
 
-There is no `AppFactory` or `RuntimeAssembly` class in the current implementation. Runtime assembly is function-based.
+`firstcoder/app/factory.py:create_firstcoder_app` is the main composition root.
+In order, it creates:
 
-`create_firstcoder_app(...)` in `firstcoder/app/factory.py` builds the main object graph:
+1. `JsonlSessionStore` under `<project>/.firstcoder` unless `data_root` is set.
+2. `SandboxAccess` and the builtin tools from `create_builtin_registry`.
+3. A configured `ChatProvider`.
+4. `FilePermissionGrantStore` plus a project `PermissionManager`.
+5. `AgentSession`, which creates the session-scoped registry.
+6. `ContextWindowManager` with provider-backed L4 summarization.
+7. session catalog/new/resume/fork/share services and slash-command handlers.
+8. `AgentChatRunner`, `RuntimeModelSwitcher`, and finally `FirstCoderApp`.
 
-1. create the JSONL-backed session store
-2. create sandbox access and builtin tool registry
-3. create the provider
-4. create the permission grant store and project permission manager
-5. create or resume `AgentSession`
-6. create `CurrentSessionState`
-7. create context compaction services
-8. create session catalog, resume, and share services
-9. create slash command handlers
-10. create `AgentChatRunner`
-11. create `FirstCoderApp`
+This order is meaningful: a session needs concrete tools and a permission
+manager; a runner needs both the session and context manager. Tests can pass a
+fake provider or a small tool list to this factory without reaching the network.
 
-This makes the TUI a thin shell around a pre-assembled runtime instead of a place where subsystems are created lazily.
+## Interfaces and State That Cross the Boundary
 
-## CLI Modes
+| Object | Producer | Consumer | Why it matters |
+| --- | --- | --- | --- |
+| `AppConfig` | `config/settings.py` | factory/provider switcher | resolved configuration, not raw env access everywhere |
+| `AgentSession` | factory/session services | runner and command handlers | current durable conversation and tool registry |
+| `CurrentSessionState` | `app/runtime.py` | TUI and runner | replaceable pointer when `/new`, `/fork`, or resume changes session |
+| `ChatStreamEvent` | provider | runner/TUI | normalized text, reasoning, and tool-call deltas |
+| `ToolExecutionEvent` | agent loop | runner/TUI | local work is separate from model streaming |
+| `UserInputRequest` | permissions or `ask_user` | interactive UI | explicit pause/resume contract |
 
-`firstcoder/cli.py` currently routes into these modes:
+## User-Facing Modes
 
-- `config` commands:
-  - `firstcoder config path`
-  - `firstcoder config show`
-  - `firstcoder config init`
-- TUI mode:
-  - `firstcoder`
-  - `firstcoder --tui`
-- line REPL:
-  - `firstcoder --interactive`
-- single-turn execution:
-  - `firstcoder --message "..."`
-  - stdin when no explicit message is provided
-- benchmark mode:
-  - `firstcoder --benchmark`
+`firstcoder/cli.py` routes these modes:
 
-Important runtime override flags include:
+| Invocation | Intended use | Important limitation |
+| --- | --- | --- |
+| `firstcoder` or `--tui` | full interactive Textual UI | requires an interactive terminal |
+| `--interactive` | line-oriented REPL | less visual than the Textual transcript |
+| `--message "..."` | one request for scripts/CI | no long-lived interactive approval dialog |
+| stdin with no message | pipe one request | same one-shot constraints |
+| `config path/show/init` | inspect or initialize config | does not start an agent turn |
+| `--benchmark` | benchmark entry route | benchmark setup has extra requirements |
 
-- `--project`
-- `--data-root`
-- `--session-id`
-- `--provider`
-- `--auto-approve`
-- `--max-tool-rounds`
+Common runtime overrides include `--project`, `--data-root`, `--session-id`,
+`--provider`, `--auto-approve`, and `--max-tool-rounds`. Read `cli.py` before
+adding a flag: configuration precedence is field-specific, not a generic merge
+where every CLI option wins.
 
-## TUI Structure
+## What the TUI Actually Renders
 
-The Textual app is implemented mainly inside `FirstCoderApp` in `firstcoder/app/tui.py`.
+`FirstCoderApp` in `app/tui.py` renders a transcript-oriented state model from
+`app/tui_state.py`: entries, tool activity, todo items, provider/session state,
+and a pending input prompt. It buffers streaming text before flushing it so a
+token stream does not cause a widget update per token.
 
-The UI is built from a small set of concrete widgets rather than a hierarchy of subsystem-specific classes. The main layout includes:
+There are two event lanes:
 
-- a top bar for session and provider state
-- a scrollable transcript area
-- a todo panel
-- an activity line
-- an input widget
+- provider events: reasoning/text/tool-call deltas and final response;
+- local events: tool started, finished, skipped, denied, or permission asked.
 
-The actual TUI state model is transcript-oriented and lives in `firstcoder/app/tui_state.py`:
+Keeping them distinct lets the UI say “a shell command is running” even while
+the provider has produced no further text. Do not represent a local tool run as
+fake assistant prose.
 
-- `TuiTranscript`
-- `TuiTranscriptEntry`
-- `TuiToolActivity`
-- `TuiTodoItem`
-- `TuiEntryKind`
+## Commands Change State Through Services
 
-This is more concrete than the older conceptual `TUIState` model that appeared in previous docs.
+Slash commands are composed in `CompositeCommandHandler`. The notable families
+are session (`/new`, `/fork`, `/resume`, `/share`, `/rename`), model (`/model`),
+context (`/context`, `/compact`), permission mode (`/mode`), and skills
+(`/skills`, `/skill`). A command handler should call the owning service and
+then update `CurrentSessionState`; it should not hand-edit JSONL files or TUI
+state as a shortcut.
 
-## Streaming And User Input
+## Hands-On Checks
 
-The TUI path uses async streaming methods on `AgentChatRunner`:
+```sh
+.venv/bin/python -m firstcoder --help
+.venv/bin/python -m pytest tests/test_cli.py tests/test_app_factory.py tests/test_app_runtime.py -q
+```
 
-- `arun_user_turn(...)`
-- `aresume_with_user_input(...)`
+To inspect startup without credentials, read the fake-provider cases in
+`tests/test_app_factory.py`. They demonstrate the actual object graph and prove
+that `task_boundary` is session-injected before the first provider request.
 
-Streaming behavior is implemented in `firstcoder/app/tui.py` through app methods that:
+## Troubleshooting
 
-- install stream event handlers
-- buffer text deltas
-- flush the stream periodically into the transcript
-- interleave tool activity and final assistant text
+| Symptom | First place to inspect |
+| --- | --- |
+| wrong model/provider shown | resolved config, then `RuntimeModelSwitcher` |
+| new session still displays old history | `CurrentSessionState` and session command callback |
+| text appears only at the end | provider streaming capability and runner's streaming choice |
+| approval cannot continue | pending `UserInputRequest` and `aresume_with_user_input` path |
+| command is listed but does nothing | matching command handler and router registration |
 
-When a tool execution pauses for permission or user input, the loop returns a `pending_input` request. The TUI surfaces that request and later resumes the turn with `aresume_with_user_input(...)`.
+## Extension Rules
 
-## Slash Commands
+- Add a presentation behavior in `app/`, not in provider adapters.
+- Add reusable runtime construction in the factory, keeping constructors
+  injectable for tests.
+- Preserve the distinction between stream events and local tool events.
+- Add a focused `test_app_*` or `test_cli.py` case before changing visible flow.
 
-The current TUI command surface is assembled from dedicated handlers and includes:
-
-- `/sessions`
-- `/session <session_id>`
-- `/new [title]`
-- `/fork [title]`
-- `/help`
-- `/resume <session_id>`
-- `/share [session_id] [--tool-results]`
-- `/rename <title>`
-- `/model`
-- `/model <model|provider/model>`
-- `/skills` opens a picker and inserts the selected skill reference into the input
-- `/skill <name>`
-- `/context`
-- `/compact status`
-- `/compact`
-- `/mode`
-- `/mode <conservative|standard|aggressive|bypass>`
-
-These are real handlers, not just help text.
-
-## Config Precedence
-
-Config loading is implemented in `firstcoder/config/settings.py`.
-
-The precedence is field-specific rather than a universal “CLI beats everything” rule.
-
-Examples:
-
-- provider selection prefers explicit CLI override, then `FIRSTCODER_PROVIDER`, then project config, then global config, then defaults
-- provider credentials and base URL prefer environment variables where mapped
-- top-level values like `model` are mostly resolved from project config, then global config, then defaults
-
-This behavior is important because the current code does not implement a single generic merge layer for all CLI flags.
-
-## Design Notes
-
-- TUI and CLI share the same session, provider, tools, permissions, and context machinery.
-- The TUI path is more capable than the single-turn CLI path because it supports async streaming, interruption, and permission resumption.
-- Runtime assembly is intentionally centralized in factory functions, which keeps tests and alternate entrypoints simpler.
+Related: [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md),
+[Permissions](PERMISSIONS_DESIGN.md), and [Providers](PROVIDERS_DESIGN.md).

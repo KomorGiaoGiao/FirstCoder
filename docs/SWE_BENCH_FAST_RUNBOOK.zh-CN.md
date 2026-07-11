@@ -1,46 +1,55 @@
-# SWE-bench-fast Runbook
+# SWE-bench-fast 运行手册
 
-[English Version](SWE_BENCH_FAST_RUNBOOK.md)
+[English](SWE_BENCH_FAST_RUNBOOK.md)
 
-`swe-bench-fast` 是一个对 ARM64 友好的 SWE-bench evaluator。它负责对已有的 prediction JSONL 进行打分，本身不负责生成 patch。
+## 范围：只负责评测
 
-## 本地二进制
+`swe-bench-fast` 评测已有的 predictions JSONL，**不会**调用 FirstCoder，也不会生成 patch。生成与评测要分开，避免 harness 挂了却被误判成模型生成失败。
 
-当前工作区保留了一份已编译好的本地二进制：
+```text
+FirstCoder 或其他生成器 -> predictions JSONL
+ARM64 兼容 dataset + Docker -> swe-bench-fast
+-> 每个 instance 状态与 JSON report
+```
 
-```bash
+## 本仓库的本地环境
+
+工作区有一个 macOS ARM64 二进制：
+
+```sh
 .tools/swe-bench-fast/swe-bench-fast
 ```
 
-这份二进制来自 `greynewell/swe-bench-fast`，目标平台是本机使用的 `darwin/arm64`。
+它由 `greynewell/swe-bench-fast` 构建。大跑前先验证 binary 与 Docker：
 
-## Docker
+```sh
+file .tools/swe-bench-fast/swe-bench-fast
+docker version
+```
 
-运行时使用 Colima 的 Docker socket：
+本机 Colima 常用 Docker socket：
 
-```bash
+```sh
 export DOCKER_HOST=unix:///Users/x/.colima/default/docker.sock
 ```
 
-工作区配置文件是 `swe-bench-fast.toml`，ARM64 registry 目前配置为：
+只有它确实是当前机器活跃 socket 才能这样设；不要把这行当作宇宙真理复制到别处。
 
-```toml
-arm64_registry = "docker.io/greynewell/swe-bench-arm64"
-```
+仓库配置是 `swe-bench-fast.toml`，ARM64 image registry 为 `docker.io/greynewell/swe-bench-arm64`。
 
-## 数据集
+## 三类输入必须对得上
 
-尽量使用 `swe-bench-fast` 自带的 ARM64 兼容数据行。当前工作区中有一个两条样例实例的 smoke 文件：
+运行前确认：
 
-```bash
-data/swebench_fast_arm64_two.jsonl
-```
+1. dataset 行是 ARM64 兼容的，且含要评分的 `instance_id`（如 `data/swebench_fast_arm64_two.jsonl`）；
+2. predictions JSONL 含完全相同 id 和合法 patch；
+3. Docker 能拉起配置的 ARM64 镜像。
 
-## 运行
+id 不匹配经常看似“模型失败”，实际是评测输入就不合法。
 
-下面的命令会对两条已有的 FirstCoder predictions 进行评估：
+## 小型 Smoke Eval
 
-```bash
+```sh
 DOCKER_HOST=unix:///Users/x/.colima/default/docker.sock \
   .tools/swe-bench-fast/swe-bench-fast run \
   --dataset data/swebench_fast_arm64_two.jsonl \
@@ -51,13 +60,32 @@ DOCKER_HOST=unix:///Users/x/.colima/default/docker.sock \
   --output runs/swe_bench_fast_two_report.json
 ```
 
-## 已观察到的 Smoke 结果
+首跑建议 `--workers 1`，便于排错。只有 smoke 确认正常、并检查过磁盘/CPU/Docker 余量后再加并发；`--timeout` 是本次 evaluator 配置的一部分，报告结果时要一起留下。
 
-在当前这台 Mac 上，第一条 smoke 实例首次运行大约需要 66 秒；镜像缓存好之后，第二次运行大约 10 秒。
+## 怎样正确读结果
 
-两条实例的 smoke 结果：
+report 才是证据，至少保存：
 
-```text
-astropy__astropy-12907  RESOLVED_FULL
-astropy__astropy-14182  RESOLVED_NO
-```
+- 精确 binary/version 与 `swe-bench-fast.toml`；
+- dataset、predictions 的 hash 或不可变副本；
+- command、Docker socket/environment、timeout、worker 数；
+- 每个 instance 的状态和完整 JSON report；
+- image pull/setup 失败与 patch 失败要分开。
+
+过去本机 smoke 的耗时只能作性能背景，不能当当前承诺：此前一个 Astropy instance 冷跑约 66 秒，镜像缓存后约 10 秒，另一个未 resolved。报时延或分数时请重测，别拿老黄历当实时仪表盘。
+
+## 失败分流
+
+| 现象 | 先做什么 |
+| --- | --- |
+| 连不上 Docker | 确认 Colima/Docker 在跑，socket 和环境变量一致 |
+| 镜像拉取失败 | registry 权限、架构、磁盘、retry log |
+| 没有 instance 被评 | 精确比 dataset/prediction id |
+| patch apply/test 失败 | 保存 report，再查该 prediction/transcript |
+| 很慢 | 分开看冷镜像拉取和真实测试执行 |
+
+## 与 FirstCoder 测试的关系
+
+这是外部集成评测。单元测试能证明 adapter 和 prediction 生成格式，不能证明 Docker harness resolved。代码改动先跑 `pytest tests`；要声称 SWE-bench-fast 成绩时，再单独跑本手册。
+
+关联：[SWE-bench Lite 手册](SWE_LITE_RUNBOOK.zh-CN.md)。

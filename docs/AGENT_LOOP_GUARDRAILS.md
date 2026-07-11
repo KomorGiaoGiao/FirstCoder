@@ -2,106 +2,118 @@
 
 [中文版本](AGENT_LOOP_GUARDRAILS.zh-CN.md)
 
-## Overview
+## Purpose and Boundary
 
-The agent loop guardrails limit how far one user turn can run before the runtime stops it. In the current implementation, these limits are part of `AgentLoopLimits` and are enforced directly inside the loop.
+`AgentLoop` is the transaction coordinator for one user turn. It records facts,
+projects a valid provider request, asks the model, executes returned tools, and
+repeats. It does not know how an OpenAI chunk is parsed or how a shell command
+works.
 
-The guardrails today focus on three boundaries:
+Guardrails bound that transaction so a confused model, a slow provider, or a
+tool-heavy task cannot continue indefinitely. They are code-enforced checks in
+`firstcoder/agent/loop.py`, not good intentions in the system prompt.
 
-- maximum tool rounds
-- maximum provider calls
-- maximum wall-clock time for one turn
+## The Turn State Machine
 
-They are narrower and more concrete than the older conceptual “safety budget” model.
+```text
+user input
+  -> append user fact -> build request -> provider call
+  -> plain assistant text ----------------------------> complete
+  -> assistant tool calls -> tool registry execution
+       -> ALLOW/result -> append tool result -> provider call
+       -> DENY         -> append denied result -> provider call
+       -> ASK          -> store pending execution -> waiting for user input
+  -> resume answer -> resolve pending tool -> continue
+```
 
-## Key Files
+Every branch preserves a crucial provider rule: an assistant tool call obtains
+a matching tool result, even when it was denied or the user refused it. This is
+why a permission prompt is a paused turn, not an exception thrown out of the
+conversation.
 
-- `firstcoder/agent/loop_limits.py`: limit fields and stop reasons
-- `firstcoder/agent/loop.py`: enforcement inside the loop
-- `firstcoder/agent/cancellation.py`: cancellation token support
-- `firstcoder/agent/verification.py`: verification success checks that can end a turn early
+## Limits and Defaults
 
-## Limit Model
+`AgentLoopLimits` is the single limit configuration.
 
-`AgentLoopLimits` currently contains:
+| Field | Default | Stops when |
+| --- | ---: | --- |
+| `max_tool_rounds` | 200 | completed model-to-tool rounds exceed the budget |
+| `max_provider_calls` | 400 | provider requests exceed the budget |
+| `max_turn_seconds` | 3600 | monotonic elapsed turn time exceeds the budget |
+| `successful_verification_stop` | `True` | a qualifying verification result asks for finalization |
 
-- `max_tool_rounds`
-- `max_provider_calls`
-- `max_turn_seconds`
-- `successful_verification_stop`
+`swe_lite()` uses 60 rounds, 100 calls, and 1800 seconds. `summary()` uses 1,
+3, and 120 seconds. `None` disables a particular numeric limit; it does not
+disable permission checks or tool-result sequence validation.
 
-There is no `Age` tracker and no separate max-verification-count or total-tool-time budget in the current code.
+The explicit stop reasons are `tool_round_limit`, `provider_call_limit`, and
+`turn_timeout`. Cancellation is separate: `CancellationToken` lets a user or
+UI interrupt active work, rather than masquerading as one of these budgets.
 
-`AgentLoopStopReason` currently includes:
+## What Happens Before a Normal Tool Round
 
-- `tool_round_limit`
-- `provider_call_limit`
-- `turn_timeout`
+At the start of a tool-capable turn, the loop can force the session-injected
+`task_boundary` tool. The program supplies the stable task hash; the model may
+only report a decision based on a real user-message id. Once a boundary is
+confirmed, context compaction may run under a task-switch trigger.
 
-## Defaults
+The loop also constructs a stable system prefix and projects conversation
+history through `ContextBuilder`. The resulting `ChatRequest` contains two
+separate channels: `messages` for instructions/history and `tools` for native
+tool definitions. Tool JSON schemas are not duplicated in the system message.
 
-The normal defaults are intentionally generous:
+## Tool Scheduling and Quality Nudges
 
-- `max_tool_rounds = 200`
-- `max_provider_calls = 400`
-- `max_turn_seconds = 3600`
-- `successful_verification_stop = True`
+Readonly calls such as `view`, `grep`, and `git_diff` may run in parallel when
+the response permits it. In bypass mode, a wider explicit set can run in
+parallel. Mutation ordering is not casually parallelized.
 
-Additional presets exist for narrower workflows:
+The loop also observes todo behavior. After enough non-todo tool results it can
+ask for a plan; after several results since the last update it can ask for todo
+progress. These are model-visible reminders, not a second planner and not a
+permission mechanism.
 
-- `default()`
-- `swe_lite()`
-- `summary()`
+## Recovery Paths
 
-These presets are part of the actual implementation and should be treated as runtime presets, not just documentation suggestions.
+- A prompt-too-long `ProviderError` triggers context recovery and a bounded
+  retry; it must not spin on the same oversized request.
+- A malformed/unknown tool call becomes a structured `ToolResult` error.
+- Permission `ASK` creates `PendingPermissionExecution`; interaction resumes
+  the same original call.
+- A cancelled task reports cancellation through the runner/UI boundary.
 
-## Enforcement In The Loop
+## Minimal Evidence
 
-`AgentLoop` owns the real control flow.
+```sh
+.venv/bin/python -m pytest \
+  tests/test_agent_loop_limits.py tests/test_agent_context_loop.py \
+  tests/test_agent_tool_flow.py tests/test_agent_verification.py -q
+```
 
-The loop currently does all of the following in one turn:
+Then locate the exact assertion you are changing:
 
-1. append the user message
-2. compact context if needed
-3. build provider-visible messages
-4. call the provider
-5. append assistant output or assistant tool calls
-6. execute tools
-7. append tool results
-8. optionally compact again
-9. repeat until the turn completes, pauses for user input, or hits a guardrail
+```sh
+rg -n "TOOL_ROUND_LIMIT|max_provider_calls|prompt too long|PendingPermission" tests firstcoder
+```
 
-Guardrails are checked during this loop rather than as a separate supervisory process.
+## Common Misreadings
 
-## Related Runtime Behavior
+**“200 is the maximum number of tool calls.”** It is the configured tool-round
+limit; a round can contain more than one eligible parallel read.
 
-Several runtime behaviors interact with these limits:
+**“A successful test always ends immediately.”** Only results recognized by
+`agent/verification.py`, with `successful_verification_stop` enabled, prompt
+that early-finalization behavior.
 
-- prompt-too-long provider errors can trigger compaction and a retry path
-- readonly tools can execute in parallel in some cases
-- multi-step tool work without an existing todo plan can trigger a one-time planning reminder after multiple non-todo tool results
-- stale todo state can trigger a progress reminder when several tools run after the last todo update
-- successful verification can stop further tool looping and force a final model response
-- permission confirmation can pause the turn and later resume it without losing tool-call integrity
+**“Bypass removes the wrapper.”** No. It changes policy decisions. The session
+registry, event logging, normalized result handling, and loop limits remain.
 
-These are not separate guardrail subsystems, but they affect how long a turn can continue and when it should stop.
+## Safe Changes
 
-## Cancellation
+Change a guardrail in `loop_limits.py`, enforce it in `loop.py`, and add a test
+that asserts both the stop reason and resulting conversation shape. Do not add
+an invisible timer in a provider adapter: limits are user-turn semantics and
+belong at the coordinator.
 
-Cancellation exists alongside the limit system. It is not one of the stop-reason counters in `AgentLoopStopReason`, but it is still part of the runtime boundary model.
-
-The loop uses cancellation support to interrupt:
-
-- long-running tool execution
-- streaming turns
-- resumed turns waiting on further execution
-
-This gives the runtime both automatic stop conditions and user-driven interruption.
-
-## Design Notes
-
-- The current guardrail system is loop-centric, not event-supervisor-centric.
-- The real implementation is simpler than earlier conceptual docs: provider-call count matters more than abstract verification budgets.
-- Verification still matters, but today it is modeled as an early-stop condition, not a max-count quota.
-- Prompt-too-long recovery belongs in the same practical safety envelope because it prevents a turn from repeatedly failing on the same oversized prompt.
-- Todo reminders are guardrails for planning quality, not a separate scheduler: they nudge the model to create or update a complete visible plan while keeping execution in the normal loop.
+Related: [Tools](TOOLS_DESIGN.md), [Permissions](PERMISSIONS_DESIGN.md), and
+[Context Management](CONTEXT_MANAGEMENT_DESIGN.md).
