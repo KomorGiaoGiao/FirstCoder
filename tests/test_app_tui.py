@@ -17,6 +17,7 @@ from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _entry_renderable
 from firstcoder.app.tui import _provider_name_markup
+from firstcoder.app.tui import _provider_model_markup
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
 from firstcoder.app.picker import TuiPickerItem, TuiPickerState, render_picker
@@ -364,18 +365,20 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
     )
 
 
-def test_yuren_provider_name_uses_a_moving_colour_band() -> None:
-    first = _provider_name_markup("Yuren", glow_frame=0)
-    next_frame = _provider_name_markup("Yuren", glow_frame=1)
+def test_yuren_provider_and_model_use_one_moving_colour_band() -> None:
+    first = _provider_model_markup("Yuren", "gpt-5.6-terra", glow_frame=0)
+    next_frame = _provider_model_markup("Yuren", "gpt-5.6-terra", glow_frame=1)
 
-    assert Text.from_markup(first).plain == "Yuren"
+    assert Text.from_markup(first).plain == "Yuren/gpt-5.6-terra"
     assert first != next_frame
     assert "[#18cfcb]" in first
     assert "[#5fb5ff]" in first
+    assert "[#6e6d72]/[/]" in first
 
 
 def test_other_provider_names_keep_the_standard_green() -> None:
     assert _provider_name_markup("OpenAI", glow_frame=4) == "[#7bba55]OpenAI[/]"
+    assert _provider_model_markup("OpenAI", "gpt-5.6", glow_frame=4) == "[#7bba55]OpenAI[/][#6e6d72]/gpt-5.6[/]"
 
 
 @pytest.mark.anyio

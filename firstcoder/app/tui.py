@@ -857,8 +857,7 @@ class FirstCoderApp(App[None]):
             metadata_values.append(
                 (
                     None,
-                    f"{_provider_name_markup(provider, glow_frame=self._provider_glow_frame)}"
-                    f"[#6e6d72]/{escape(model)}[/]",
+                    _provider_model_markup(provider, model, glow_frame=self._provider_glow_frame),
                     18,
                 )
             )
@@ -1448,13 +1447,24 @@ def _metadata_markup(values: list[tuple[str | None, str, int | None]], *, separa
 
 
 def _provider_name_markup(provider: str, *, glow_frame: int = 0) -> str:
-    """Render Yuren as a moving terminal-safe colour band; others stay green."""
+    """Render the provider-only part for ordinary, non-easter-egg labels."""
     if provider != "Yuren":
         return f"[#7bba55]{escape(provider)}[/]"
+    return _glow_markup(provider, glow_frame=glow_frame)
+
+
+def _provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> str:
+    """Apply the Yuren glow to the provider and model name as one colour band."""
+    if provider != "Yuren":
+        return f"{_provider_name_markup(provider, glow_frame=glow_frame)}[#6e6d72]/{escape(model)}[/]"
+    return f"{_glow_markup(provider, glow_frame=glow_frame)}[#6e6d72]/[/]{_glow_markup(model, glow_frame=glow_frame + len(provider) + 1)}"
+
+
+def _glow_markup(text: str, *, glow_frame: int) -> str:
     return "".join(
         f"[{_YUREN_GLOW_PALETTE[(index + glow_frame) % len(_YUREN_GLOW_PALETTE)]}]"
         f"{escape(character)}[/]"
-        for index, character in enumerate(provider)
+        for index, character in enumerate(text)
     )
 
 
