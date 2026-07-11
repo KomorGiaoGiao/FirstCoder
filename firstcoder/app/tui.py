@@ -72,6 +72,12 @@ from firstcoder.app.welcome import welcome_renderable
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
 _YUREN_GLOW_PALETTE = ("#b8ffdf", "#81e8bb", "#18cfcb", "#45e6df", "#5fb5ff")
+_PERMISSION_MODE_COLORS = {
+    "conservative": "#5fb5ff",
+    "standard": "#cfd1d6",
+    "aggressive": "#f6b73c",
+    "bypass": "#ff6b5f",
+}
 
 @dataclass(slots=True)
 class _ActiveChatTurn:
@@ -864,7 +870,7 @@ class FirstCoderApp(App[None]):
         mode = getattr(self.current_session, "mode", None) if self.current_session is not None else None
         if mode:
             mode_text = str(mode)
-            mode_color = "#b28443" if mode_text == "bypass" else "#6e6d72"
+            mode_color = _PERMISSION_MODE_COLORS.get(mode_text, "#6e6d72")
             metadata_values.append((mode_color, mode_text, None))
         if self.config.project_name:
             metadata_values.append(("#6e6d72", f"cwd {self.config.project_name}", 22))

@@ -338,12 +338,26 @@ async def test_firstcoder_app_uses_custom_chrome_instead_of_textual_header_foote
     assert "main" in widget_ids
 
 
-def test_firstcoder_app_topbar_hides_session_id() -> None:
-    app = FirstCoderApp(current_session=FakeSession())
+@pytest.mark.parametrize(
+    ("mode", "color"),
+    [
+        ("conservative", "#5fb5ff"),
+        ("standard", "#cfd1d6"),
+        ("aggressive", "#f6b73c"),
+        ("bypass", "#ff6b5f"),
+    ],
+)
+def test_firstcoder_app_topbar_colors_each_permission_mode(mode, color) -> None:
+    class ModeSession(FakeSession):
+        pass
+
+    session = ModeSession()
+    session.mode = mode
+    app = FirstCoderApp(current_session=session)
 
     assert app._topbar_text() == (
         "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
-        "[#303238]·[/]   [#6e6d72]standard[/]"
+        f"[#303238]·[/]   [{color}]{mode}[/]"
     )
     assert "sess_test" not in app._topbar_text()
 
@@ -361,7 +375,7 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
     assert app._topbar_text() == (
         "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
         "[#303238]·[/]   [#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]   "
-        "[#303238]·[/]   [#6e6d72]standard[/]   [#303238]·[/]   [#6e6d72]cwd FirstCoder[/]"
+        "[#303238]·[/]   [#cfd1d6]standard[/]   [#303238]·[/]   [#6e6d72]cwd FirstCoder[/]"
     )
 
 
@@ -535,7 +549,7 @@ def test_firstcoder_app_topbar_highlights_bypass_mode_and_truncates_long_session
 
     assert app._topbar_text() == (
         "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
-        "[#303238]·[/]   [#b28443]bypass[/]"
+        "[#303238]·[/]   [#ff6b5f]bypass[/]"
     )
 
 
