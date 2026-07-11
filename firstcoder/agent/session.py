@@ -26,7 +26,7 @@ from firstcoder.permissions.grants import FilePermissionGrantStore, PermissionGr
 from firstcoder.permissions.manager import PermissionManager
 from firstcoder.permissions.policy import DefaultPermissionPolicy
 from firstcoder.permissions.types import PermissionMode
-from firstcoder.providers.types import ChatResponse, ProviderCapabilities, ToolCall, ToolDefinition
+from firstcoder.providers.types import ChatResponse, ProviderCapabilities, ToolCall
 from firstcoder.permissions.types import PermissionDecision, PermissionRequest
 from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.session_registry import ToolRegistryLike, create_session_tool_registry
@@ -260,12 +260,12 @@ class AgentSession:
         provider_name: str,
         provider_model: str = "",
         provider_capabilities: ProviderCapabilities | None = None,
-        tools: list[ToolDefinition],
     ) -> list:
         """构造 provider 请求前面的稳定 system prefix。
 
         system prompt 不写入普通会话消息，因为它不是用户/模型之间发生过的事实；它是每次
-        请求根据 AGENTS.md、工具 schema、provider 能力和权限策略动态生成的高优先级前缀。
+        请求根据 AGENTS.md、provider 能力和权限策略动态生成的高优先级前缀。工具
+        schema 仅通过 provider 的原生 tools 字段发送，避免与 system prompt 重复。
         """
 
         inputs = build_system_prompt_inputs(
@@ -274,7 +274,6 @@ class AgentSession:
             skill_protocol=self._skill_protocol(),
             skill_catalog_summary=self._skill_catalog_summary(),
             loaded_skill_context=self._loaded_skill_context(),
-            tools=tools,
             provider_name=provider_name,
             provider_model=provider_model,
             provider_capabilities=provider_capabilities,

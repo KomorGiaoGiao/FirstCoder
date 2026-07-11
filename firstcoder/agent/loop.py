@@ -444,7 +444,6 @@ class AgentLoop:
             provider_name=self.provider.name,
             provider_model=self.provider.model,
             provider_capabilities=getattr(self.provider, "capabilities", None),
-            tools=definitions,
         )
         messages = self.context_builder.build_provider_messages(
             self.session.rebuild_view(),
@@ -538,7 +537,6 @@ class AgentLoop:
             provider_name=self.provider.name,
             provider_model=self.provider.model,
             provider_capabilities=getattr(self.provider, "capabilities", None),
-            tools=definitions,
         )
         messages = self.context_builder.build_provider_messages(
             self.session.rebuild_view(),

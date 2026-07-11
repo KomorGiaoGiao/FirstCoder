@@ -150,7 +150,6 @@ def test_context_builder_accepts_stable_system_prefix_from_builder() -> None:
         SystemPromptInputs(
             base_rules="你是 FirstCoder。",
             agents_md="上下文管理放在 firstcoder/context。",
-            tools=[],
             provider_name="test-provider",
             provider_capabilities={"tool_calling": True},
             permission_policy={"read": "allow"},

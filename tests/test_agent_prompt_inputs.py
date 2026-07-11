@@ -5,7 +5,6 @@ from firstcoder.agent.prompt_inputs import (
     read_agents_md,
 )
 from firstcoder.context.system_prompt import SystemPromptBuilder
-from firstcoder.providers.types import ToolDefinition
 
 
 def test_read_agents_md_reads_project_root_file(tmp_path) -> None:
@@ -28,17 +27,10 @@ def test_provider_capabilities_are_static_and_include_model() -> None:
     assert capabilities["model"] == "claude-test"
 
 
-def test_build_system_prompt_inputs_uses_real_tool_schema_and_permission_policy() -> None:
-    tool = ToolDefinition(
-        name="grep",
-        description="搜索文本",
-        parameters={"type": "object", "properties": {"pattern": {"type": "string"}}},
-    )
-
+def test_build_system_prompt_inputs_uses_permission_policy_without_tool_schema() -> None:
     inputs = build_system_prompt_inputs(
         base_rules="基础规则",
         agents_md="项目规则",
-        tools=[tool],
         provider_name="fake",
         provider_model="fake-model",
         permission_policy={"write": "allow"},
@@ -46,8 +38,7 @@ def test_build_system_prompt_inputs_uses_real_tool_schema_and_permission_policy(
     content = SystemPromptBuilder().build(inputs).messages[0].content
 
     assert "项目规则" in content
-    assert "grep" in content
-    assert '"pattern": {' in content
+    assert "Available tools" not in content
     assert '"model": "fake-model"' in content
     assert '"write": "allow"' in content
     assert inputs.permission_policy["shell"] == DEFAULT_PERMISSION_POLICY["shell"]

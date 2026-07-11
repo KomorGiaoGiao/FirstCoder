@@ -15,7 +15,7 @@ from typing import Any
 from firstcoder.context.identity import content_fingerprint, stable_json_hash
 from firstcoder.context.token_budget import estimate_text_tokens
 from firstcoder.context.versions import SYSTEM_PROMPT_VERSION
-from firstcoder.providers.types import ChatMessage, ToolDefinition
+from firstcoder.providers.types import ChatMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,6 @@ class SystemPromptInputs:
 
     base_rules: str
     agents_md: str
-    tools: list[ToolDefinition]
     provider_name: str
     provider_capabilities: dict[str, Any]
     permission_policy: dict[str, Any]
@@ -57,7 +56,6 @@ class SystemPromptBuilder:
             "skill_protocol_hash": content_fingerprint(inputs.skill_protocol),
             "skill_catalog_summary_hash": content_fingerprint(inputs.skill_catalog_summary),
             "loaded_skill_context_hash": content_fingerprint(inputs.loaded_skill_context),
-            "tools_schema_hash": stable_json_hash([_tool_fingerprint_input(tool) for tool in inputs.tools]),
             "provider_name": inputs.provider_name,
             "provider_capabilities": inputs.provider_capabilities,
             "permission_policy": inputs.permission_policy,
@@ -79,7 +77,6 @@ class SystemPromptBuilder:
                 _format_section("Loaded skills", inputs.loaded_skill_context),
                 _format_section("Provider", _format_provider(inputs)),
                 _format_section("Permission policy", _format_json(inputs.permission_policy)),
-                _format_section("Available tools", _format_tools(inputs.tools)),
             ]
             if section
         )
@@ -113,14 +110,6 @@ class PromptPrefixCache:
     @property
     def entry(self) -> PromptPrefixCacheEntry | None:
         return self._entry
-
-
-def _tool_fingerprint_input(tool: ToolDefinition) -> dict[str, Any]:
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.parameters,
-    }
 
 
 def _format_section(title: str, content: str) -> str:
@@ -211,22 +200,6 @@ def _format_provider(inputs: SystemPromptInputs) -> str:
             f"prompt_version={inputs.prompt_version}",
         ]
     )
-
-
-def _format_tools(tools: list[ToolDefinition]) -> str:
-    if not tools:
-        return "无"
-    lines = []
-    for tool in sorted(tools, key=lambda item: item.name):
-        lines.append(
-            "\n".join(
-                [
-                    f"- {tool.name}: {tool.description}",
-                    f"  parameters: {_format_json(tool.parameters)}",
-                ]
-            )
-        )
-    return "\n".join(lines)
 
 
 def _estimate_message_tokens(message: ChatMessage) -> int:

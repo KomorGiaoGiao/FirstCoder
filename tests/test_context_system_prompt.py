@@ -4,20 +4,10 @@ from firstcoder.context.system_prompt import (
     SystemPromptBuilder,
 )
 from firstcoder.context.token_budget import estimate_text_tokens
-from firstcoder.providers.types import ToolDefinition
-
-
 def _inputs(**overrides: object) -> SystemPromptInputs:
     values = {
         "base_rules": "你是 FirstCoder。",
         "agents_md": "项目规则：上下文放在 firstcoder/context。",
-        "tools": [
-            ToolDefinition(
-                name="read_file",
-                description="读取文件",
-                parameters={"type": "object", "properties": {"path": {"type": "string"}}},
-            )
-        ],
         "provider_name": "openai-compatible",
         "provider_capabilities": {"tool_calling": True, "parallel_tool_calls": False},
         "permission_policy": {"shell": "confirm", "read": "allow"},
@@ -54,26 +44,6 @@ def test_agents_md_change_invalidates_system_prompt_fingerprint() -> None:
     after = builder.fingerprint(_inputs(agents_md="规则 B"))
 
     assert before != after
-
-
-def test_tool_schema_change_invalidates_system_prompt_fingerprint() -> None:
-    builder = SystemPromptBuilder()
-
-    changed_tool = [
-        ToolDefinition(
-            name="read_file",
-            description="读取文件",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "encoding": {"type": "string"},
-                },
-            },
-        )
-    ]
-
-    assert builder.fingerprint(_inputs()) != builder.fingerprint(_inputs(tools=changed_tool))
 
 
 def test_conversation_messages_do_not_invalidate_system_prompt_fingerprint() -> None:
@@ -130,15 +100,14 @@ def test_system_prompt_includes_skill_protocol_catalog_and_loaded_skill() -> Non
     assert "unrelated skill body" not in content
 
 
-def test_system_prompt_contains_readable_permission_policy_and_tool_schema() -> None:
+def test_system_prompt_contains_readable_permission_policy_without_tool_schema() -> None:
     entry = SystemPromptBuilder().build(_inputs())
     content = entry.messages[0].content
 
     assert '"shell": "confirm"' in content
     assert '"read": "allow"' in content
-    assert "read_file" in content
-    assert '"path": {' in content
-    assert '"type": "string"' in content
+    assert "Available tools" not in content
+    assert "parameters:" not in content
 
 
 def test_system_prompt_contains_english_agent_behavior_rules() -> None:
@@ -208,13 +177,13 @@ def test_system_prompt_includes_external_few_shots() -> None:
     assert "For code changes, inspect the relevant diff or status before the final answer." in content
 
 
-def test_system_prompt_version_is_v11() -> None:
+def test_system_prompt_version_is_v12() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v11" in entry.messages[0].content
+    assert "prompt_version=v12" in entry.messages[0].content
 
 
 def test_system_prompt_token_estimate_uses_shared_estimator() -> None:
-    entry = SystemPromptBuilder().build(_inputs(base_rules="12345", agents_md="", tools=[]))
+    entry = SystemPromptBuilder().build(_inputs(base_rules="12345", agents_md=""))
 
     assert entry.token_estimate == estimate_text_tokens(entry.messages[0].content)

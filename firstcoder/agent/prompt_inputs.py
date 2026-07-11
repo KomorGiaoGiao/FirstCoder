@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from firstcoder.context.system_prompt import SystemPromptInputs
-from firstcoder.providers.types import ProviderCapabilities, ToolDefinition
+from firstcoder.providers.types import ProviderCapabilities
 
 
 DEFAULT_PERMISSION_POLICY: dict[str, Any] = {
@@ -101,7 +101,6 @@ def build_system_prompt_inputs(
     skill_protocol: str = "",
     skill_catalog_summary: str = "",
     loaded_skill_context: str = "",
-    tools: list[ToolDefinition],
     provider_name: str,
     provider_model: str = "",
     provider_capabilities: ProviderCapabilities | None = None,
@@ -127,7 +126,6 @@ def build_system_prompt_inputs(
         skill_protocol=skill_protocol,
         skill_catalog_summary=skill_catalog_summary,
         loaded_skill_context=loaded_skill_context,
-        tools=tools,
         provider_name=provider_name,
         provider_capabilities=capabilities,
         permission_policy=resolved_permission_policy,

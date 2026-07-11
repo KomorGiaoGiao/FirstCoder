@@ -986,6 +986,25 @@ def test_agent_loop_injects_stateful_task_boundary_tool(tmp_path) -> None:
     assert result.data["candidate_hash"].startswith("task_")
 
 
+def test_agent_loop_sends_tool_schema_only_via_request_tools(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_tool_schema", agents_md="", tools=[_echo_tool()])
+    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
+
+    AgentLoop(session=session, provider=provider).run_user_turn("调用 echo")
+
+    request = provider.requests[0]
+    echo = next(tool for tool in request.tools if tool.name == "echo")
+    system_message = request.messages[0].content
+
+    assert echo.description == "回显文本"
+    assert echo.parameters["properties"]["text"] == {"type": "string"}
+    assert "Available tools" not in system_message
+    assert "echo" not in system_message
+    assert "回显文本" not in system_message
+    assert '"text": {"type": "string"}' not in system_message
+
+
 def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_no_tools", agents_md="")
@@ -999,7 +1018,7 @@ def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> N
     assert provider.requests[0].tools == []
     system_message = provider.requests[0].messages[0].content
     assert '"tool_calling": false' in system_message
-    assert "Available tools:\n无" in system_message
+    assert "Available tools" not in system_message
 
 
 def test_agent_loop_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:

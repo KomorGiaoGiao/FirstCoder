@@ -31,7 +31,7 @@ If you want to understand how coding agents actually work, FirstCoder keeps the 
 - Build on a small Python codebase with clear module boundaries.
 - Use a local coding agent while still being able to inspect how it works.
 
-![FirstCoder TUI ready state](docs/images/firstcoder-ready.png)
+![FirstCoder planning, requesting permission, and completing a local task](docs/images/firstcoder-demo.gif)
 
 ## Why FirstCoder
 
