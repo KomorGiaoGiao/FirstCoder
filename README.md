@@ -132,9 +132,13 @@ Provider support is centered on the OpenAI Chat Completions-compatible path. The
 
 FirstCoder's TUI is designed to expose the agent loop instead of hiding it. You can see session state, streamed assistant output, tool calls, tool results, and permission prompts in one place.
 
-Empty session:
+Ready state:
 
-![FirstCoder empty TUI](docs/images/tui-empty.png)
+![FirstCoder ready state](docs/images/firstcoder-ready.png)
+
+Conversation flow:
+
+![FirstCoder conversation flow](docs/images/tui-empty.png)
 
 Tool calls appear in the conversation flow:
 

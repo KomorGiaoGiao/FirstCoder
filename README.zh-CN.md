@@ -130,9 +130,13 @@ export FIRSTCODER_API_KEY="your-api-key"
 
 FirstCoder 的 TUI 不是为了把 agent loop 藏起来，而是为了把它展示出来。你可以在一个界面里看到 session 状态、流式输出、工具调用、工具结果和权限请求。
 
-空会话：
+空闲状态：
 
-![FirstCoder empty TUI](docs/images/tui-empty.png)
+![FirstCoder 空闲状态](docs/images/firstcoder-ready.png)
+
+基础对话流：
+
+![FirstCoder 基础对话流](docs/images/tui-empty.png)
 
 工具调用会出现在对话流中：
 
