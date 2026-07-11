@@ -71,6 +71,7 @@ from firstcoder.app.welcome import welcome_renderable
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
+_YUREN_GLOW_PALETTE = ("#b8ffdf", "#81e8bb", "#18cfcb", "#45e6df", "#5fb5ff")
 
 @dataclass(slots=True)
 class _ActiveChatTurn:
@@ -176,6 +177,7 @@ class FirstCoderApp(App[None]):
     ESC_INTERRUPT_WINDOW_SECONDS = 1.0
     ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
     WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85
+    PROVIDER_GLOW_INTERVAL_SECONDS = 0.18
     COMPACT_WELCOME_MAX_WIDTH = 80
     COMPACT_WELCOME_MAX_HEIGHT = 24
     ACTIVITY_FRAMES = {
@@ -237,6 +239,8 @@ class FirstCoderApp(App[None]):
         self._welcome_widget: Static | None = None
         self._welcome_particle_timer: Timer | None = None
         self._welcome_particle_frame = 0
+        self._provider_glow_timer: Timer | None = None
+        self._provider_glow_frame = 0
         self.transcript = TuiTranscript()
 
     def compose(self) -> ComposeResult:
@@ -259,6 +263,7 @@ class FirstCoderApp(App[None]):
         self.title = self.config.title
         self._refresh_session_subtitle()
         self._show_welcome()
+        self._sync_provider_glow()
 
     def _on_terminal_resized(self) -> None:
         """Refresh chrome after Textual has applied a terminal-size change."""
@@ -267,6 +272,7 @@ class FirstCoderApp(App[None]):
 
     def on_unmount(self) -> None:
         self._stop_welcome_particles()
+        self._stop_provider_glow()
 
     async def _submit_composer(self) -> None:
         input_widget = self.query_one("#input", TextArea)
@@ -579,6 +585,7 @@ class FirstCoderApp(App[None]):
             self._picker = None
             self.config.provider_name = str(action.get("provider") or "")
             self.config.provider_model = str(action.get("model") or "")
+            self._sync_provider_glow()
             return False
         if action_type == "skill_referenced":
             self._picker = None
@@ -850,7 +857,8 @@ class FirstCoderApp(App[None]):
             metadata_values.append(
                 (
                     None,
-                    f"[#7bba55]{escape(provider)}[/][#6e6d72]/{escape(model)}[/]",
+                    f"{_provider_name_markup(provider, glow_frame=self._provider_glow_frame)}"
+                    f"[#6e6d72]/{escape(model)}[/]",
                     18,
                 )
             )
@@ -1092,6 +1100,34 @@ class FirstCoderApp(App[None]):
         else:
             self._start_welcome_particles()
 
+    def _sync_provider_glow(self) -> None:
+        if self.config.provider_name == "Yuren":
+            self._start_provider_glow()
+        else:
+            self._stop_provider_glow()
+
+    def _start_provider_glow(self) -> None:
+        if self._provider_glow_timer is not None or getattr(self, "_loop", None) is None:
+            return
+        self._provider_glow_timer = self.set_interval(
+            self.PROVIDER_GLOW_INTERVAL_SECONDS,
+            self._advance_provider_glow,
+            name="yuren-provider-glow",
+        )
+
+    def _stop_provider_glow(self) -> None:
+        if self._provider_glow_timer is None:
+            return
+        self._provider_glow_timer.stop()
+        self._provider_glow_timer = None
+
+    def _advance_provider_glow(self) -> None:
+        if self.config.provider_name != "Yuren":
+            self._stop_provider_glow()
+            return
+        self._provider_glow_frame = (self._provider_glow_frame + 1) % len(_YUREN_GLOW_PALETTE)
+        self._refresh_topbar()
+
     def _record_tool_activity(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
         name = str(getattr(tool_call, "name", "") or "tool")
@@ -1308,13 +1344,17 @@ class FirstCoderApp(App[None]):
         rendered = self.tool_activity_line_text(text, activity)
         if hasattr(activity, "update"):
             activity.update(self._activity_renderable(rendered))
+        self._refresh_topbar()
+
+    def _refresh_topbar(self) -> None:
+        if not getattr(self, "is_mounted", False):
+            return
         try:
             topbar = self.query_one("#topbar")
         except NoMatches:
             return
-        else:
-            if hasattr(topbar, "update"):
-                topbar.update(self._topbar_text(width=self._topbar_width()))
+        if hasattr(topbar, "update"):
+            topbar.update(self._topbar_text(width=self._topbar_width()))
 
     def _activity_renderable(self, text: str) -> Text:
         return Text(text, style="#527c3b")
@@ -1405,6 +1445,17 @@ def _markup_width(markup: str) -> int:
 
 def _metadata_markup(values: list[tuple[str | None, str, int | None]], *, separator: str) -> str:
     return separator.join(value if color is None else f"[{color}]{escape(value)}[/]" for color, value, _ in values)
+
+
+def _provider_name_markup(provider: str, *, glow_frame: int = 0) -> str:
+    """Render Yuren as a moving terminal-safe colour band; others stay green."""
+    if provider != "Yuren":
+        return f"[#7bba55]{escape(provider)}[/]"
+    return "".join(
+        f"[{_YUREN_GLOW_PALETTE[(index + glow_frame) % len(_YUREN_GLOW_PALETTE)]}]"
+        f"{escape(character)}[/]"
+        for index, character in enumerate(provider)
+    )
 
 
 def _responsive_topbar_markup(

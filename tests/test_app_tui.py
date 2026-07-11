@@ -16,6 +16,7 @@ from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _entry_renderable
+from firstcoder.app.tui import _provider_name_markup
 from firstcoder.app.tui import _plain_static
 from firstcoder.app.tui import _observe_markdown_update
 from firstcoder.app.picker import TuiPickerItem, TuiPickerState, render_picker
@@ -361,6 +362,37 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
         "[#303238]·[/]   [#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]   "
         "[#303238]·[/]   [#6e6d72]standard[/]   [#303238]·[/]   [#6e6d72]cwd FirstCoder[/]"
     )
+
+
+def test_yuren_provider_name_uses_a_moving_colour_band() -> None:
+    first = _provider_name_markup("Yuren", glow_frame=0)
+    next_frame = _provider_name_markup("Yuren", glow_frame=1)
+
+    assert Text.from_markup(first).plain == "Yuren"
+    assert first != next_frame
+    assert "[#18cfcb]" in first
+    assert "[#5fb5ff]" in first
+
+
+def test_other_provider_names_keep_the_standard_green() -> None:
+    assert _provider_name_markup("OpenAI", glow_frame=4) == "[#7bba55]OpenAI[/]"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_yuren_provider_glow_animates_and_stops_when_the_app_unmounts() -> None:
+    app = FirstCoderApp(config=FirstCoderTuiConfig(provider_name="Yuren", provider_model="gpt-5.6-terra"))
+
+    async with app.run_test():
+        timer = app._provider_glow_timer
+        assert timer is not None
+        before = app._topbar_text()
+        app._advance_provider_glow()
+        after = app._topbar_text()
+        assert before != after
+
+    assert timer is not None
+    assert app._provider_glow_timer is None
 
 
 def test_observe_markdown_update_consumes_cancelled_update_result() -> None:
