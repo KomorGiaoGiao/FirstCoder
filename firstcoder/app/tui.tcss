@@ -29,7 +29,8 @@ ScrollBarCorner {
 }
 
 .topbar {
-    height: 2;
+    height: auto;
+    min-height: 2;
     padding: 0 2;
     background: #0f1014;
     color: #6e6d72;
@@ -43,9 +44,13 @@ ScrollBarCorner {
     background: #0f1014;
 }
 
+#output.welcome-active {
+    align: center middle;
+}
+
 .welcome {
     width: 100%;
-    margin: 1 0;
+    margin: 0;
     padding: 0;
     background: #0f1014;
     color: #cfd1d6;
@@ -89,20 +94,6 @@ ScrollBarCorner {
 
 #input > .text-area--placeholder {
     color: #808185;
-}
-
-.suggestions {
-    height: auto;
-    max-height: 5;
-    margin: 0;
-    padding: 0 1;
-    color: #808185;
-    background: #0f1014;
-    border-left: solid #303238;
-}
-
-.suggestions.hidden {
-    display: none;
 }
 
 .activity-line {

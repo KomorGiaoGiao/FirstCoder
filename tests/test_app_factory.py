@@ -82,34 +82,6 @@ def test_create_firstcoder_app_wires_new_fork_and_skill_commands(tmp_path: Path)
     assert "Skill: brief" in skill_result.output
 
 
-def test_create_firstcoder_app_wires_command_suggestions_from_skills(tmp_path: Path) -> None:
-    skills_dir = tmp_path / ".agents" / "skills" / "family-office-research"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: family-office-research\n"
-        "description: 家办研究\n"
-        "triggers: 家族办公室\n"
-        "---\n",
-        encoding="utf-8",
-    )
-    app = create_firstcoder_app(
-        project_root=tmp_path,
-        data_root=tmp_path / ".firstcoder",
-        provider=FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")]),
-        session_id="sess_test",
-        tools=[],
-    )
-
-    replacements = [
-        item.replacement
-        for item in app.suggestion_items_provider()
-        if item.detail == "家办研究 家族办公室 .agents/skills/family-office-research/SKILL.md"
-    ]
-
-    assert "/family-office-research" in replacements
-
-
 def test_create_firstcoder_app_enables_streaming_for_capable_provider(tmp_path: Path) -> None:
     provider = FakeProvider(
         responses=[ChatResponse(provider="fake", model="fake-model", content="ok")],

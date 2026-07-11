@@ -19,6 +19,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.screen import Screen
 from textual.events import Key
 from textual.timer import Timer
 from textual import events
@@ -26,12 +27,6 @@ from textual.message import Message
 from textual.widgets import Markdown, Static, TextArea
 
 from firstcoder.app.commands import CommandResult
-from firstcoder.app.command_suggestions import (
-    CommandSuggestionItem,
-    CommandSuggestionState,
-    CommandSuggestionsView,
-    query_command_suggestions,
-)
 from firstcoder.app.activity_view import (
     activity_markup,
     post_tool_reasoning_text,
@@ -70,6 +65,13 @@ from firstcoder.app.welcome import welcome_renderable
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
+_YUREN_GLOW_PALETTE = ("#b8ffdf", "#81e8bb", "#18cfcb", "#45e6df", "#5fb5ff")
+_PERMISSION_MODE_COLORS = {
+    "conservative": "#5fb5ff",
+    "standard": "#cfd1d6",
+    "aggressive": "#f6b73c",
+    "bypass": "#ff6b5f",
+}
 
 @dataclass(slots=True)
 class _ActiveChatTurn:
@@ -153,6 +155,16 @@ class FirstCoderTuiConfig:
     project_name: str | None = None
 
 
+class FirstCoderScreen(Screen[None]):
+    """Notify the app after Textual has committed a new terminal size."""
+
+    def _screen_resized(self, size) -> None:
+        super()._screen_resized(size)
+        callback = getattr(self.app, "_on_terminal_resized", None)
+        if callback is not None:
+            callback()
+
+
 class FirstCoderApp(App[None]):
     """最小 TUI 外壳。"""
 
@@ -165,10 +177,16 @@ class FirstCoderApp(App[None]):
     ESC_INTERRUPT_WINDOW_SECONDS = 1.0
     ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
     WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85
+    PROVIDER_GLOW_INTERVAL_SECONDS = 0.18
+    COMPACT_WELCOME_MAX_WIDTH = 80
+    COMPACT_WELCOME_MAX_HEIGHT = 24
     ACTIVITY_FRAMES = {
         "running": ("[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]"),
         "streaming": ("[>   ]", "[>>  ]", "[>>> ]", "[ >>>]", "[  >>]", "[   >]"),
     }
+
+    def get_default_screen(self) -> Screen:
+        return FirstCoderScreen(id="_default")
 
     def __init__(
         self,
@@ -177,14 +195,12 @@ class FirstCoderApp(App[None]):
         chat_runner: ChatRunnerLike | None = None,
         current_session: CurrentSessionLike | None = None,
         config: FirstCoderTuiConfig | None = None,
-        suggestion_items_provider: Callable[[], list[CommandSuggestionItem]] | None = None,
     ) -> None:
         super().__init__()
         self.command_handler = command_handler
         self.chat_runner = chat_runner
         self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
-        self.suggestion_items_provider = suggestion_items_provider or (lambda: [])
         self._chat_busy = False
         self._chat_worker = None
         self._chat_turn_token = 0
@@ -217,10 +233,11 @@ class FirstCoderApp(App[None]):
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
         self._picker: TuiPickerState | None = None
-        self._suggestions: CommandSuggestionState | None = None
         self._welcome_widget: Static | None = None
         self._welcome_particle_timer: Timer | None = None
         self._welcome_particle_frame = 0
+        self._provider_glow_timer: Timer | None = None
+        self._provider_glow_frame = 0
         self.transcript = TuiTranscript()
 
     def compose(self) -> ComposeResult:
@@ -237,15 +254,21 @@ class FirstCoderApp(App[None]):
                     soft_wrap=True,
                     compact=True,
                 )
-                yield CommandSuggestionsView(id="suggestions")
 
     def on_mount(self) -> None:
         self.title = self.config.title
         self._refresh_session_subtitle()
         self._show_welcome()
+        self._sync_provider_glow()
+
+    def _on_terminal_resized(self) -> None:
+        """Refresh chrome after Textual has applied a terminal-size change."""
+        self._refresh_session_subtitle()
+        self._refresh_welcome_layout()
 
     def on_unmount(self) -> None:
         self._stop_welcome_particles()
+        self._stop_provider_glow()
 
     async def _submit_composer(self) -> None:
         input_widget = self.query_one("#input", TextArea)
@@ -282,19 +305,12 @@ class FirstCoderApp(App[None]):
 
     async def on_composer_text_area_submitted(self, event: ComposerTextArea.Submitted) -> None:
         event.stop()
-        if self._suggestions is not None:
-            self._accept_suggestion()
-            return
         if self._picker is not None:
             self._picker_select_index(self._picker.selected_index)
             return
         await self._submit_composer()
 
     def on_key(self, event: Key) -> None:
-        if self._suggestions is not None and self._handle_suggestion_key(event):
-            event.stop()
-            event.prevent_default()
-            return
         if self._picker is not None and self._handle_picker_key(event):
             event.stop()
             event.prevent_default()
@@ -317,11 +333,6 @@ class FirstCoderApp(App[None]):
         event.prevent_default()
         input_widget.load_text(recalled)
         input_widget.cursor_location = input_widget.document.end
-        self._refresh_suggestions()
-
-    def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if getattr(event.text_area, "id", None) == "input":
-            self._refresh_suggestions()
 
     def _next_chat_turn_token(self) -> int:
         self._chat_turn_token += 1
@@ -409,50 +420,6 @@ class FirstCoderApp(App[None]):
             self._input_history_index += 1
             return self._input_history[self._input_history_index]
         return None
-
-    def _refresh_suggestions(self) -> None:
-        try:
-            text = self.query_one("#input", TextArea).text
-        except NoMatches:
-            return
-        self._suggestions = query_command_suggestions(text, self.suggestion_items_provider())
-        self._render_suggestions()
-
-    def _render_suggestions(self) -> None:
-        try:
-            widget = self.query_one("#suggestions", CommandSuggestionsView)
-        except NoMatches:
-            return
-        widget.show_state(self._suggestions)
-
-    def _handle_suggestion_key(self, event: Key) -> bool:
-        suggestions = self._suggestions
-        if suggestions is None:
-            return False
-        if event.key == "up":
-            suggestions.move(-1)
-            self._render_suggestions()
-            return True
-        if event.key == "down":
-            suggestions.move(1)
-            self._render_suggestions()
-            return True
-        if event.key == "escape":
-            self._suggestions = None
-            self._render_suggestions()
-            return True
-        return False
-
-    def _accept_suggestion(self) -> None:
-        suggestions = self._suggestions
-        if suggestions is None:
-            return
-        input_widget = self.query_one("#input", TextArea)
-        input_widget.load_text(suggestions.accept_selected())
-        input_widget.cursor_location = input_widget.document.end
-        input_widget.focus()
-        self._suggestions = None
-        self._render_suggestions()
 
     def _submit_chat_text(self, text: str) -> None:
         if self.chat_runner is None:
@@ -558,6 +525,7 @@ class FirstCoderApp(App[None]):
             self._picker = None
             self.config.provider_name = str(action.get("provider") or "")
             self.config.provider_model = str(action.get("model") or "")
+            self._sync_provider_glow()
             return False
         if action_type == "skill_referenced":
             self._picker = None
@@ -803,7 +771,10 @@ class FirstCoderApp(App[None]):
             session_id = self.current_session.session_id
             self.sub_title = f"Session: {session_id}"
         if getattr(self, "is_mounted", False):
-            topbar = self.query_one("#topbar")
+            try:
+                topbar = self.query_one("#topbar")
+            except NoMatches:
+                return
             if hasattr(topbar, "update"):
                 topbar.update(self._topbar_text(session_id=session_id, width=self._topbar_width()))
 
@@ -819,17 +790,21 @@ class FirstCoderApp(App[None]):
             session_id = self.current_session.session_id
         brand = "[#7bba55]FirstCoder[/]"
         status = activity_markup(self._activity_text)
-        metadata_values: list[tuple[str, str, int | None]] = [
-            ("#6e6d72", _short_session_id(session_id) if session_id else "no session", None)
-        ]
+        metadata_values: list[tuple[str | None, str, int | None]] = []
         if self.config.provider_name or self.config.provider_model:
             provider = self.config.provider_name or "provider"
             model = self.config.provider_model or "model"
-            metadata_values.append(("#6e6d72", f"{provider}/{model}", 18))
+            metadata_values.append(
+                (
+                    None,
+                    _provider_model_markup(provider, model, glow_frame=self._provider_glow_frame),
+                    18,
+                )
+            )
         mode = getattr(self.current_session, "mode", None) if self.current_session is not None else None
         if mode:
             mode_text = str(mode)
-            mode_color = "#b28443" if mode_text == "bypass" else "#6e6d72"
+            mode_color = _PERMISSION_MODE_COLORS.get(mode_text, "#6e6d72")
             metadata_values.append((mode_color, mode_text, None))
         if self.config.project_name:
             metadata_values.append(("#6e6d72", f"cwd {self.config.project_name}", 22))
@@ -843,37 +818,13 @@ class FirstCoderApp(App[None]):
         metadata_width = _markup_width(metadata)
         top_separator_width = _markup_width(top_separator) * 2
         content_width = brand_width + status_width + metadata_width + top_separator_width
-        if content_width > width:
-            top_separator = " [#303238]·[/] "
-            metadata = _metadata_markup(metadata_values, separator=top_separator)
-            metadata_width = _markup_width(metadata)
-            top_separator_width = _markup_width(top_separator) * 2
-            content_width = brand_width + status_width + metadata_width + top_separator_width
-        if content_width > width:
-            status_budget = max(1, width - brand_width - metadata_width - top_separator_width)
-            status = activity_markup(truncate_activity_text(self._activity_text, status_budget))
-            status_width = _markup_width(status)
-            content_width = brand_width + status_width + metadata_width + top_separator_width
-            if content_width > width:
-                overflow = content_width - width
-                metadata, overflow = _shrink_metadata(metadata_values, overflow, separator=top_separator)
-                metadata_width = _markup_width(metadata)
-                content_width = brand_width + status_width + metadata_width + top_separator_width
-            if content_width > width:
-                metadata_values = _drop_optional_metadata(metadata_values)
-                metadata = _metadata_markup(metadata_values, separator=top_separator)
-                metadata_width = _markup_width(metadata)
-                content_width = brand_width + status_width + metadata_width + top_separator_width
-                status_budget = max(1, width - brand_width - metadata_width - top_separator_width)
-                status = activity_markup(truncate_activity_text(self._activity_text, status_budget))
-                status_width = _markup_width(status)
-                content_width = brand_width + status_width + metadata_width + top_separator_width
-            if content_width > width:
-                return _truncate_markup_plain(
-                    f"{brand}{top_separator}{status}{top_separator}{metadata}",
-                    width,
-                )
-            return f"{brand}{top_separator}{status}{top_separator}{metadata}"
+        if content_width > width or status_width > max(1, width - brand_width - metadata_width - top_separator_width):
+            return _responsive_topbar_markup(
+                brand=brand,
+                status=status,
+                metadata_values=metadata_values,
+                width=width,
+            )
         if width - content_width < 8:
             available_status_width = width - brand_width - metadata_width - top_separator_width
             if available_status_width < status_width:
@@ -1013,12 +964,25 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output")
         if not hasattr(output, "mount"):
             return
-        self._welcome_widget = _plain_static(welcome_renderable(), id="welcome", classes="welcome")
+        if hasattr(output, "add_class"):
+            output.add_class("welcome-active")
+        self._welcome_widget = _plain_static(
+            welcome_renderable(compact=self._uses_compact_welcome()),
+            id="welcome",
+            classes="welcome",
+        )
         output.mount(self._welcome_widget)
-        self._start_welcome_particles()
+        if not self._uses_compact_welcome():
+            self._start_welcome_particles()
 
     def _dismiss_welcome(self) -> None:
         self._stop_welcome_particles()
+        try:
+            output = self.query_one("#output")
+        except NoMatches:
+            output = None
+        if output is not None and hasattr(output, "remove_class"):
+            output.remove_class("welcome-active")
         widget = self._welcome_widget
         self._welcome_widget = None
         if widget is None:
@@ -1048,8 +1012,60 @@ class FirstCoderApp(App[None]):
         if self._welcome_widget is None:
             self._stop_welcome_particles()
             return
+        if self._uses_compact_welcome():
+            self._stop_welcome_particles()
+            return
         self._welcome_particle_frame += 1
         self._welcome_widget.update(welcome_renderable(particle_frame=self._welcome_particle_frame))
+
+    def _uses_compact_welcome(self) -> bool:
+        size = getattr(self, "size", None)
+        width = getattr(size, "width", None)
+        height = getattr(size, "height", None)
+        return bool(
+            isinstance(width, int)
+            and isinstance(height, int)
+            and (width <= self.COMPACT_WELCOME_MAX_WIDTH or height <= self.COMPACT_WELCOME_MAX_HEIGHT)
+        )
+
+    def _refresh_welcome_layout(self) -> None:
+        widget = self._welcome_widget
+        if widget is None:
+            return
+        compact = self._uses_compact_welcome()
+        widget.update(welcome_renderable(compact=compact, particle_frame=self._welcome_particle_frame))
+        if compact:
+            self._stop_welcome_particles()
+        else:
+            self._start_welcome_particles()
+
+    def _sync_provider_glow(self) -> None:
+        if self.config.provider_name == "Yuren":
+            self._start_provider_glow()
+        else:
+            self._stop_provider_glow()
+
+    def _start_provider_glow(self) -> None:
+        if self._provider_glow_timer is not None or getattr(self, "_loop", None) is None:
+            return
+        self._provider_glow_timer = self.set_interval(
+            self.PROVIDER_GLOW_INTERVAL_SECONDS,
+            self._advance_provider_glow,
+            name="yuren-provider-glow",
+        )
+
+    def _stop_provider_glow(self) -> None:
+        if self._provider_glow_timer is None:
+            return
+        self._provider_glow_timer.stop()
+        self._provider_glow_timer = None
+
+    def _advance_provider_glow(self) -> None:
+        if self.config.provider_name != "Yuren":
+            self._stop_provider_glow()
+            return
+        self._provider_glow_frame = (self._provider_glow_frame + 1) % len(_YUREN_GLOW_PALETTE)
+        self._refresh_topbar()
 
     def _record_tool_activity(self, event) -> None:
         tool_call = getattr(event, "tool_call", None)
@@ -1267,13 +1283,17 @@ class FirstCoderApp(App[None]):
         rendered = self.tool_activity_line_text(text, activity)
         if hasattr(activity, "update"):
             activity.update(self._activity_renderable(rendered))
+        self._refresh_topbar()
+
+    def _refresh_topbar(self) -> None:
+        if not getattr(self, "is_mounted", False):
+            return
         try:
             topbar = self.query_one("#topbar")
         except NoMatches:
             return
-        else:
-            if hasattr(topbar, "update"):
-                topbar.update(self._topbar_text(width=self._topbar_width()))
+        if hasattr(topbar, "update"):
+            topbar.update(self._topbar_text(width=self._topbar_width()))
 
     def _activity_renderable(self, text: str) -> Text:
         return Text(text, style="#527c3b")
@@ -1362,39 +1382,92 @@ def _markup_width(markup: str) -> int:
     return len(Text.from_markup(markup).plain)
 
 
-def _metadata_markup(values: list[tuple[str, str, int | None]], *, separator: str) -> str:
-    return separator.join(f"[{color}]{escape(value)}[/]" for color, value, _ in values)
+def _metadata_markup(values: list[tuple[str | None, str, int | None]], *, separator: str) -> str:
+    return separator.join(value if color is None else f"[{color}]{escape(value)}[/]" for color, value, _ in values)
 
 
-def _shrink_metadata(
-    values: list[tuple[str, str, int | None]],
-    overflow: int,
+def _provider_name_markup(provider: str, *, glow_frame: int = 0) -> str:
+    """Render the provider-only part for ordinary, non-easter-egg labels."""
+    if provider != "Yuren":
+        return f"[#7bba55]{escape(provider)}[/]"
+    return _glow_markup(provider, glow_frame=glow_frame)
+
+
+def _provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> str:
+    """Apply the Yuren glow to the provider and model name as one colour band."""
+    if provider != "Yuren":
+        return f"{_provider_name_markup(provider, glow_frame=glow_frame)}[#6e6d72]/{escape(model)}[/]"
+    return f"{_glow_markup(provider, glow_frame=glow_frame)}[#6e6d72]/[/]{_glow_markup(model, glow_frame=glow_frame + len(provider) + 1)}"
+
+
+def _glow_markup(text: str, *, glow_frame: int) -> str:
+    return "".join(
+        f"[{_YUREN_GLOW_PALETTE[(index + glow_frame) % len(_YUREN_GLOW_PALETTE)]}]"
+        f"{escape(character)}[/]"
+        for index, character in enumerate(text)
+    )
+
+
+def _responsive_topbar_markup(
     *,
-    separator: str,
-) -> tuple[str, int]:
-    shrunk: list[tuple[str, str, int | None]] = []
-    for color, value, min_width in values:
-        if overflow > 0 and min_width is not None and len(value) > min_width:
-            target = max(min_width, len(value) - overflow)
-            shortened = truncate_activity_text(value, target)
-            overflow -= len(value) - len(shortened)
-            value = shortened
-        shrunk.append((color, value, min_width))
-    return _metadata_markup(shrunk, separator=separator), overflow
+    brand: str,
+    status: str,
+    metadata_values: list[tuple[str | None, str, int | None]],
+    width: int,
+) -> str:
+    """Wrap topbar metadata on narrow screens without losing any fields.
+
+    Every line retains the wide layout's left/right relationship: brand or
+    activity at the left, and session/provider/mode/project metadata at the
+    right.  The short rows are preferable to truncating a session identity or
+    silently removing the active provider.
+    """
+    separator = " [#303238]·[/] "
+    remaining = list(metadata_values)
+    # Status detail can be verbose during a tool call. Keep its category and
+    # most useful detail, while reserving enough horizontal space for the
+    # immutable session/provider metadata the user needs to see.
+    status = activity_markup(truncate_activity_text(_markup_plain(status), max(1, min(width, 48))))
+    left_values = [brand, status]
+    rows: list[tuple[str, str]] = []
+    while remaining:
+        left = left_values.pop(0) if left_values else ""
+        right_values: list[tuple[str, str, int | None]] = []
+        while remaining:
+            candidate = right_values + [remaining[0]]
+            candidate_right = _metadata_markup(candidate, separator=separator)
+            if right_values and _markup_width(left) + 3 + _markup_width(candidate_right) > width:
+                break
+            right_values.append(remaining.pop(0))
+        rows.append((left, _metadata_markup(right_values, separator=separator)))
+
+    # If metadata all fitted beside the brand, the activity still needs its
+    # own left-anchored row rather than disappearing at narrow widths.
+    if left_values:
+        rows.append((left_values.pop(0), ""))
+
+    rendered_rows: list[str] = []
+    for left, right in rows:
+        left_width = _markup_width(left)
+        right_width = _markup_width(right)
+        if not right:
+            rendered_rows.append(left)
+            continue
+        if left_width + 3 + right_width > width:
+            # A value may itself be wider than a tiny terminal. Place the
+            # whole value on its own row; wrapping is handled by Rich/Textual,
+            # and no semantic information is dropped.
+            if left:
+                rendered_rows.append(left)
+            rendered_rows.append(right)
+            continue
+        gap = max(1, width - left_width - right_width)
+        rendered_rows.append(f"{left}{' ' * gap}{right}")
+    return "\n".join(rendered_rows)
 
 
-def _drop_optional_metadata(values: list[tuple[str, str, int | None]]) -> list[tuple[str, str, int | None]]:
-    result = list(values)
-    for index, (_, value, min_width) in enumerate(result):
-        if min_width is not None and "/" in value:
-            del result[index]
-            return result
-    return result
-
-
-def _truncate_markup_plain(markup: str, width: int) -> str:
-    plain = Text.from_markup(markup).plain
-    return truncate_activity_text(plain, max(1, width))
+def _markup_plain(markup: str) -> str:
+    return Text.from_markup(markup).plain
 
 
 def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:
