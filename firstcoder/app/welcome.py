@@ -67,7 +67,16 @@ WELCOME_PARTICLE_FRAMES = (
 )
 
 
-def welcome_renderable(*, particle_frame: int = 0) -> Align:
+def welcome_renderable(*, compact: bool = False, particle_frame: int = 0) -> Align:
+    """Render the animated logo, or a small-screen wordmark when space is tight."""
+    if compact:
+        return Align.center(
+            Text.assemble(
+                ("first", "#81e8bb bold"),
+                ("coder", "#18cfcb bold"),
+                ("\nlocal coding agent", "#6e6d72"),
+            )
+        )
     rows = [list(row) for row in WELCOME_LOGO_PIXELS]
     frame = WELCOME_PARTICLE_FRAMES[particle_frame % len(WELCOME_PARTICLE_FRAMES)]
     for row_index, column_index, pixel in frame:

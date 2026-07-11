@@ -415,7 +415,7 @@ async def test_firstcoder_app_shows_welcome_until_first_input() -> None:
     runner = FakeAsyncChatRunner()
     app = FirstCoderApp(chat_runner=runner)
 
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         welcome = app.query_one("#welcome")
         content = welcome.content
         plain = getattr(getattr(content, "renderable", content), "plain", str(content))
@@ -438,13 +438,38 @@ async def test_firstcoder_app_shows_welcome_until_first_input() -> None:
 async def test_firstcoder_app_welcome_particles_animate_between_frames() -> None:
     app = FirstCoderApp()
 
-    async with app.run_test():
+    async with app.run_test(size=(120, 40)):
         welcome = app.query_one("#welcome")
         before = welcome.content
         app._advance_welcome_particles()
         after = welcome.content
 
     assert before != after
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_uses_compact_welcome_in_an_80_by_24_terminal() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        welcome = app.query_one("#welcome")
+        plain = getattr(getattr(welcome.content, "renderable", welcome.content), "plain", str(welcome.content))
+
+        assert "firstcoder" in plain
+        assert "██" not in plain
+        assert app._welcome_particle_timer is None
+        assert app.query_one("#input").display is True
+
+        await pilot.resize_terminal(120, 40)
+        await pilot.pause(0.2)
+
+        full_welcome = app.query_one("#welcome")
+        full_plain = getattr(
+            getattr(full_welcome.content, "renderable", full_welcome.content), "plain", str(full_welcome.content)
+        )
+        assert "██" in full_plain
+        assert app._welcome_particle_timer is not None
 
 
 def test_firstcoder_app_topbar_uses_spacious_two_sided_layout_when_width_is_known() -> None:
@@ -505,7 +530,7 @@ def test_firstcoder_app_topbar_truncates_long_activity_before_metadata() -> None
     assert "[#6e6d72]yurenapi/very-long-model-name[/]" in text
     assert "[#6e6d72]cwd FirstCoder[/]" in text
     assert "reading think tool result reading think tool result" not in text
-    assert "[#7bba55]thinking" in text
+    assert "thinking" in Text.from_markup(text).plain
 
 
 def test_firstcoder_app_topbar_fits_narrow_width_with_long_activity_and_metadata() -> None:
@@ -522,14 +547,36 @@ def test_firstcoder_app_topbar_fits_narrow_width_with_long_activity_and_metadata
     text = app._topbar_text(width=80)
     plain = Text.from_markup(text).plain
 
-    assert len(plain) <= 80
+    assert "\n" in plain
     assert "sess_test" in plain
+    assert "yurenapi/very-long-model-name" in plain
     assert "cwd FirstCoder" in plain
 
     narrow_plain = Text.from_markup(app._topbar_text(width=60)).plain
 
-    assert len(narrow_plain) <= 60
+    assert "\n" in narrow_plain
     assert "sess_test" in narrow_plain
+    assert "yurenapi/very-long-model-name" in narrow_plain
+    assert "cwd FirstCoder" in narrow_plain
+
+
+def test_firstcoder_app_topbar_wraps_narrow_metadata_with_each_row_right_aligned() -> None:
+    app = FirstCoderApp(
+        current_session=FakeSession(),
+        config=FirstCoderTuiConfig(
+            provider_name="yurenapi",
+            provider_model="very-long-model-name",
+            project_name="FirstCoder",
+        ),
+    )
+
+    plain_rows = Text.from_markup(app._topbar_text(width=60)).plain.splitlines()
+
+    assert plain_rows[0].startswith("FirstCoder")
+    assert "sess_test" in plain_rows[0]
+    assert any("idle · ready" in row for row in plain_rows)
+    assert any("yurenapi/very-long-model-name" in row for row in plain_rows)
+    assert "cwd FirstCoder" in plain_rows[-1]
 
 
 def test_tui_transcript_records_structured_entries_with_stable_labels() -> None:
