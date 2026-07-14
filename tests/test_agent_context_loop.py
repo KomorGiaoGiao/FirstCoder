@@ -9,6 +9,7 @@ import time
 import pytest
 
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
+from firstcoder.agent import loop as agent_loop
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.agent.session import AgentSession
@@ -50,6 +51,12 @@ class FakeProvider(ChatProvider):
         return "fake-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}',
+            )
         self.requests.append(request)
         response = self.responses.pop(0)
         if isinstance(response, ProviderError):
@@ -90,6 +97,28 @@ class BoundaryProvider(ChatProvider):
             ],
             finish_reason="tool_calls",
         )
+
+
+@dataclass
+class JsonBoundaryProvider(ChatProvider):
+    responses: list[str]
+    requests: list[ChatRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    @property
+    def model(self) -> str:
+        return "fake-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        content = self.responses.pop(0)
+        if content in {"<boundary>", "<same>"}:
+            decision = "new" if content == "<boundary>" else "same"
+            content = '{"decision":"' + decision + '","basis_message_id":"' + _extract_basis_message_id(request) + '"}'
+        return ChatResponse(provider="fake", model="fake-model", content=content)
 
 
 @dataclass
@@ -167,6 +196,12 @@ class StreamingProvider(ChatProvider):
         return "fake-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(
+                provider=self.name,
+                model=self.model,
+                content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}',
+            )
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -186,6 +221,37 @@ class StreamingProvider(ChatProvider):
 
 
 @dataclass
+class StreamingProviderWithClassification(ChatProvider):
+    classification_responses: list[str]
+    stream_responses: list[ChatResponse]
+    complete_requests: list[ChatRequest] = field(default_factory=list)
+    stream_requests: list[ChatRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return "fake-stream"
+
+    @property
+    def model(self) -> str:
+        return "fake-stream-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        self.complete_requests.append(request)
+        content = self.classification_responses.pop(0)
+        if content == "<boundary>":
+            content = '{"decision":"new","basis_message_id":"' + _extract_basis_message_id(request) + '"}'
+        return ChatResponse(provider=self.name, model=self.model, content=content)
+
+    async def astream(self, request: ChatRequest):
+        self.stream_requests.append(request)
+        response = self.stream_responses.pop(0)
+        yield ChatStreamEvent(kind="message_started")
+        for text in response.content:
+            yield ChatStreamEvent(kind="text_delta", text=text)
+        yield ChatStreamEvent(kind="message_completed", response=response)
+
+
+@dataclass
 class ObservingStreamingProvider(ChatProvider):
     response: ChatResponse
     session: AgentSession
@@ -201,6 +267,8 @@ class ObservingStreamingProvider(ChatProvider):
         return "observing-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(provider=self.name, model=self.model, content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}')
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -232,6 +300,8 @@ class IncompleteStreamingProvider(ChatProvider):
         return "incomplete-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(provider=self.name, model=self.model, content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}')
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -253,6 +323,8 @@ class PartialThenErrorStreamingProvider(ChatProvider):
         return "partial-error-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(provider=self.name, model=self.model, content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}')
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -301,6 +373,8 @@ class PartialPromptTooLongThenSuccessStreamingProvider(ChatProvider):
         return "partial-retry-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(provider=self.name, model=self.model, content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}')
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -329,6 +403,8 @@ class PartialPromptTooLongThenPartialPromptTooLongStreamingProvider(ChatProvider
         return "partial-retry-fail-stream-model"
 
     def complete(self, request: ChatRequest) -> ChatResponse:
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            return ChatResponse(provider=self.name, model=self.model, content='{"decision":"uncertain","basis_message_id":"' + _extract_basis_message_id(request) + '"}')
         raise AssertionError("streaming test should not call complete")
 
     async def astream(self, request: ChatRequest):
@@ -1331,42 +1407,78 @@ def test_agent_loop_passes_tool_choice_none_for_final_only_completion(tmp_path) 
     assert provider.requests[0].tool_choice == "none"
 
 
-def test_agent_loop_forces_task_boundary_before_normal_tool_loop(tmp_path) -> None:
+def test_agent_loop_skips_classification_for_initial_task(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_forced_boundary", agents_md="")
-    provider = BoundaryProvider()
+    provider = JsonBoundaryProvider(["ok"])
 
     response = AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
 
     assert response.content == "ok"
-    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
-    assert provider.requests[1].tool_choice == "auto"
+    assert len(provider.requests) == 1
+    assert provider.requests[0].tool_choice == "auto"
+    observations = [event for event in store.list_events("sess_forced_boundary") if event.type == "task_boundary_observed"]
+    assert len(observations) == 1
+    assert observations[0].payload["confirmation_reason"] == "implicit_initial_task"
 
 
-def test_agent_loop_does_not_force_task_boundary_when_provider_cannot_select_tool(tmp_path) -> None:
+def test_task_boundary_classification_prompt_defines_same_and_uncertain() -> None:
+    prompt = agent_loop._TASK_BOUNDARY_CLASSIFICATION_PROMPT
+
+    assert "continuation or follow-up of the active task" in prompt
+    assert "Use \"uncertain\" only when the conversation does not provide enough information" in prompt
+
+
+def test_agent_loop_retries_invalid_boundary_json_then_records_valid_observation(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_unforced_boundary", agents_md="")
-    provider = FakeProvider(
-        [ChatResponse(provider="fake", model="fake-model", content="ok")],
-        capabilities=ProviderCapabilities(supports_forced_tool_choice=False),
-    )
+    provider = JsonBoundaryProvider(["初始化完成", "not json", "<boundary>", "ok"])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+    loop = AgentLoop(session=session, provider=provider)
+    loop.run_user_turn("初始化任务")
+    loop.run_user_turn("读取 README")
 
-    assert provider.requests[0].tool_choice == "auto"
+    user_message_id = store.rebuild_session_view("sess_unforced_boundary").messages[2].id
+    assert len(provider.requests) == 4
+    assert provider.requests[1].tools == []
+    assert provider.requests[1].max_tokens == 512
+    assert provider.requests[2].tools == []
+    assert any("previous classification was invalid" in message.content for message in provider.requests[2].messages)
+    assert any(user_message_id in message.content for message in provider.requests[2].messages)
 
 
-def test_agent_loop_streaming_forces_task_boundary_before_first_request(tmp_path) -> None:
+def test_agent_loop_falls_back_to_uncertain_after_invalid_boundary_json(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_boundary_fallback", agents_md="")
+    provider = JsonBoundaryProvider(["初始化完成", "not json", "still not json", "invalid again", "ok"])
+
+    loop = AgentLoop(session=session, provider=provider)
+    loop.run_user_turn("初始化任务")
+    loop.run_user_turn("读取 README")
+
+    observations = [event for event in store.list_events("sess_boundary_fallback") if event.type == "task_boundary_observed"]
+    assert observations[-1].payload["decision"] == "uncertain"
+    assert len(provider.requests) == 5
+
+
+def test_agent_loop_streaming_classifies_boundary_without_emitting_stream_events(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_stream_forced_boundary", agents_md="")
-    provider = StreamingProvider(
-        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok")]
+    provider = StreamingProviderWithClassification(
+        classification_responses=["<boundary>"],
+        stream_responses=[
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="初始"),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok"),
+        ],
     )
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn_streaming_sync("读取 README")
+    loop = AgentLoop(session=session, provider=provider)
+    loop.run_user_turn_streaming_sync("初始化任务")
+    response = loop.run_user_turn_streaming_sync("读取 README")
 
     assert response.content == "ok"
-    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
+    assert provider.complete_requests[0].tools == []
+    assert provider.stream_requests[1].tool_choice == "auto"
 
 
 def test_agent_loop_runs_todo_self_check_before_final_answer(tmp_path) -> None:
@@ -1957,7 +2069,7 @@ def test_agent_loop_forces_final_answer_after_successful_verification(tmp_path) 
 
     assert response.content == "Tests pass."
     assert len(provider.requests) == 2
-    assert provider.requests[0].tool_choice == ToolChoiceFunction(name="task_boundary")
+    assert provider.requests[0].tool_choice == "auto"
     assert provider.requests[1].tool_choice == "none"
     assert [message.role for message in store.rebuild_session_view("sess_verify_stop").messages] == [
         "user",
@@ -2086,7 +2198,7 @@ def test_agent_loop_runs_compact_when_task_boundary_confirms_change(tmp_path) ->
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     session.runtime_state.active_task_hash = "task_previous"
-    provider = BoundaryProvider()
+    provider = JsonBoundaryProvider(["<boundary>", "ok", "<same>", "ok"])
     context_manager = FakeContextManager()
 
     AgentLoop(
@@ -2094,6 +2206,11 @@ def test_agent_loop_runs_compact_when_task_boundary_confirms_change(tmp_path) ->
         provider=provider,
         context_manager=context_manager,
     ).run_user_turn("换一个任务")
+    AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=context_manager,
+    ).run_user_turn("继续处理")
 
     triggers = [call.trigger for call in context_manager.calls]
     assert ContextWindowTrigger.TASK_HASH_CHANGED in triggers

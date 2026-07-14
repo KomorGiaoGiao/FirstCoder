@@ -134,10 +134,9 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "existing extension boundaries as design constraints" in content
     assert "do not add a type special-case or broader base abstraction" in content
     assert "Do not expose long chain-of-thought" in content
-    assert "At the start of every user turn, call task_boundary before answering or using any other tool" in content
+    assert "The runtime classifies every real user turn before this request" in content
     assert "Runtime control messages such as \"Todo planning reminder\"" in content
     assert "Never invent, guess, or display task hashes" in content
-    assert "After task_boundary, answer a simple question directly" in content
     assert "issue multiple read-only tool calls in the same assistant response" in content
     assert "Do not batch tools whose inputs depend on previous tool results" in content
     assert "Prefer rg or rg --files" in content
@@ -151,12 +150,12 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert discipline.count("\n- ") == 6
 
 
-def test_system_prompt_requires_task_boundary_at_start_of_each_user_turn() -> None:
+def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     entry = SystemPromptBuilder().build(_inputs())
     content = entry.messages[0].content
 
-    assert "At the start of every user turn, call task_boundary before answering or using any other tool" in content
-    assert "Skip task_boundary only when no tools are available" in content
+    assert "The runtime classifies every real user turn before this request" in content
+    assert "Do not call task_boundary unless the runtime explicitly asks for it" in content
 
 
 def test_system_prompt_includes_external_few_shots() -> None:
@@ -165,8 +164,7 @@ def test_system_prompt_includes_external_few_shots() -> None:
 
     assert "# Few-shot examples" in content
     assert "Example: new coding task" in content
-    assert "task_boundary(decision=\"new\"" in content
-    assert "Call `task_boundary` first when the tool is available." in content
+    assert "The runtime has already classified the task boundary." in content
     assert "Example: runtime control reminder" in content
     assert "Treat it as an internal continuation message for the active task" in content
     assert "identify the intended public contract and constraints before editing" in content
