@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f6f1" />
+    <title>FirstCoder — 看得懂的本地 Coding Agent</title>
+    <meta name="description" content="FirstCoder 是一个真实可运行、可阅读、可扩展的本地 Python Coding Agent。" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/style.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到正文</a>
+    <header class="site-header shell">
+      <a class="brand" href="#top" aria-label="FirstCoder 首页">
+        <img src="assets/firstcoder-logo.png" alt="" />
+        <span>FirstCoder</span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="#why">为什么是它</a>
+        <a href="#mechanics">运行机制</a>
+        <a href="#start">开始使用</a>
+      </nav>
+      <a class="github-link" href="https://github.com/KomorGiaoGiao/FirstCoder" target="_blank" rel="noreferrer">GitHub <span>↗</span></a>
+    </header>
+
+    <main id="main">
+      <section class="hero shell" id="top">
+        <div class="hero-copy reveal">
+          <p class="eyebrow"><i></i> LOCAL PYTHON CODING AGENT</p>
+          <h1>写代码之外，<br /><em>把 Agent 怎么工作</em><br />也看明白。</h1>
+          <p class="lede">FirstCoder 是一个真实可运行的本地 Coding Agent：它会调用工具、确认权限、保存会话、管理长上下文；这些都不是黑箱。</p>
+          <div class="actions">
+            <a class="button button-primary" href="https://github.com/KomorGiaoGiao/FirstCoder" target="_blank" rel="noreferrer">查看源码 <span>↗</span></a>
+            <a class="button button-quiet" href="#why">了解它能做什么 <span>↓</span></a>
+          </div>
+          <div class="install-line"><span>终端安装</span><code>pipx install firstcoder</code><button class="copy" type="button" aria-label="复制安装命令">复制</button></div>
+        </div>
+        <figure class="hero-demo reveal" aria-label="FirstCoder 实际终端工作过程">
+          <img src="assets/firstcoder-demo.gif" alt="FirstCoder 在终端中读取工具结果、更新任务并继续执行的真实运行过程" />
+        </figure>
+      </section>
+
+      <section class="manifesto shell split-section" id="why">
+        <div class="reveal"><p class="eyebrow">BUILT TO BE UNDERSTOOD</p><h2>不是把 Agent<br />包装得更神秘。</h2></div>
+        <div class="manifesto-copy reveal"><p>大多数演示只展示「输入一句话，代码就改好了」。FirstCoder 选择把中间过程摊开：请求从哪里来，工具为什么能执行，风险操作何时暂停，长任务又如何继续。</p><p>它的取舍也很明确：不追求成为功能最杂的大平台，而是留下一条完整、可读、可修改的 Python 执行链路。</p><a class="inline-link" href="#mechanics">沿着运行过程往下看 <span>→</span></a></div>
+      </section>
+
+      <section class="proof-strip shell reveal" aria-label="FirstCoder 核心能力">
+        <div><strong>17k</strong><span>约 1.7 万行 Python<br />运行时代码</span></div>
+        <div><strong>1</strong><span>条完整的<br />Model → Tool → Model 循环</span></div>
+        <div><strong>0</strong><span>不透明的「帮你办了」<br />执行黑箱</span></div>
+      </section>
+
+      <section class="feature-intro shell" id="mechanics">
+        <div class="section-head reveal"><p class="eyebrow">ONE REQUEST, END TO END</p><h2>一条任务，<br />从哪开始，往哪结束？</h2></div>
+        <p class="section-summary reveal">FirstCoder 不把 Agent 讲成一组散落功能。它先确认你正在做哪件事，再让模型调用工具；风险处暂停，长任务留下可恢复的记录。</p>
+      </section>
+
+      <section class="boundaries shell" id="boundaries">
+        <div class="boundaries-head reveal"><p class="eyebrow">01 / KNOW THE TASK · <code>context/task_boundary.py</code></p><h2>先确认你在做哪件事，<br />再开始调用工具。</h2><p>每个 user turn 都不是一团模糊历史。FirstCoder 会为当前任务建立可追踪的边界，后续消息、工具结果和上下文操作都归到同一条任务线上。</p></div>
+        <div class="boundary-flow reveal" aria-label="任务边界运行流程">
+          <div class="boundary-step active"><span>01</span><b>user message</b><small>新的用户请求进入 session</small></div>
+          <i>↓</i>
+          <div class="boundary-step"><span>02</span><b>task_boundary</b><small>程序生成稳定 task hash</small></div>
+          <i>↓</i>
+          <div class="boundary-step"><span>03</span><b>task scoped context</b><small>消息和工具结果带上边界</small></div>
+          <i>↓</i>
+          <div class="boundary-step compact"><span>04</span><b>compact if needed</b><small>切换任务时按策略整理上下文</small></div>
+        </div>
+        <div class="boundary-notes reveal"><div><strong>不是提示词约定</strong><p>任务 hash 由程序侧生成；模型只对真实 user message 做判断，不能自己编一个边界。</p></div><div><strong>首次请求先定边界</strong><p>支持强制 tool choice 的 Provider，会在用户新一轮任务的第一次请求先调用 <code>task_boundary</code>，再恢复自动工具选择。</p></div><div><strong>可恢复、可复盘</strong><p><code>task_boundary_observed</code> 会进入 session 事件流；重新打开会话后，活动任务和稳定窗口都能重放。</p></div></div>
+      </section>
+
+      <section class="capabilities shell">
+        <article class="capability capability-loop reveal">
+          <div class="capability-number">02</div>
+          <div class="capability-copy"><p class="eyebrow">DECIDE AND EXECUTE · <code>agent/loop.py</code></p><h3>边界确认后，<br />再让任务一步步往前走。</h3><p>模型可以选择读文件、搜索、编辑或执行命令。每一次工具结果都会回到当前任务的上下文，Agent 再根据新证据决定下一步，而不是一次生成后就“装作完成”。</p></div>
+          <div class="loop-diagram" aria-hidden="true"><span>Model</span><i>→</i><span>Tool</span><i>→</i><span>Evidence</span><i>↺</i></div>
+        </article>
+        <article class="capability capability-permissions reveal">
+          <div class="capability-number">03</div>
+          <div class="capability-copy"><p class="eyebrow">PAUSE AT RISK · <code>permissions/</code></p><h3>需要冒险时，<br />任务会停下来等你。</h3><p>写文件、运行 shell、访问网络等动作先经过工具声明、注册表预检与策略判断。若结果是 <code>ask</code>，Loop 保存原始调用、暂停后续执行，等确认再按 request id 恢复。</p></div>
+          <figure class="permission-screen"><img src="assets/permission-confirmation.png" alt="FirstCoder 在执行 shell 命令前请求用户确认，并在确认后继续任务的真实终端界面" /></figure>
+        </article>
+        <article class="capability capability-context reveal">
+          <div class="capability-number">04</div>
+          <div class="capability-copy"><p class="eyebrow">KEEP THE SIGNAL · <code>context/</code></p><h3>任务变长，<br />也只带上现在需要的内容。</h3><p>稳定系统前缀、会话历史和工具输出会按需投影。旧任务切换或窗口接近阈值时，FirstCoder 可以压缩历史，把大输出归档在本地，需要时再有界读取。</p></div>
+          <div class="context-meter" aria-hidden="true"><div><span>system prefix</span><b></b></div><div><span>session history</span><b></b></div><div><span>tool output</span><b></b></div><div><span>compact</span><b></b></div><small>usage-aware context</small></div>
+        </article>
+      </section>
+
+      <section class="compression shell">
+        <div class="compression-head reveal"><p class="eyebrow">WHAT COMPACTION KEEPS</p><h2>压缩不是删掉历史，<br />而是把上下文重新分层。</h2><p>每次模型请求都重新组合稳定前缀与当前任务需要的投影。信息量大的工具结果不会一直挤在消息窗口里：它们先归档，提示词只保留可判断下一步的摘要与引用。</p></div>
+        <div class="compression-map reveal" aria-label="上下文压缩流程">
+          <div class="context-lane live"><span>留在当前请求</span><b>稳定系统前缀</b><b>当前任务消息</b><b>工具结果预览</b></div>
+          <div class="compression-arrow">窗口接近阈值 / 确认任务切换 <i>↓</i></div>
+          <div class="context-lane archive"><span>下沉到本地 archive</span><b>完整命令输出</b><b>旧任务细节</b><b>长文本原文</b></div>
+          <div class="compression-return"><code>retrieve_archive</code><span>需要证据时，按 archive id 读取有界片段，而不是把全部历史再塞回来。</span></div>
+        </div>
+        <div class="compression-notes reveal"><span><b>1.</b> 保留每次请求都要用的系统前缀</span><span><b>2.</b> 压缩的是历史投影，不是 session 事件本身</span><span><b>3.</b> archive 只允许当前 session 有界读取</span></div>
+      </section>
+
+      <section class="runtime-notes shell">
+        <div class="runtime-note reveal"><span>PAUSE</span><h3>需要确认就暂停</h3><p><code>ask</code> 不只是 UI 弹窗。Loop 保存原始调用，确认之后从 request id 恢复。</p></div>
+        <div class="runtime-note reveal"><span>ARCHIVE</span><h3>大结果需要时再取</h3><p>工具结果可以归档，只投影预览；需要细节时再用 <code>retrieve_archive</code> 读取有界片段。</p></div>
+        <div class="runtime-note reveal"><span>GUARD</span><h3>每轮都有明确终点</h3><p>任务会完成、等待确认，或触发保护上限；不会无限转圈，主打一个“到点下班”。</p></div>
+      </section>
+
+      <section class="sessions shell split-section">
+        <figure class="session-screen reveal"><img src="assets/resume-session.gif" alt="FirstCoder 输入 /resume 后恢复已有会话的真实运行过程" /></figure>
+        <div class="sessions-copy reveal"><p class="eyebrow">05 / CONTINUE LATER · <code>session/</code></p><h2>离开终端，<br />任务也能从原处继续。</h2><p>每个项目的消息、工具调用、授权和结果都会追加为本地事件流。你可以恢复最近会话、选择旧会话、改名或分叉新思路；压缩之后，仍能重建可读记录。</p><div class="event-stream"><span>message</span><i></i><span>tool call</span><i></i><span>approval</span><i></i><span>result</span></div></div>
+      </section>
+
+      <section class="toolchain shell">
+        <div class="toolchain-title reveal"><p class="eyebrow">THE TOOLS IN THE MIDDLE</p><h2>任务真正向前走时，<br />中间到底能做什么？</h2><p>不是一堆临时脚本。每个工具都有 schema、权限需求和执行结果，模型可以调用，用户也能追踪。</p></div>
+        <div class="tool-list reveal">
+          <div><span>01</span><h3>阅读与定位</h3><p><code>ls</code><code>view</code><code>grep</code><code>glob</code><code>tree</code><code>read_multi</code></p></div>
+          <div><span>02</span><h3>代码与 Git</h3><p><code>git_status</code><code>git_diff</code><code>git_log</code><code>diagnostics</code><code>think</code></p></div>
+          <div><span>03</span><h3>修改与执行</h3><p><code>write</code><code>edit</code><code>delete</code><code>apply_patch</code><code>shell</code><code>python_exec</code></p></div>
+          <div><span>04</span><h3>网络与协作</h3><p><code>fetch</code><code>web_search</code><code>ask_user</code><code>todo</code></p></div>
+          <div><span>05</span><h3>会话级能力</h3><p><code>task_boundary</code><code>retrieve_archive</code></p></div>
+        </div>
+      </section>
+
+      <section class="architecture shell">
+        <div class="architecture-copy reveal"><p class="eyebrow">WHY THIS STAYS READABLE</p><h2>每个阶段，<br />都有一个能找到的模块。</h2><p>上下文、工具、权限、Provider 与会话各自处理自己的职责。FirstCoder 的价值不在于让你相信它，而在于你可以从一次请求顺着模块读到具体实现。</p><ul><li><code>agent/</code><span>编排执行循环</span></li><li><code>tools/</code><span>运行本地工具</span></li><li><code>permissions/</code><span>管理策略与授权</span></li><li><code>context/</code><span>维护长对话上下文</span></li></ul><a class="inline-link" href="https://github.com/KomorGiaoGiao/FirstCoder" target="_blank" rel="noreferrer">浏览代码库 <span>↗</span></a></div>
+        <figure class="architecture-shot reveal"><img src="assets/tui-overview.png" alt="FirstCoder 本地终端 TUI 的完整对话与任务说明界面" /></figure>
+      </section>
+
+      <section class="start shell" id="start">
+        <div class="start-copy reveal"><p class="eyebrow">QUICKSTART</p><h2>从本地终端，<br />开始你的第一轮 Agent 工作。</h2><p>安装后可以直接打开 TUI，发送单条任务，或进入交互模式。模型配置留在本地，项目配置也能跟着仓库走。</p><a class="button button-primary" href="https://github.com/KomorGiaoGiao/FirstCoder#quickstart" target="_blank" rel="noreferrer">阅读使用文档 <span>↗</span></a></div>
+        <div class="terminal-code reveal" aria-label="FirstCoder 快速开始命令"><div><span></span><span></span><span></span><b>terminal</b></div><pre><code><em>$</em> pipx install firstcoder
+<em>$</em> firstcoder
+
+<i># 单条任务</i>
+<em>$</em> firstcoder --message "Summarize this repository"
+
+<i># 交互模式</i>
+<em>$</em> firstcoder --interactive</code></pre></div>
+      </section>
+
+      <section class="faq shell">
+        <div class="section-head reveal"><p class="eyebrow">FAQ</p><h2>先把边界，<br />说在前面。</h2></div>
+        <div class="faq-list reveal">
+          <details><summary>FirstCoder 更适合谁？<span>+</span></summary><p>适合想理解 coding agent 运行机制、希望二次开发本地 Python 实现，或需要一个能讲清楚架构的作品集项目的人。它也能用于日常任务，但优先级是「真实且可读」。</p></details>
+          <details><summary>它和“一次生成代码”的聊天助手有什么不同？<span>+</span></summary><p>FirstCoder 维护的是完整的 <code>model → tool → evidence → model</code> 循环。模型可以读取仓库、修改文件、执行命令，再根据新的工具结果继续判断；任务会在完成、等待确认或触发保护条件时结束。</p></details>
+          <details><summary>权限确认真的会阻止操作吗？<span>+</span></summary><p>会。权限由工具注册表、权限管理器与默认策略在程序侧执行。当策略返回 <code>ask</code>，Agent Loop 会保存原始调用并暂停，后续工具不会抢跑；确认后才用对应 request id 恢复。</p></details>
+          <details><summary>为什么每轮都会先判断 task boundary？<span>+</span></summary><p>因为新问题不应该被旧任务的上下文污染。<code>task_boundary</code> 只让模型报告 same / new / uncertain，稳定 task hash 由程序生成，并随 session 事件保存。支持强制 tool choice 的 Provider 会在真实 user turn 的首次请求先走这一步。</p></details>
+          <details><summary>上下文变长后，是不是会丢掉之前的内容？<span>+</span></summary><p>不是直接丢。稳定系统前缀和当前任务需要的历史会继续投影；大工具输出和较旧细节可以归档，提示词里保留摘要与引用。需要原始证据时，<code>retrieve_archive</code> 只能从当前 session 读取有界片段，而不是一次塞回全部历史。</p></details>
+          <details><summary>关闭终端以后，怎么继续上一次工作？<span>+</span></summary><p>会话以事件流保存消息、工具调用、授权和结果。使用 <code>/resume</code> 选择已有会话即可继续；也可以用 <code>/fork</code> 从当前会话复制一条新分支，或用 <code>/rename</code> 整理会话标题。</p></details>
+          <details><summary>模型和密钥怎么配置？<span>+</span></summary><p>模型配置可放在全局 <code>~/.config/firstcoder/config.toml</code> 或项目级 <code>./firstcoder.toml</code>；密钥通过如 <code>FIRSTCODER_API_KEY</code> 的环境变量提供，不需要写进项目代码。</p></details>
+          <details><summary>能接自己的模型、Skill 或 MCP 吗？<span>+</span></summary><p>可以。Provider Adapter 负责把不同模型协议收敛到运行时；项目与全局 Skill 可被发现、加载并写入审计事件；stdio MCP 与外部能力通过统一工具协议接入。具体可用性取决于当前 Provider 配置和已安装服务。</p></details>
+          <details><summary>本地数据与工具访问范围怎么控制？<span>+</span></summary><p>默认策略会按工具和路径请求权限，标准模式限制在项目范围内；会话、归档和配置都由本地工作流管理。切换到更宽松模式会改变访问范围，因此应只在你明确理解影响时使用。</p></details>
+        </div>
+      </section>
+
+      <section class="closing shell reveal"><img src="assets/firstcoder-logo.png" alt="" /><p>写代码，也把代码背后的<br /><em>Agent 看明白。</em></p><a class="button button-primary" href="https://github.com/KomorGiaoGiao/FirstCoder" target="_blank" rel="noreferrer">Start with FirstCoder <span>↗</span></a></section>
+    </main>
+    <footer class="shell"><span>© 2026 FirstCoder</span><span>Built to be understood.</span></footer>
+    <script src="script.js"></script>
+  </body>
+</html>

@@ -32,6 +32,17 @@ class FakeProvider(ChatProvider):
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            basis_message_id = next(
+                message.content.split("basis_message_id=", 1)[1].split("]", 1)[0]
+                for message in request.messages
+                if "basis_message_id=" in message.content
+            )
+            return ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content=f'{{"decision":"uncertain","basis_message_id":"{basis_message_id}"}}',
+            )
         if not self.responses:
             raise AssertionError("FakeProvider 没有剩余响应")
         response = self.responses.pop(0)
@@ -117,7 +128,7 @@ def test_agent_resume_e2e_replays_history_and_continues_turn(tmp_path) -> None:
     response = AgentLoop(session=resumed, provider=second_provider).run_user_turn("第二轮")
 
     assert response.content == "第二轮回复"
-    assert len(second_provider.requests) == 1
+    assert len(second_provider.requests) == 4
     provider_roles = [message.role for message in second_provider.requests[0].messages]
     assert provider_roles == ["system", "user", "assistant", "user"]
     assert second_provider.requests[0].messages[1].content.endswith("第一轮")
@@ -520,8 +531,16 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
     original_complete = provider.complete
 
     def complete_with_latest_user_basis(request: ChatRequest) -> ChatResponse:
+        user_messages = [message for message in session.rebuild_view().messages if message.role == "user"]
+        user_message_id = user_messages[-1].id
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            decision = "same" if len(user_messages) >= 3 else "new"
+            return ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content=f'{{"decision":"{decision}","basis_message_id":"{user_message_id}"}}',
+            )
         response = original_complete(request)
-        user_message_id = [message for message in session.rebuild_view().messages if message.role == "user"][-1].id
         for tool_call in response.tool_calls:
             if tool_call.name == "task_boundary":
                 tool_call.arguments["basis_message_id"] = user_message_id
@@ -614,8 +633,16 @@ def test_task_boundary_e2e_confirms_pending_new_when_next_turn_is_same_task(tmp_
     original_complete = provider.complete
 
     def complete_with_latest_user_basis(request: ChatRequest) -> ChatResponse:
+        user_messages = [message for message in session.rebuild_view().messages if message.role == "user"]
+        user_message_id = user_messages[-1].id
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            decision = "same" if len(user_messages) >= 3 else "new"
+            return ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content=f'{{"decision":"{decision}","basis_message_id":"{user_message_id}"}}',
+            )
         response = original_complete(request)
-        user_message_id = [message for message in session.rebuild_view().messages if message.role == "user"][-1].id
         for tool_call in response.tool_calls:
             if tool_call.name == "task_boundary":
                 tool_call.arguments["basis_message_id"] = user_message_id

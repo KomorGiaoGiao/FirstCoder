@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -25,12 +26,12 @@ from firstcoder.agent.verification import is_successful_verification_result
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
 from firstcoder.context.system_prompt import PromptPrefixCache
-from firstcoder.context.task_boundary import TaskBoundaryService
+from firstcoder.context.task_boundary import TaskBoundaryService, observation_from_tool_result_data
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall, ToolChoiceFunction
+from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
 from firstcoder.skills.loader import SkillLoadError, SkillLoader
 from firstcoder.skills.router import SkillRouter
 from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
@@ -67,6 +68,37 @@ _BYPASS_PARALLEL_TOOL_NAMES = _PARALLEL_READONLY_TOOL_NAMES | frozenset(
 )
 _TODO_STALE_TOOL_RESULT_THRESHOLD = 3
 _TODO_MISSING_TOOL_RESULT_THRESHOLD = 2
+_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS = 3
+_TASK_BOUNDARY_CLASSIFICATION_MAX_TOKENS = 512
+_TASK_BOUNDARY_CLASSIFICATION_PROMPT = """Classify whether the latest real user message starts a new task relative to the conversation.
+Choose "same" when the latest message is a continuation or follow-up of the active task, including messages that say "continue", "add", "explain further", or refer to the immediately preceding task.
+Choose "new" when it starts a different goal, subject, deliverable, or problem from the active task.
+Use "uncertain" only when the conversation does not provide enough information to distinguish same from new; do not use it merely because a continuation is short.
+Example: active task is username normalization; "continue with its acceptance criteria" -> same.
+Example: active task is username normalization; "now explain deep_merge rules instead" -> new.
+Return exactly one JSON object, with no Markdown or explanation:
+{"decision":"same|new|uncertain","basis_message_id":"CURRENT_USER_MESSAGE_ID"}
+The basis_message_id must exactly equal the ID attached to the latest user message."""
+_TASK_BOUNDARY_CLASSIFICATION_RETRY_PROMPT = """The previous classification was invalid. Return exactly one JSON object and nothing else:
+{"decision":"same|new|uncertain","basis_message_id":"CURRENT_USER_MESSAGE_ID"}
+The basis_message_id must exactly equal the ID attached to the latest user message."""
+
+
+def _parse_task_boundary_classification(content: str, *, basis_message_id: str) -> str | None:
+    """接受精确 JSON 分类，拒绝额外文本和错误的消息锚点。"""
+
+    try:
+        parsed = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    decision = parsed.get("decision")
+    if decision not in {"same", "new", "uncertain"}:
+        return None
+    if parsed.get("basis_message_id") != basis_message_id:
+        return None
+    return decision
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,14 +218,14 @@ class AgentLoop:
         self._begin_turn()
         self._check_cancelled()
         message_id = self.session.append_user_message(content)
-        self._initialize_active_task_if_missing(message_id)
+        if self._initialize_active_task_if_missing(message_id) is None:
+            self._classify_task_boundary(message_id)
         # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
         # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         return self._run_tool_loop_interactive(
             self._complete_once_with_recovery,
-            initial_tool_choice=self._task_boundary_tool_choice_for_user_turn(),
         )
 
     def resume_with_user_input(self, request_id: str, answer: str) -> AgentTurnResult:
@@ -243,12 +275,12 @@ class AgentLoop:
         self._begin_turn()
         self._check_cancelled()
         message_id = self.session.append_user_message(content)
-        self._initialize_active_task_if_missing(message_id)
+        if self._initialize_active_task_if_missing(message_id) is None:
+            await self._classify_task_boundary_async(message_id)
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
         result = await self._run_tool_loop_interactive_async(
             self._stream_once_with_recovery,
-            initial_tool_choice=self._task_boundary_tool_choice_for_user_turn(),
         )
         if result.response is not None:
             return result.response
@@ -271,12 +303,75 @@ class AgentLoop:
 
         return asyncio.run(self.run_user_turn_streaming(content))
 
-    def _initialize_active_task_if_missing(self, basis_message_id: str) -> None:
+    def _initialize_active_task_if_missing(self, basis_message_id: str):
         service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)
         observation = service.initialize_active_task(self.session.runtime_state, basis_message_id=basis_message_id)
         if observation is not None:
             self.session.writer.append_task_boundary_observation(observation)
             self._tag_message_parts_with_task_hash(basis_message_id, observation.active_task_hash)
+        return observation
+
+    def _classify_task_boundary(self, basis_message_id: str) -> None:
+        """运行隐藏的 JSON 分类，并把有效结果写入既有边界状态机。"""
+
+        for attempt in range(_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS):
+            try:
+                response = self._complete_task_boundary_classification(attempt=attempt)
+            except ProviderError:
+                continue
+            decision = _parse_task_boundary_classification(response.content, basis_message_id=basis_message_id)
+            if decision is not None:
+                self._record_task_boundary_classification(decision, basis_message_id)
+                return
+        self._record_task_boundary_classification("uncertain", basis_message_id)
+
+    async def _classify_task_boundary_async(self, basis_message_id: str) -> None:
+        """流式主回复前运行隐藏分类，不向 UI 转发其任何事件。"""
+
+        for attempt in range(_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS):
+            try:
+                request = self._task_boundary_classification_request(attempt=attempt)
+                self._check_turn_timeout()
+                self._check_cancelled()
+                response = await self.provider.acomplete(request)
+            except ProviderError:
+                continue
+            decision = _parse_task_boundary_classification(response.content, basis_message_id=basis_message_id)
+            if decision is not None:
+                self._record_task_boundary_classification(decision, basis_message_id)
+                return
+        self._record_task_boundary_classification("uncertain", basis_message_id)
+
+    def _complete_task_boundary_classification(self, *, attempt: int) -> ChatResponse:
+        request = self._task_boundary_classification_request(attempt=attempt)
+        self._check_turn_timeout()
+        self._check_cancelled()
+        return self.provider.complete(request)
+
+    def _task_boundary_classification_request(self, *, attempt: int) -> ChatRequest:
+        messages = self.context_builder.build_provider_messages(
+            self.session.rebuild_view(),
+        )
+        prompt = _TASK_BOUNDARY_CLASSIFICATION_PROMPT if attempt == 0 else _TASK_BOUNDARY_CLASSIFICATION_RETRY_PROMPT
+        return ChatRequest(
+            messages=[ChatMessage(role="system", content=prompt), *messages],
+            tools=[],
+            tool_choice="none",
+            max_tokens=_TASK_BOUNDARY_CLASSIFICATION_MAX_TOKENS,
+        )
+
+    def _record_task_boundary_classification(self, decision: str, basis_message_id: str) -> None:
+        result = self.session.tool_registry.execute(
+            "task_boundary",
+            {"decision": decision, "basis_message_id": basis_message_id},
+        )
+        observation = observation_from_tool_result_data(result.data) if result.ok else None
+        if observation is None:
+            return
+        self.session.writer.append_task_boundary_observation(observation)
+        self._tag_task_boundary_messages_with_active_hash(result.data)
+        if result.data.get("should_trigger_compaction"):
+            self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
 
     def _tag_message_parts_with_task_hash(self, message_id: str, task_hash: str | None) -> None:
         if not task_hash:
@@ -1148,27 +1243,6 @@ class AgentLoop:
         if capabilities is not None and not capabilities.supports_tools:
             return []
         return self.session.tool_registry.definitions()
-
-    def _task_boundary_tool_choice_for_user_turn(self):
-        """Return the first-request boundary choice when the provider supports it.
-
-        The system prompt tells the model to classify every real user turn, but
-        providers that implement forced tool choice should not be left to
-        probabilistic prompt following.  This helper is intentionally used only
-        for the first request created by ``run_user_turn_*``: tool-loop
-        continuations, runtime reminders, and permission resumes are not new
-        user turns.  Providers that explicitly cannot force a function retain
-        ``auto`` so we never send an unsupported wire-format request.
-        """
-
-        capabilities = getattr(self.provider, "capabilities", None)
-        if capabilities is not None and (
-            not capabilities.supports_tools or not capabilities.supports_forced_tool_choice
-        ):
-            return "auto"
-        if "task_boundary" not in self.session.tool_registry.names():
-            return "auto"
-        return ToolChoiceFunction(name="task_boundary")
 
     def _begin_turn(self) -> None:
         self.provider_call_count = 0

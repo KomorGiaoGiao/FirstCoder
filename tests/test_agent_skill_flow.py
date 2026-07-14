@@ -23,6 +23,13 @@ class RecordingProvider(ChatProvider):
 
     def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            basis_message_id = next(
+                message.content.split("basis_message_id=", 1)[1].split("]", 1)[0]
+                for message in reversed(request.messages)
+                if "basis_message_id=" in message.content
+            )
+            return ChatResponse(provider=self.name, model=self.model, content=f'{{"decision":"uncertain","basis_message_id":"{basis_message_id}"}}')
         return self.responses.pop(0)
 
 
@@ -113,7 +120,7 @@ def test_resume_reloads_previously_loaded_skill_context(tmp_path: Path, monkeypa
 
     AgentLoop(session=resumed, provider=resumed_provider).run_user_turn("继续")
 
-    system_prompt = resumed_provider.requests[0].messages[0].content
+    system_prompt = resumed_provider.requests[1].messages[0].content
     assert "# 全球家族办公室资讯简报" in system_prompt
     assert "# Evidence Policy" in system_prompt
 
