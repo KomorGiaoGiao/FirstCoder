@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Callable
+from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession, create_project_permission_manager
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.app.help_commands import HelpCommandHandler
+from firstcoder.app.mcp_commands import McpCommandHandler
 from firstcoder.app.model_commands import ModelCommandHandler, ModelState
 from firstcoder.app.permission_commands import PermissionCommandHandler
 from firstcoder.app.router import CompositeCommandHandler
@@ -21,6 +24,10 @@ from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.context.manager import ContextWindowManager
 from firstcoder.context.provider_summarizer import ProviderLlmCompactSummarizer
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.mcp.adapter import adapt_mcp_tool
+from firstcoder.mcp.config import load_mcp_configs
+from firstcoder.mcp.manager import McpManager
+from firstcoder.mcp.models import McpServerStatus, McpToolDescription
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import ProviderConfigError, create_provider, create_provider_from_config
 from firstcoder.providers.presets import PROVIDER_PRESETS
@@ -36,6 +43,47 @@ from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
 
+class McpManagerLike(Protocol):
+    """Factory-level MCP lifecycle and discovery boundary."""
+
+    def connect_all(self) -> None: ...
+
+    def tools(self) -> tuple[tuple[str, McpToolDescription], ...]: ...
+
+    def statuses(self) -> tuple[McpServerStatus, ...]: ...
+
+    def doctor(self, name: str) -> McpServerStatus | None: ...
+
+    def close(self) -> None: ...
+
+
+class McpToolProvider:
+    """Merge a stable base tool set with the manager's current MCP catalog."""
+
+    def __init__(self, base_tools: list[Tool], manager: McpManagerLike, *, include_mcp: bool) -> None:
+        self._base_tools = list(base_tools)
+        self._manager = manager
+        self._include_mcp = include_mcp
+
+    def __call__(self) -> list[Tool]:
+        tools = list(self._base_tools)
+        if not self._include_mcp:
+            return tools
+        names = {tool.name for tool in tools}
+        try:
+            catalog = self._manager.tools()
+        except Exception:
+            return tools
+        for server, discovered_tool in catalog:
+            try:
+                tool = adapt_mcp_tool(self._manager, server, discovered_tool, existing_names=names)
+            except ValueError:
+                continue
+            tools.append(tool)
+            names.add(tool.name)
+        return tools
+
+
 def create_firstcoder_app(
     *,
     project_root: str | Path = ".",
@@ -45,6 +93,7 @@ def create_firstcoder_app(
     tools: list[Tool] | None = None,
     config: FirstCoderTuiConfig | None = None,
     app_config: AppConfig | None = None,
+    mcp_manager_factory: Callable[[tuple], McpManagerLike] | None = None,
 ) -> FirstCoderApp:
     """组装可运行的 FirstCoder TUI。
 
@@ -64,6 +113,13 @@ def create_firstcoder_app(
         include_network_tools=True,
         access=sandbox_access,
     ).tools()
+    mcp_manager = (mcp_manager_factory or McpManager)(load_mcp_configs(resolved_app_config))
+    try:
+        mcp_manager.connect_all()
+    except Exception:
+        pass
+    tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)
+    current_tools = tool_provider()
     resolved_provider = provider or create_provider(project_root=project_path)
     grant_store = FilePermissionGrantStore(resolved_data_root / "permissions.json")
     permission_manager = create_project_permission_manager(project_path, grants=grant_store)
@@ -71,7 +127,7 @@ def create_firstcoder_app(
         store=store,
         session_id=session_id or new_session_id(),
         project_root=project_path,
-        tools=resolved_tools,
+        tools=current_tools,
         permission_manager=permission_manager,
         sandbox_access=sandbox_access,
     )
@@ -89,7 +145,7 @@ def create_firstcoder_app(
         store=store,
         project_root=project_path,
         data_root=resolved_data_root,
-        tools=resolved_tools,
+        tools_provider=tool_provider,
         sandbox_access=sandbox_access,
         catalog=catalog,
     )
@@ -97,14 +153,14 @@ def create_firstcoder_app(
         store=store,
         project_root=project_path,
         data_root=resolved_data_root,
-        tools=resolved_tools,
+        tools_provider=tool_provider,
         sandbox_access=sandbox_access,
     )
     fork_service = ForkSessionService(
         store=store,
         project_root=project_path,
         data_root=resolved_data_root,
-        tools=resolved_tools,
+        tools_provider=tool_provider,
         sandbox_access=sandbox_access,
         catalog=catalog,
     )
@@ -125,7 +181,8 @@ def create_firstcoder_app(
     chat_runner = AgentChatRunner(
         current_session=current,
         provider=resolved_provider,
-        tools=resolved_tools,
+        tools=current_tools,
+        tools_provider=tool_provider,
         context_manager=context_manager,
         limits=AgentLoopLimits.default(),
         use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
@@ -138,6 +195,7 @@ def create_firstcoder_app(
     command_handler = CompositeCommandHandler(
         [
             HelpCommandHandler(),
+            McpCommandHandler(mcp_manager),
             ModelCommandHandler(model_switcher),
             session_handler,
             context_handler,
@@ -155,6 +213,7 @@ def create_firstcoder_app(
             provider_model=resolved_provider.model,
             project_name=project_path.resolve().name,
         ),
+        on_shutdown=mcp_manager.close,
     )
 
 

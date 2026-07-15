@@ -288,3 +288,25 @@ def test_manager_unknown_choice_does_not_create_grant(tmp_path) -> None:
     assert decision.kind == PermissionDecisionKind.DENY
     assert decision.grant is None
     assert manager.grants.list() == []
+
+
+def test_manager_mcp_allow_always_is_exact_server_and_tool_scope(tmp_path) -> None:
+    manager = PermissionManager(policy=DefaultPermissionPolicy(tmp_path))
+    request = PermissionRequest(
+        id="perm_lark_calendar_list",
+        action=PermissionAction.MCP_TOOL,
+        target="lark/calendar_list",
+    )
+
+    decision = manager.resolve_confirmation(request, "allow_always_same_scope")
+
+    assert decision.grant is not None
+    assert decision.grant.scope_type == PermissionScopeType.MCP_TOOL
+    assert decision.grant.scope_value == "lark/calendar_list"
+    assert manager.preflight(
+        PermissionRequest(
+            id="perm_lark_calendar_create",
+            action=PermissionAction.MCP_TOOL,
+            target="lark/calendar_create",
+        )
+    ).kind == PermissionDecisionKind.ASK

@@ -42,3 +42,7 @@ def test_build_system_prompt_inputs_uses_permission_policy_without_tool_schema()
     assert '"model": "fake-model"' in content
     assert '"write": "allow"' in content
     assert inputs.permission_policy["shell"] == DEFAULT_PERMISSION_POLICY["shell"]
+
+
+def test_default_permission_policy_describes_mcp_tool_confirmation() -> None:
+    assert DEFAULT_PERMISSION_POLICY["mcp_tools"] == "confirm"

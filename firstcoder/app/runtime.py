@@ -78,6 +78,7 @@ class AgentChatRunner:
     current_session: CurrentSessionState
     provider: ChatProvider
     tools: list[Tool] | None = None
+    tools_provider: Callable[[], list[Tool]] | None = None
     context_builder: ContextBuilder | None = None
     context_manager: Any | None = None
     limits: AgentLoopLimits | None = None
@@ -135,7 +136,7 @@ class AgentChatRunner:
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
-            tools=self.tools,
+            tools=self._current_tools(),
             context_builder=self.context_builder,
             context_manager=self.context_manager,
             limits=self.limits,
@@ -179,7 +180,7 @@ class AgentChatRunner:
         loop = AgentLoop(
             session=self.current_session.session,
             provider=self.provider,
-            tools=self.tools,
+            tools=self._current_tools(),
             context_builder=self.context_builder,
             context_manager=self.context_manager,
             limits=self.limits,
@@ -226,7 +227,7 @@ class AgentChatRunner:
             loop = AgentLoop(
                 session=self.current_session.session,
                 provider=self.provider,
-                tools=self.tools,
+                tools=self._current_tools(),
                 context_builder=self.context_builder,
                 context_manager=self.context_manager,
                 limits=self.limits,
@@ -265,7 +266,7 @@ class AgentChatRunner:
             loop = AgentLoop(
                 session=self.current_session.session,
                 provider=self.provider,
-                tools=self.tools,
+                tools=self._current_tools(),
                 context_builder=self.context_builder,
                 context_manager=self.context_manager,
                 limits=self.limits,
@@ -303,6 +304,11 @@ class AgentChatRunner:
             return response
 
         return await asyncio.to_thread(self.resume_with_user_input, request_id, answer)
+
+    def _current_tools(self) -> list[Tool] | None:
+        """Resolve tools once per loop so the session registry sees that same list."""
+
+        return self.tools_provider() if self.tools_provider is not None else self.tools
 
     def _legacy_max_tool_rounds_kwargs(self) -> dict[str, int | None | object]:
         if self.max_tool_rounds is _DEFAULT_MAX_TOOL_ROUNDS:

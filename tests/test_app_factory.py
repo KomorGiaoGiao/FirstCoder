@@ -11,6 +11,9 @@ from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, ProviderCapabilities, ToolCall
 from firstcoder.tools.write import create_write_tool
+from firstcoder.tools.types import Tool
+from firstcoder.providers.types import ToolDefinition
+from firstcoder.mcp.models import McpServerStatus, McpToolDescription
 
 
 @dataclass
@@ -30,6 +33,94 @@ class FakeProvider(ChatProvider):
     def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         return self.responses.pop(0)
+
+
+class FakeMcpManager:
+    def __init__(self, tools=(), statuses=()) -> None:
+        self.tools_value = tools
+        self.statuses_value = statuses
+        self.connect_calls = 0
+        self.close_calls = 0
+
+    def connect_all(self) -> None:
+        self.connect_calls += 1
+
+    def tools(self):
+        return self.tools_value
+
+    def statuses(self):
+        return self.statuses_value
+
+    def doctor(self, name: str):
+        return next((status for status in self.statuses_value if status.name == name), None)
+
+    def call_tool(self, server: str, tool: str, arguments: dict[str, object]):
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_factory_connects_mcp_once_and_merges_discovered_tools(tmp_path: Path) -> None:
+    manager = FakeMcpManager(
+        tools=(("demo", McpToolDescription("ping", "Ping", {"type": "object", "properties": {}})),),
+        statuses=(McpServerStatus("demo", "connected", tool_count=1),),
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_test",
+        mcp_manager_factory=lambda configs: manager,
+    )
+
+    assert manager.connect_calls == 1
+    assert "write" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+    assert "mcp__demo__ping" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+    assert "/mcp list" in app.command_handler.handle("/help").output
+
+
+def test_factory_keeps_builtin_tools_when_mcp_connection_fails(tmp_path: Path) -> None:
+    manager = FakeMcpManager(statuses=(McpServerStatus("demo", "failed", error="safe failure"),))
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_test",
+        mcp_manager_factory=lambda configs: manager,
+    )
+
+    assert "write" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+    assert "mcp__demo__ping" not in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+
+
+def test_factory_custom_tools_mode_does_not_append_mcp_tools(tmp_path: Path) -> None:
+    manager = FakeMcpManager(
+        tools=(("demo", McpToolDescription("ping", "Ping", {"type": "object", "properties": {}})),),
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_test",
+        tools=[],
+        mcp_manager_factory=lambda configs: manager,
+    )
+
+    assert "mcp__demo__ping" not in app.current_session.session.tool_registry.names()
+
+
+def test_app_unmount_closes_mcp_manager_once(tmp_path: Path) -> None:
+    manager = FakeMcpManager()
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_test",
+        tools=[],
+        mcp_manager_factory=lambda configs: manager,
+    )
+
+    app.on_unmount()
+    app.on_unmount()
+
+    assert manager.close_calls == 1
 
 
 def test_create_firstcoder_app_wires_session_commands_context_and_chat(tmp_path: Path) -> None:

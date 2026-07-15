@@ -192,6 +192,20 @@ def test_default_global_config_path_respects_xdg_config_home(tmp_path, monkeypat
     assert default_global_config_path() == tmp_path / "firstcoder" / "config.toml"
 
 
+def test_mcp_config_merges_servers_without_using_provider_accessors():
+    config = AppConfig(
+        provider_name="openai",
+        env={},
+        global_config={"mcp": {"global": {"type": "local", "command": ["global"]}}},
+        project_config={"mcp": {"project": {"type": "remote", "url": "https://example.test/mcp"}}},
+    )
+
+    assert config.mcp_config() == {
+        "global": {"type": "local", "command": ["global"]},
+        "project": {"type": "remote", "url": "https://example.test/mcp"},
+    }
+
+
 def test_openai_compatible_presets_have_constructable_metadata():
     expected = {
         "openai",

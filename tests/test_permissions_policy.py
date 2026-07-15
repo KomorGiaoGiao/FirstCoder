@@ -255,3 +255,12 @@ def test_network_request_requires_confirmation(tmp_path) -> None:
     )
 
     assert decision.kind == PermissionDecisionKind.ASK
+
+
+def test_mcp_tool_requires_confirmation_except_bypass(tmp_path) -> None:
+    policy = DefaultPermissionPolicy(tmp_path)
+    request = _request(PermissionAction.MCP_TOOL, "lark/calendar_list")
+
+    for mode in (PermissionMode.CONSERVATIVE, PermissionMode.STANDARD, PermissionMode.AGGRESSIVE):
+        assert policy.decide(request, mode=mode).kind == PermissionDecisionKind.ASK
+    assert policy.decide(request, mode=PermissionMode.BYPASS).kind == PermissionDecisionKind.ALLOW

@@ -21,6 +21,7 @@ DEFAULT_PERMISSION_POLICY: dict[str, Any] = {
     "delete": "confirm",
     "shell": "confirm",
     "network": "confirm",
+    "mcp_tools": "confirm",
     "env_secrets": "redact",
 }
 

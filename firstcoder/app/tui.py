@@ -195,12 +195,15 @@ class FirstCoderApp(App[None]):
         chat_runner: ChatRunnerLike | None = None,
         current_session: CurrentSessionLike | None = None,
         config: FirstCoderTuiConfig | None = None,
+        on_shutdown: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self.command_handler = command_handler
         self.chat_runner = chat_runner
         self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
+        self._on_shutdown = on_shutdown
+        self._shutdown_called = False
         self._chat_busy = False
         self._chat_worker = None
         self._chat_turn_token = 0
@@ -269,6 +272,9 @@ class FirstCoderApp(App[None]):
     def on_unmount(self) -> None:
         self._stop_welcome_particles()
         self._stop_provider_glow()
+        if not self._shutdown_called and self._on_shutdown is not None:
+            self._shutdown_called = True
+            self._on_shutdown()
 
     async def _submit_composer(self) -> None:
         input_widget = self.query_one("#input", TextArea)

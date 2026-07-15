@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 
 from firstcoder.agent.prompt_inputs import read_agents_md
 from firstcoder.agent.session import AgentSession, create_project_permission_manager
@@ -29,6 +30,7 @@ class ResumeService:
     project_root: str | Path
     data_root: str | Path | None = None
     tools: list[Tool] | None = None
+    tools_provider: Callable[[], list[Tool]] | None = None
     sandbox_access: SandboxAccess | None = None
     catalog: SessionCatalog | None = None
 
@@ -46,7 +48,7 @@ class ResumeService:
             session_id=session_id,
             agents_md=read_agents_md(self.project_root),
             skill_catalog=discover_all_skills(self.project_root),
-            tools=self.tools,
+            tools=self._tools(),
             permission_manager=create_project_permission_manager(
                 self.project_root,
                 grants=FilePermissionGrantStore(data_root / "permissions.json"),
@@ -55,3 +57,6 @@ class ResumeService:
         )
         session.restore_pending_permission_execution()
         return ResumeResult(session=session, record=record)
+
+    def _tools(self) -> list[Tool] | None:
+        return self.tools_provider() if self.tools_provider is not None else self.tools

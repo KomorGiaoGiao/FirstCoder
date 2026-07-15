@@ -110,6 +110,8 @@ def _grant_matches(grant: PermissionGrant, request: PermissionRequest) -> bool:
         return _host_from_target(request.target) == grant.scope_value.lower()
     if grant.scope_type == PermissionScopeType.ENV_KEY:
         return request.target.upper() == grant.scope_value.upper()
+    if grant.scope_type == PermissionScopeType.MCP_TOOL:
+        return request.action == PermissionAction.MCP_TOOL and request.target == grant.scope_value
     return False
 
 

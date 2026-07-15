@@ -22,6 +22,7 @@ class PermissionAction(StrEnum):
     NETWORK_REQUEST = "network_request"
     GIT_OPERATION = "git_operation"
     READ_ENV = "read_env"
+    MCP_TOOL = "mcp_tool"
 
 
 class PermissionMode(StrEnum):
@@ -57,6 +58,7 @@ class PermissionScopeType(StrEnum):
     COMMAND_PREFIX = "command_prefix"
     HOST = "host"
     ENV_KEY = "env_key"
+    MCP_TOOL = "mcp_tool"
 
 
 class PermissionConfirmationChoice(StrEnum):

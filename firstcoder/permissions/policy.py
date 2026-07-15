@@ -77,6 +77,8 @@ class DefaultPermissionPolicy:
             return self._decide_shell(request, mode=mode)
         if request.action == PermissionAction.NETWORK_REQUEST:
             return self._ask("网络请求需要用户确认。")
+        if request.action == PermissionAction.MCP_TOOL:
+            return self._ask("MCP 工具调用需要用户确认。")
         return self._ask("未知权限请求需要用户确认。")
 
     def _decide_path(self, request: PermissionRequest, *, mode: PermissionMode) -> PermissionDecision:

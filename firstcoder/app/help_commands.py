@@ -25,6 +25,8 @@ HELP_COMMANDS = [
     ("/compact", "Compact context now."),
     ("/mode", "Show permission mode."),
     ("/mode <conservative|standard|aggressive|bypass>", "Change permission mode."),
+    ("/mcp list", "List MCP server status."),
+    ("/mcp doctor <server>", "Inspect one MCP server."),
 ]
 
 

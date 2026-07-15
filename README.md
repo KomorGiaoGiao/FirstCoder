@@ -145,6 +145,7 @@ Conversation flow:
 - [Technical Docs Index](docs/README.md)
 - [Chinese Docs Index](docs/README.zh-CN.md)
 - [Codebase Reading Guide](docs/CODEBASE_READING_GUIDE.md)
+- [MCP Client Configuration](docs/MCP.md)
 
 ## Development
 

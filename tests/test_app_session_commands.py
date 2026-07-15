@@ -13,11 +13,42 @@ from firstcoder.session.fork import ForkSessionService
 from firstcoder.session.new import NewSessionService
 from firstcoder.session.resume import ResumeService
 from firstcoder.session.share import SessionShareService
+from firstcoder.tools.types import Tool, ToolResult
+from firstcoder.providers.types import ToolDefinition
 
 
 class CurrentSession:
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
+
+
+def _tool(name: str) -> Tool:
+    return Tool(ToolDefinition(name=name, description=name, parameters={"type": "object"}), lambda **_: ToolResult(name, True, "ok"))
+
+
+def test_new_fork_and_resume_use_current_tool_provider(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    current_tools = [_tool("mcp__demo__one")]
+    provider = lambda: list(current_tools)
+    initial = AgentSession.create(store=store, session_id="sess_one", agents_md="", tools=provider())
+    AgentSession.create(store=store, session_id="sess_two", agents_md="", tools=provider())
+    state = CurrentSessionState(initial)
+    handler = SessionCommandHandler(
+        catalog=SessionCatalog(tmp_path),
+        current_session=state.session,
+        new_service=NewSessionService(store=store, project_root=tmp_path, tools_provider=provider),
+        fork_service=ForkSessionService(store=store, project_root=tmp_path, tools_provider=provider),
+        resume_service=ResumeService(store=store, project_root=tmp_path, tools_provider=provider),
+        on_resume=state.set_session,
+    )
+
+    current_tools[:] = [_tool("mcp__demo__two")]
+    handler.handle("/new")
+    assert "mcp__demo__two" in state.session.tool_registry.names()
+    handler.handle("/fork")
+    assert "mcp__demo__two" in state.session.tool_registry.names()
+    handler.handle("/resume sess_two")
+    assert "mcp__demo__two" in state.session.tool_registry.names()
 
 
 def _make_session(store: JsonlSessionStore, session_id: str, *, title: str = "demo") -> None:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,20 @@ class AppConfig:
             if value is not None:
                 return value
         return default
+
+    def mcp_config(self) -> dict[str, Any]:
+        """返回按服务器名合并的原始 MCP 配置，项目配置完整覆盖同名全局配置。"""
+
+        merged: dict[str, Any] = {}
+        for config in (self.global_config, self.project_config):
+            if not config or "mcp" not in config:
+                continue
+            raw_mcp = config["mcp"]
+            if not isinstance(raw_mcp, dict):
+                raise ValueError("[mcp] 配置必须是表")
+            for name, server_config in raw_mcp.items():
+                merged[name] = deepcopy(server_config)
+        return merged
 
     @property
     def loaded_config_paths(self) -> list[Path]:

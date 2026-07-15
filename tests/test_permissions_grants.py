@@ -251,3 +251,26 @@ def test_file_permission_grant_store_skips_invalid_entries(tmp_path) -> None:
     store = FilePermissionGrantStore(path)
 
     assert [grant.id for grant in store.list()] == ["grant_pytest"]
+
+
+def test_mcp_tool_grant_matches_only_the_same_server_and_tool() -> None:
+    store = PermissionGrantStore(
+        [
+            _grant(
+                "grant_lark_calendar_list",
+                action=PermissionAction.MCP_TOOL,
+                scope_type=PermissionScopeType.MCP_TOOL,
+                scope_value="lark/calendar_list",
+            )
+        ]
+    )
+
+    assert store.matching_decision(
+        PermissionRequest(id="same", action=PermissionAction.MCP_TOOL, target="lark/calendar_list")
+    ) is not None
+    assert store.matching_decision(
+        PermissionRequest(id="other_tool", action=PermissionAction.MCP_TOOL, target="lark/calendar_create")
+    ) is None
+    assert store.matching_decision(
+        PermissionRequest(id="other_server", action=PermissionAction.MCP_TOOL, target="github/calendar_list")
+    ) is None

@@ -202,6 +202,8 @@ def default_scope_for_request(request: PermissionRequest, *, project_root: Path 
         return _PermissionScope(scope_type=PermissionScopeType.ENV_KEY, scope_value=request.target.upper())
     if request.action == PermissionAction.GIT_OPERATION:
         return _PermissionScope(scope_type=PermissionScopeType.COMMAND_PREFIX, scope_value=_git_command_scope(request.target))
+    if request.action == PermissionAction.MCP_TOOL:
+        return _PermissionScope(scope_type=PermissionScopeType.MCP_TOOL, scope_value=request.target)
     return _PermissionScope(scope_type=PermissionScopeType.COMMAND_PREFIX, scope_value=request.target.strip())
 
 
