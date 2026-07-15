@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 _ENV_PLACEHOLDER = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
 _ALLOWED_TOOL_NAME = re.compile(r"[A-Za-z0-9_*-]+")
+_ENVIRONMENT_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def load_mcp_configs(app_config: AppConfig) -> tuple[McpLocalServerConfig | McpRemoteServerConfig, ...]:
@@ -65,6 +66,7 @@ def _parse_server(name: object, raw_server: object) -> McpLocalServerConfig | Mc
     allowed_tools = _allowed_tools(raw_server.get("allowed_tools"), name)
 
     if server_type == "local":
+        _reject_unknown_fields(raw_server, name, {"type", "command", "env", "enabled", "timeout_ms", "allowed_tools"})
         _reject_field(raw_server, name, "url")
         _reject_field(raw_server, name, "headers")
         return McpLocalServerConfig(
@@ -76,12 +78,16 @@ def _parse_server(name: object, raw_server: object) -> McpLocalServerConfig | Mc
             allowed_tools=allowed_tools,
         )
 
+    _reject_unknown_fields(raw_server, name, {"type", "url", "headers", "bearer_token_env_var", "enabled", "timeout_ms", "allowed_tools"})
     _reject_field(raw_server, name, "command")
     _reject_field(raw_server, name, "env")
     return McpRemoteServerConfig(
         name=name,
         url=_url(raw_server.get("url"), name),
         headers=_string_mapping(raw_server.get("headers", {}), name, "headers"),
+        bearer_token_env_var=_environment_variable_name(
+            raw_server.get("bearer_token_env_var"), name, "bearer_token_env_var"
+        ),
         enabled=enabled,
         timeout_ms=timeout_ms,
         allowed_tools=allowed_tools,
@@ -91,6 +97,12 @@ def _parse_server(name: object, raw_server: object) -> McpLocalServerConfig | Mc
 def _reject_field(server: Mapping[str, object], name: str, field: str) -> None:
     if field in server:
         raise McpConfigError(f"MCP 服务器 {name} 不能同时配置 {field}")
+
+
+def _reject_unknown_fields(server: Mapping[str, object], name: str, allowed_fields: set[str]) -> None:
+    unknown_fields = sorted(str(field) for field in server if field not in allowed_fields)
+    if unknown_fields:
+        raise McpConfigError(f"MCP 服务器 {name} 包含未知配置字段：{', '.join(unknown_fields)}")
 
 
 def _command(value: object, name: str) -> tuple[str, ...]:
@@ -114,6 +126,14 @@ def _string_mapping(value: object, name: str, field: str) -> dict[str, str]:
     ):
         raise McpConfigError(f"MCP 服务器 {name} 的 {field} 必须是字符串映射")
     return dict(value)
+
+
+def _environment_variable_name(value: object, name: str, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _ENVIRONMENT_VARIABLE_NAME.fullmatch(value):
+        raise McpConfigError(f"MCP 服务器 {name} 的 {field} 必须是有效环境变量名")
+    return value
 
 
 def _bool(value: object, name: str, field: str) -> bool:

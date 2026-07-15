@@ -45,6 +45,9 @@ class FakeMcpManager:
     def connect_all(self) -> None:
         self.connect_calls += 1
 
+    def connect_all_in_background(self) -> None:
+        self.connect_calls += 1
+
     def tools(self):
         return self.tools_value
 
