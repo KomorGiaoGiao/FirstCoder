@@ -68,6 +68,52 @@ def test_load_mcp_configs_parses_remote_server():
     )
 
 
+def test_load_mcp_configs_parses_remote_bearer_token_environment_variable():
+    config = AppConfig(
+        provider_name="openai",
+        env={},
+        project_config={
+            "mcp": {
+                "github": {
+                    "type": "remote",
+                    "url": "https://example.test/mcp",
+                    "bearer_token_env_var": "GITHUB_PAT_TOKEN",
+                }
+            }
+        },
+    )
+
+    server = load_mcp_configs(config)[0]
+
+    assert server == McpRemoteServerConfig(
+        name="github",
+        url="https://example.test/mcp",
+        bearer_token_env_var="GITHUB_PAT_TOKEN",
+    )
+
+
+@pytest.mark.parametrize("bearer_token_env_var", ["", 1, "bad-name"])
+def test_load_mcp_configs_rejects_invalid_remote_bearer_token_environment_variable(
+    bearer_token_env_var,
+):
+    config = AppConfig(
+        provider_name="openai",
+        env={},
+        project_config={
+            "mcp": {
+                "github": {
+                    "type": "remote",
+                    "url": "https://example.test/mcp",
+                    "bearer_token_env_var": bearer_token_env_var,
+                }
+            }
+        },
+    )
+
+    with pytest.raises(McpConfigError, match="bearer_token_env_var"):
+        load_mcp_configs(config)
+
+
 @pytest.mark.parametrize(
     "server",
     [

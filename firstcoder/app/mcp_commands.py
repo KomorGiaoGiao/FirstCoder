@@ -16,6 +16,8 @@ class McpStatusProvider(Protocol):
 
     def doctor(self, name: str) -> McpServerStatus | None: ...
 
+    def reconnect(self, name: str | None = None) -> bool: ...
+
 
 @dataclass(slots=True)
 class McpCommandHandler:
@@ -41,7 +43,17 @@ class McpCommandHandler:
             return CommandResult(handled=True, output=f"MCP {_render_status(status)}")
         if len(parts) == 2 and parts[1] == "doctor":
             return CommandResult(handled=True, output="Usage: /mcp doctor <server>")
-        return CommandResult(handled=True, output="Usage: /mcp list | /mcp doctor <server>")
+        if len(parts) == 3 and parts[1] == "reconnect":
+            if parts[2] == "all":
+                if self.manager.reconnect():
+                    return CommandResult(handled=True, output="Reconnecting all MCP servers")
+                return CommandResult(handled=True, output="No enabled MCP servers to reconnect")
+            if self.manager.reconnect(parts[2]):
+                return CommandResult(handled=True, output=f"Reconnecting MCP server: {parts[2]}")
+            return CommandResult(handled=True, output=f"Unknown or disabled MCP server: {parts[2]}")
+        if len(parts) == 2 and parts[1] == "reconnect":
+            return CommandResult(handled=True, output="Usage: /mcp reconnect <server|all>")
+        return CommandResult(handled=True, output="Usage: /mcp list | /mcp doctor <server> | /mcp reconnect <server|all>")
 
 
 def _render_status(status: McpServerStatus) -> str:

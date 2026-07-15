@@ -16,6 +16,7 @@ import anyio
 from firstcoder.agent.cancellation import AgentCancelledError, CancellationToken, cancellation_context
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
+from firstcoder.agent.tool_settlement import ToolCallSettlement
 from firstcoder.agent.user_input import (
     AgentTurnResult,
     AgentTurnStatus,
@@ -110,7 +111,7 @@ class ToolExecutionEvent:
     streams describe model output, while this describes local tool execution.
     """
 
-    kind: Literal["started", "finished", "permission_requested", "denied", "skipped"]
+    kind: Literal["started", "finished", "permission_requested", "denied", "skipped", "interrupted"]
     tool_call: ToolCall
     result: ToolResult | None = None
     permission_request: PermissionRequest | None = None
@@ -153,6 +154,7 @@ class AgentLoop:
         cancellation_token: CancellationToken | None = None,
     ) -> None:
         self.session = session
+        self.tool_settlement = ToolCallSettlement(session)
         self.provider = provider
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
@@ -217,6 +219,7 @@ class AgentLoop:
             )
 
         self._begin_turn()
+        self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         message_id = self.session.append_user_message(content)
         if self._initialize_active_task_if_missing(message_id) is None:
@@ -241,6 +244,7 @@ class AgentLoop:
         if result is not None:
             return result
         self._begin_turn()
+        self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
@@ -274,6 +278,7 @@ class AgentLoop:
             )
 
         self._begin_turn()
+        self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         message_id = self.session.append_user_message(content)
         if self._initialize_active_task_if_missing(message_id) is None:
@@ -456,7 +461,7 @@ class AgentLoop:
 
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
-        self._append_skipped_tool_results(pending.skipped_tool_calls)
+        self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return None
 
@@ -516,7 +521,7 @@ class AgentLoop:
 
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
-        self._append_skipped_tool_results(pending.skipped_tool_calls)
+        self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
         self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
         return None
 
@@ -532,6 +537,7 @@ class AgentLoop:
         prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
         """
 
+        self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
@@ -625,6 +631,7 @@ class AgentLoop:
         才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
         """
 
+        self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
@@ -706,9 +713,11 @@ class AgentLoop:
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
         except AgentCancelledError:
+            self._append_interrupted_tool_results()
             response = self._interrupted_response()
 
         if self._is_cancelled():
+            self._append_interrupted_tool_results()
             response = self._interrupted_response()
             self.session.append_assistant_response(response)
             self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
@@ -736,9 +745,11 @@ class AgentLoop:
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
         except AgentCancelledError:
+            self._append_interrupted_tool_results()
             response = self._interrupted_response()
 
         if self._is_cancelled():
+            self._append_interrupted_tool_results()
             response = self._interrupted_response()
             self.session.append_assistant_response(response)
             self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
@@ -989,7 +1000,7 @@ class AgentLoop:
                 tool_name=tool_call.name,
             )
             if pending_input is not None:
-                self._append_skipped_tool_results(tool_calls[index + 1 :])
+                self._emit_settlements("skipped", self.tool_settlement.append_skipped(tool_calls[index + 1 :]))
                 return _ToolExecutionState(
                     task_hash_changed=task_hash_changed,
                     pending_input=pending_input,
@@ -1061,7 +1072,7 @@ class AgentLoop:
                 tool_name=tool_call.name,
             )
             if pending_input is not None:
-                self._append_skipped_tool_results(tool_calls[index + 1 :])
+                self._emit_settlements("skipped", self.tool_settlement.append_skipped(tool_calls[index + 1 :]))
                 return _ToolExecutionState(
                     task_hash_changed=task_hash_changed,
                     pending_input=pending_input,
@@ -1183,26 +1194,19 @@ class AgentLoop:
         }
         return confirmation
 
-    def _append_skipped_tool_results(self, tool_calls: list[ToolCall]) -> None:
-        """为等待用户输入后未执行的并行工具调用补齐结果。
+    def _append_interrupted_tool_results(self) -> None:
+        self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
 
-        provider 要求 assistant 一次返回的每个 tool_call 都有对应 tool_result。
-        当其中一个工具触发用户输入暂停时，后续工具不能继续执行；这里写入明确的
-        skipped 结果，让会话历史保持可投影、可 resume。
-        """
+    def _repair_interrupted_tool_calls_before_provider_request(self) -> None:
+        self._emit_settlements("interrupted", self.tool_settlement.repair_before_provider_request())
 
-        for tool_call in tool_calls:
-            result = make_error_result(
-                tool_call.name,
-                "已暂停等待用户输入，跳过同批次后续工具调用。",
-                skipped_due_to_user_input=True,
-            )
-            self._emit_tool_event("skipped", tool_call, result=result)
-            self.session.append_tool_result(tool_call=tool_call, result=result)
+    def _emit_settlements(self, kind, settlements) -> None:
+        for settlement in settlements:
+            self._emit_tool_event(kind, settlement.tool_call, result=settlement.result)
 
     def _emit_tool_event(
         self,
-        kind: Literal["started", "finished", "permission_requested", "denied", "skipped"],
+        kind: Literal["started", "finished", "permission_requested", "denied", "skipped", "interrupted"],
         tool_call: ToolCall,
         *,
         result: ToolResult | None = None,

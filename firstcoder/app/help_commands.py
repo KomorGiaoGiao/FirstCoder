@@ -27,6 +27,7 @@ HELP_COMMANDS = [
     ("/mode <conservative|standard|aggressive|bypass>", "Change permission mode."),
     ("/mcp list", "List MCP server status."),
     ("/mcp doctor <server>", "Inspect one MCP server."),
+    ("/mcp reconnect <server|all>", "Reconnect MCP servers in the background."),
 ]
 
 

@@ -48,11 +48,15 @@ class McpManagerLike(Protocol):
 
     def connect_all(self) -> None: ...
 
+    def connect_all_in_background(self) -> None: ...
+
     def tools(self) -> tuple[tuple[str, McpToolDescription], ...]: ...
 
     def statuses(self) -> tuple[McpServerStatus, ...]: ...
 
     def doctor(self, name: str) -> McpServerStatus | None: ...
+
+    def reconnect(self, name: str | None = None) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -115,7 +119,7 @@ def create_firstcoder_app(
     ).tools()
     mcp_manager = (mcp_manager_factory or McpManager)(load_mcp_configs(resolved_app_config))
     try:
-        mcp_manager.connect_all()
+        mcp_manager.connect_all_in_background()
     except Exception:
         pass
     tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)

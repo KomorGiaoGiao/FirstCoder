@@ -14,6 +14,7 @@ from firstcoder.config import load_config
 from firstcoder.config.settings import default_global_config_path, project_config_path, render_default_config
 from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
 from firstcoder.eval.tasks import CodingTask
+from firstcoder.mcp.config_store import McpConfigStore, McpConfigStoreError
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,18 @@ def build_parser() -> argparse.ArgumentParser:
     config_subparsers.add_parser("show", help="Show effective provider configuration without secrets.")
     init_parser = config_subparsers.add_parser("init", help="Create a starter global config file.")
     init_parser.add_argument("--force", action="store_true", help="Overwrite the existing global config.")
+    mcp_parser = subparsers.add_parser("mcp", help="Add, list, or remove MCP server configuration.")
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command")
+    add_parser = mcp_subparsers.add_parser("add", help="Add a local command or remote URL MCP server.")
+    add_parser.add_argument("name")
+    add_parser.add_argument("--url", help="Remote MCP URL. Omit for a local stdio command.")
+    add_parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+    add_parser.add_argument("--header", action="append", default=[], metavar="KEY=VALUE")
+    add_parser.add_argument("--bearer-token-env-var", help="Environment variable containing a remote bearer token.")
+    add_parser.add_argument("server_command", nargs="*", metavar="COMMAND")
+    mcp_subparsers.add_parser("list", help="List configured MCP servers without secrets.")
+    remove_parser = mcp_subparsers.add_parser("remove", help="Remove one configured MCP server.")
+    remove_parser.add_argument("name")
 
     parser.add_argument("--project", default=".", help="Project root for tools and AGENTS.md.")
     parser.add_argument("--data-root", default=None, help="Directory for FirstCoder session data.")
@@ -82,9 +95,17 @@ def main(
     runner: CliRunner | None = None,
     stdin_text: str | None = None,
 ) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        if args.command == "mcp" and args.mcp_command == "add" and not args.url:
+            args.server_command.extend(extras)
+        else:
+            parser.error(f"unrecognized arguments: {' '.join(extras)}")
     if args.command == "config":
         return run_config_command(args)
+    if args.command == "mcp":
+        return run_mcp_command(args)
 
     if args.tui or (args.message is None and stdin_text is None and sys.stdin.isatty() and not args.interactive):
         config = CliConfig(
@@ -224,6 +245,70 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
     print(f"error: unknown config command: {command}", file=sys.stderr)
     return 2
+
+
+def run_mcp_command(args: argparse.Namespace) -> int:
+    """编辑全局 MCP 配置；运行期连接仍由 app factory 管理。"""
+
+    if args.mcp_command is None:
+        print("error: choose mcp add, list, or remove", file=sys.stderr)
+        return 2
+    store = McpConfigStore(default_global_config_path())
+    try:
+        if args.mcp_command == "list":
+            servers = store.list_servers()
+            if not servers:
+                print("No MCP servers configured.")
+                return 0
+            for server in servers:
+                status = "enabled" if server["enabled"] else "disabled"
+                print(f'{server["name"]} {server["type"]} {server["endpoint"]} {status}')
+            return 0
+        if args.mcp_command == "remove":
+            if not store.remove(args.name):
+                print(f"MCP server not found: {args.name}", file=sys.stderr)
+                return 1
+            print(f"Removed MCP server: {args.name}")
+            return 0
+        env = _key_values(args.env, "--env")
+        headers = _key_values(args.header, "--header")
+        if args.url:
+            if env:
+                print("error: --env is only supported for local MCP servers", file=sys.stderr)
+                return 2
+            if args.server_command:
+                print("error: local command cannot be used with --url", file=sys.stderr)
+                return 2
+            store.add_remote(
+                args.name,
+                args.url,
+                headers=headers,
+                bearer_token_env_var=args.bearer_token_env_var,
+            )
+            print(f"Added remote MCP server: {args.name}")
+            return 0
+        if headers:
+            print("error: --header is only supported for remote MCP servers", file=sys.stderr)
+            return 2
+        if args.bearer_token_env_var:
+            print("error: --bearer-token-env-var is only supported for remote MCP servers", file=sys.stderr)
+            return 2
+        store.add_local(args.name, args.server_command, env=env)
+        print(f"Added local MCP server: {args.name}")
+        return 0
+    except McpConfigStoreError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+
+def _key_values(values: list[str], option: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        key, separator, content = value.partition("=")
+        if not separator or not key or not content:
+            raise McpConfigStoreError(f"{option} 必须使用 KEY=VALUE 格式")
+        result[key] = content
+    return result
 
 
 def _effective_model(config) -> str:

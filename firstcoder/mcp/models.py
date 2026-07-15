@@ -33,6 +33,7 @@ class McpRemoteServerConfig:
     name: str
     url: str
     headers: Mapping[str, str] = field(default_factory=dict)
+    bearer_token_env_var: str | None = None
     enabled: bool = True
     timeout_ms: int = 5000
     allowed_tools: tuple[str, ...] | None = None

@@ -107,3 +107,50 @@ def test_remote_config_forwards_url_and_headers_without_leaking_header_value() -
         assert secret not in str(manager.statuses())
     finally:
         manager.close()
+
+
+def test_remote_bearer_token_environment_variable_becomes_authorization_header() -> None:
+    factory = _CapturingRemoteFactory()
+    manager = McpManager(
+        (
+            McpRemoteServerConfig(
+                name="remote",
+                url="https://example.test/mcp",
+                bearer_token_env_var="REMOTE_MCP_TOKEN",
+            ),
+        ),
+        transport_factory=factory,
+        environment={"REMOTE_MCP_TOKEN": "secret-value-that-must-not-appear"},
+    )
+    try:
+        manager.connect_all()
+
+        assert factory.config is not None
+        assert factory.config.headers == {"Authorization": "Bearer secret-value-that-must-not-appear"}
+        assert manager.doctor("remote").state == "connected"
+        assert "secret-value-that-must-not-appear" not in str(manager.statuses())
+    finally:
+        manager.close()
+
+
+def test_remote_bearer_token_environment_variable_reports_missing_variable_name() -> None:
+    manager = McpManager(
+        (
+            McpRemoteServerConfig(
+                name="remote",
+                url="https://example.test/mcp",
+                bearer_token_env_var="REMOTE_MCP_TOKEN",
+            ),
+        ),
+        transport_factory=_CapturingRemoteFactory(),
+        environment={},
+        retry_attempts=1,
+    )
+    try:
+        manager.connect_all()
+
+        status = manager.doctor("remote")
+        assert status.state == "failed"
+        assert status.error == "缺少环境变量：REMOTE_MCP_TOKEN"
+    finally:
+        manager.close()

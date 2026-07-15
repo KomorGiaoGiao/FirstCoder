@@ -20,13 +20,18 @@ class FakeTransport:
     connect_error: Exception | None = None
     list_error: Exception | None = None
     delay: float = 0
+    fail_connect_attempts: int = 0
     connected: bool = False
     closed: bool = False
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
+    connect_calls: int = 0
 
     async def connect(self) -> None:
+        self.connect_calls += 1
         if self.delay:
             await asyncio.sleep(self.delay)
+        if self.connect_calls <= self.fail_connect_attempts:
+            raise RuntimeError("temporary connection failure")
         if self.connect_error:
             raise self.connect_error
         self.connected = True
@@ -123,7 +128,7 @@ def test_connect_all_keeps_other_servers_available_after_initialization_failure(
 def test_connect_all_marks_timeout_as_failed_and_does_not_raise():
     slow = FakeTransport(delay=0.2)
     manager = McpManager(
-        (server("slow", timeout_ms=20),), FakeTransportFactory({"slow": slow})
+        (server("slow", timeout_ms=20),), FakeTransportFactory({"slow": slow}), retry_delay_seconds=0
     )
 
     started = time.monotonic()
@@ -196,3 +201,56 @@ def test_close_is_idempotent_and_background_thread_closes_its_own_loop(monkeypat
 
     assert manager._thread.is_alive() is False
     assert close_threads == [manager._thread.ident]
+
+
+def test_connect_all_retries_a_temporary_failure_three_times_without_blocking_other_servers():
+    retrying = FakeTransport(fail_connect_attempts=2, tools=(McpToolDescription("echo", None),))
+    healthy = FakeTransport(tools=(McpToolDescription("ping", None),))
+    manager = McpManager(
+        (server("retrying"), server("healthy")),
+        FakeTransportFactory({"retrying": retrying, "healthy": healthy}),
+        retry_delay_seconds=0,
+    )
+
+    manager.connect_all()
+
+    assert retrying.connect_calls == 3
+    assert manager.doctor("retrying").state == "connected"
+    assert manager.doctor("healthy").state == "connected"
+    manager.close()
+
+
+def test_connect_all_in_background_returns_before_slow_server_finishes():
+    slow = FakeTransport(delay=0.2, tools=(McpToolDescription("echo", None),))
+    manager = McpManager(
+        (server("slow"),),
+        FakeTransportFactory({"slow": slow}),
+        retry_delay_seconds=0,
+    )
+
+    started = time.monotonic()
+    manager.connect_all_in_background()
+
+    assert time.monotonic() - started < 0.05
+    assert manager.doctor("slow").state == "connecting"
+    assert manager.wait_for_connections(timeout=1) is True
+    assert manager.doctor("slow").state == "connected"
+    manager.close()
+
+
+def test_reconnect_replaces_a_connected_server_in_the_background():
+    transport = FakeTransport(tools=(McpToolDescription("echo", None),))
+    manager = McpManager((server("echo"),), FakeTransportFactory({"echo": transport}))
+    manager.connect_all()
+
+    assert manager.reconnect("echo") is True
+    for _ in range(50):
+        if manager.doctor("echo").state == "connected" and transport.connect_calls == 2:
+            break
+        time.sleep(0.01)
+
+    assert transport.closed is True
+    assert transport.connect_calls == 2
+    assert manager.doctor("echo").state == "connected"
+    assert manager.reconnect("missing") is False
+    manager.close()

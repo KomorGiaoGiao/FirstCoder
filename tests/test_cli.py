@@ -131,6 +131,27 @@ def test_main_config_init_creates_global_config(tmp_path: Path, monkeypatch, cap
     assert f"created: {config_path}" in capsys.readouterr().out
 
 
+def test_main_mcp_add_remote_accepts_bearer_token_environment_variable(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    exit_code = main(
+        [
+            "mcp",
+            "add",
+            "github",
+            "--url",
+            "https://example.test/mcp",
+            "--bearer-token-env-var",
+            "GITHUB_PAT_TOKEN",
+        ]
+    )
+
+    config = (tmp_path / "xdg" / "firstcoder" / "config.toml").read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert 'bearer_token_env_var = "GITHUB_PAT_TOKEN"' in config
+    assert "Added remote MCP server: github" in capsys.readouterr().out
+
+
 def test_main_config_init_refuses_to_overwrite_without_force(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     config_path = tmp_path / "xdg" / "firstcoder" / "config.toml"
@@ -384,3 +405,29 @@ def test_main_parses_benchmark_mode_for_single_message(tmp_path: Path):
             benchmark=True,
         )
     ]
+
+
+def test_mcp_add_list_and_remove_manage_global_configuration(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert main(["mcp", "add", "everything", "npx", "-y", "@modelcontextprotocol/server-everything"]) == 0
+    assert main(["mcp", "add", "parallel", "--url", "https://search.parallel.ai/mcp"]) == 0
+    assert main(["mcp", "list"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Added local MCP server: everything" in output
+    assert "Added remote MCP server: parallel" in output
+    assert "everything local npx -y @modelcontextprotocol/server-everything enabled" in output
+    assert "parallel remote https://search.parallel.ai/mcp enabled" in output
+
+    assert main(["mcp", "remove", "everything"]) == 0
+    assert "Removed MCP server: everything" in capsys.readouterr().out
+
+
+def test_mcp_add_validates_remote_and_key_value_options(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert main(["mcp", "add", "remote", "--url", "https://example.test/mcp", "--env", "KEY=VALUE"]) == 2
+    assert "--env is only supported" in capsys.readouterr().err
+    assert main(["mcp", "add", "remote", "--url", "https://example.test/mcp", "--header", "broken"]) == 2
+    assert "KEY=VALUE" in capsys.readouterr().err
