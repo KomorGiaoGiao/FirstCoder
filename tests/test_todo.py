@@ -191,7 +191,9 @@ def test_todo_definition_has_correct_schema():
     properties = tool.definition.parameters["properties"]
     assert properties["action"]["enum"] == ["set", "add", "update", "delete", "list", "clear"]
     assert properties["status"]["enum"] == ["pending", "in_progress", "completed"]
-    assert "Track and plan multi-step work" in tool.definition.description
+    assert "Track multi-step work" in tool.definition.description
+    assert "prefer action='update' to mark statuses" in tool.definition.description
+    assert "Prefer update over set when only statuses change" in tool.definition.parameters["properties"]["action"]["description"]
     assert "complete 3-7 item plan" in tool.definition.description
     assert "concrete, verifiable actions" in tool.definition.description
     assert "Before a final answer" in tool.definition.description

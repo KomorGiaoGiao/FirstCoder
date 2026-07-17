@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from firstcoder.agent.cancellation import CancellationToken
+from firstcoder.runtime.cancellation import CancellationToken
 from firstcoder.utils.text import truncate
 
 

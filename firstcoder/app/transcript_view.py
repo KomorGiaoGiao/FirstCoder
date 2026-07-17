@@ -73,30 +73,6 @@ def entry_markdown_text(entry: TuiTranscriptEntry) -> str:
     return f"{entry.label}\n\n{entry.body}"
 
 
-def display_line_classes(line: str) -> str:
-    if line.startswith("Tool call:"):
-        return "message tool-message tool-running"
-    if line.startswith("Tool result:"):
-        return "message tool-message tool-done"
-    return "message system-message"
-
-
-def tool_event_classes(event) -> str:
-    kind = str(getattr(event, "kind", "") or "")
-    if kind == "started":
-        return "message tool-message tool-running"
-    if kind == "finished":
-        result = getattr(event, "result", None)
-        if getattr(result, "ok", False):
-            return "message tool-message tool-done"
-        return "message tool-message tool-failed"
-    if kind == "permission_requested":
-        return "message permission-message"
-    if kind == "denied":
-        return "message tool-message tool-failed"
-    return "message tool-message"
-
-
 def tool_event_entry_kind(event) -> TuiEntryKind:
     kind = str(getattr(event, "kind", "") or "")
     if kind == "permission_requested":

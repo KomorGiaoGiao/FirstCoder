@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from firstcoder.utils.text import optional_str
+
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Collection
@@ -281,9 +283,9 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
     return TaskBoundaryObservation(
         decision=normalized_decision,
         basis_message_id=str(basis_message_id),
-        candidate_hash=_optional_str(data.get("candidate_hash")),
-        candidate_basis_message_id=_optional_str(data.get("candidate_basis_message_id")),
-        active_task_hash=_optional_str(data.get("active_task_hash")),
+        candidate_hash=optional_str(data.get("candidate_hash")),
+        candidate_basis_message_id=optional_str(data.get("candidate_basis_message_id")),
+        active_task_hash=optional_str(data.get("active_task_hash")),
         confirmed_change=bool(data.get("confirmed_change")),
         should_trigger_compaction=bool(data.get("should_trigger_compaction")),
         triggered_compaction=bool(data.get("triggered_compaction")),
@@ -296,7 +298,3 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
     )
 
 
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    return str(value)

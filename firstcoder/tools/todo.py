@@ -170,17 +170,18 @@ def create_todo_tool() -> Tool:
         definition=ToolDefinition(
             name="todo",
             description=(
-                "Track and plan multi-step work. For coding tasks that need multiple "
-                "phases, first call action='set' with a complete 3-7 item plan before "
-                "doing implementation work. Good items are concrete, verifiable actions "
-                "such as inspect, reproduce, implement, test, and summarize; avoid vague "
-                "items like 'fix issue' or 'handle task'. Use action='set' again whenever "
-                "progress, blockers, or the plan changes, always including all pending, "
-                "in_progress, and completed items. Keep exactly one item in_progress while "
-                "actively working. Mark an item completed immediately after finishing and "
-                "verifying it; do not batch completion updates at the end. Before a final "
-                "answer, ensure no item remains pending or in_progress unless you clearly "
-                "explain the blocker."
+                "Track multi-step work. For coding tasks with multiple phases, first call "
+                "action='set' with a complete 3-7 item plan before implementation. Good "
+                "items are concrete, verifiable actions such as inspect, reproduce, "
+                "implement, test, and summarize; avoid vague items like 'fix issue'. "
+                "After the plan exists, prefer action='update' to mark statuses "
+                "(pending/in_progress/completed). Keep existing item contents and order "
+                "stable; do not rewrite, rephrase, split, merge, or reorder items for "
+                "routine progress. Use action='set' again only when the plan itself must "
+                "change. Keep exactly one item in_progress while actively working. Mark "
+                "items completed immediately after finishing and verifying them; do not "
+                "batch completion updates at the end. Before a final answer, ensure no "
+                "item remains pending or in_progress unless you clearly explain the blocker."
             ),
             parameters=object_schema(
                 {
@@ -188,10 +189,11 @@ def create_todo_tool() -> Tool:
                         "string",
                         enum=["set", "add", "update", "delete", "list", "clear"],
                         description=(
-                            "set replaces the whole plan and is preferred for every progress "
-                            "change; add creates one item; update changes one legacy item; "
-                            "delete removes one item; list shows the plan; clear removes all items. "
-                            "Prefer set over add/update so the visible plan stays complete."
+                            "set creates or replaces the whole plan (initial plan or real plan "
+                            "changes only); update changes one existing item and is preferred "
+                            "for routine status changes; add creates one item; delete removes "
+                            "one item; list shows the plan; clear removes all items. Prefer "
+                            "update over set when only statuses change."
                         ),
                     ),
                     "content": property_schema("string", description="Todo text for add or update."),
@@ -207,9 +209,10 @@ def create_todo_tool() -> Tool:
                     "todos": {
                         "type": "array",
                         "description": (
-                            "Complete current plan for action='set'. Use 3-7 short, concrete, "
-                            "verifiable items for non-trivial tasks. Include all pending, "
-                            "in_progress, and completed items every time progress changes."
+                            "Complete plan payload for action='set' only. Use 3-7 short, "
+                            "concrete, verifiable items when creating or restructuring the "
+                            "plan. Do not use set merely to flip statuses; keep item wording "
+                            "stable across progress updates."
                         ),
                         "items": {
                             "type": "object",

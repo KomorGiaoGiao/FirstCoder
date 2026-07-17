@@ -1,12 +1,13 @@
 """Command-line entry point for single-turn FirstCoder runs."""
 
 from __future__ import annotations
+from firstcoder.app.ports import ChatRunnerLike
 
 import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Iterable
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.app.factory import create_firstcoder_app
@@ -30,15 +31,6 @@ class CliConfig:
 
 CliRunner = Callable[[CliConfig], str]
 
-
-class ChatRunnerLike(Protocol):
-    last_pending_input: object | None
-
-    def run_user_turn(self, content: str):
-        ...
-
-    def resume_with_user_input(self, request_id: str, answer: str):
-        ...
 
 
 def read_message(message: str | None, *, stdin_text: str | None = None) -> str:

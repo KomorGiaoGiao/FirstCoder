@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 from firstcoder.app.commands import CommandResult
-
-
-class CommandHandlerLike(Protocol):
-    def handle(self, text: str) -> CommandResult:
-        ...
+from firstcoder.app.ports import CommandHandlerLike
 
 
 @dataclass(slots=True)

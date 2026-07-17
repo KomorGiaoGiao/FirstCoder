@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from firstcoder.context.events import SessionEvent
+from firstcoder.session.catalog import session_sort_key
 from firstcoder.session.models import SessionRecord
+from firstcoder.utils.text import optional_str
 
 
 INDEX_VERSION = 1
@@ -22,14 +24,14 @@ class SessionIndex:
         self.path = self.root / "session_index.json"
 
     def update_event(self, event: SessionEvent) -> None:
-        from firstcoder.session.catalog import _build_record_from_events
+        from firstcoder.session.catalog import build_record_from_events
 
         data = self._load_data()
         events = self._load_session_events(event.session_id)
         if not events:
             return
         try:
-            record = _build_record_from_events(session_id=event.session_id, events=events)
+            record = build_record_from_events(session_id=event.session_id, events=events)
         except Exception as exc:  # noqa: BLE001 - index must not block event persistence.
             record = SessionRecord(session_id=event.session_id, title=event.session_id, status="corrupt", error=str(exc))
         data["sessions"][event.session_id] = _record_to_dict(record)
@@ -42,30 +44,21 @@ class SessionIndex:
             self._reconcile_missing_files()
         data = self._load_data()
         records = [_record_from_dict(item) for item in data.get("sessions", {}).values() if isinstance(item, dict)]
-        return sorted(records, key=_sort_key, reverse=True)
-
-    def get_record(self, session_id: str) -> SessionRecord | None:
-        if not self.path.exists():
-            self.rebuild()
-        data = self._load_data()
-        item = data.get("sessions", {}).get(session_id)
-        if not isinstance(item, dict):
-            return None
-        return _record_from_dict(item)
+        return sorted(records, key=session_sort_key, reverse=True)
 
     def rebuild(self) -> None:
-        from firstcoder.session.catalog import _record_from_path
+        from firstcoder.session.catalog import record_from_path
 
         sessions_dir = self.root / "sessions"
         data = _empty_data()
         if sessions_dir.exists():
             for path in sessions_dir.glob("*.jsonl"):
-                record = _record_from_path(path)
+                record = record_from_path(path)
                 data["sessions"][record.session_id] = _record_to_dict(record)
         self._write_data(data)
 
     def _reconcile_missing_files(self) -> None:
-        from firstcoder.session.catalog import _record_from_path
+        from firstcoder.session.catalog import record_from_path
 
         sessions_dir = self.root / "sessions"
         if not sessions_dir.exists():
@@ -76,7 +69,7 @@ class SessionIndex:
         for path in sessions_dir.glob("*.jsonl"):
             if path.stem in sessions:
                 continue
-            record = _record_from_path(path)
+            record = record_from_path(path)
             sessions[record.session_id] = _record_to_dict(record)
             changed = True
         if changed:
@@ -126,29 +119,22 @@ def _record_from_dict(data: dict[str, Any]) -> SessionRecord:
     return SessionRecord(
         session_id=str(data.get("session_id") or ""),
         title=str(data.get("title") or data.get("session_id") or ""),
-        created_at=_optional_str(data.get("created_at")),
-        updated_at=_optional_str(data.get("updated_at")),
-        workspace=_optional_str(data.get("workspace")),
-        provider=_optional_str(data.get("provider")),
-        model=_optional_str(data.get("model")),
+        created_at=optional_str(data.get("created_at")),
+        updated_at=optional_str(data.get("updated_at")),
+        workspace=optional_str(data.get("workspace")),
+        provider=optional_str(data.get("provider")),
+        model=optional_str(data.get("model")),
         message_count=int(data.get("message_count") or 0),
         user_turn_count=int(data.get("user_turn_count") or 0),
         checkpoint_count=int(data.get("checkpoint_count") or 0),
         archive_count=int(data.get("archive_count") or 0),
-        latest_user_input=_optional_str(data.get("latest_user_input")),
-        latest_assistant_output=_optional_str(data.get("latest_assistant_output")),
-        latest_checkpoint_id=_optional_str(data.get("latest_checkpoint_id")),
+        latest_user_input=optional_str(data.get("latest_user_input")),
+        latest_assistant_output=optional_str(data.get("latest_assistant_output")),
+        latest_checkpoint_id=optional_str(data.get("latest_checkpoint_id")),
         status=str(data.get("status") or "ok"),
-        error=_optional_str(data.get("error")),
+        error=optional_str(data.get("error")),
         metadata=dict(data.get("metadata") or {}),
     )
 
 
-def _optional_str(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)
 
-
-def _sort_key(record: SessionRecord) -> tuple[str, str]:
-    return (record.updated_at or "", record.session_id)

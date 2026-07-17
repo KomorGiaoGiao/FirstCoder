@@ -321,7 +321,7 @@ def test_create_firstcoder_app_exposes_task_boundary_in_real_prompt(tmp_path: Pa
     descriptions = {tool.name: tool.description for tool in provider.requests[0].tools}
     assert descriptions["task_boundary"].startswith("Report whether the current user message starts a new task")
     assert "Do not provide task hashes" in descriptions["task_boundary"]
-    assert "At the start of every user turn, call task_boundary before answering or using any other tool" in provider.requests[0].messages[0].content
+    assert "Do not call task_boundary unless the runtime explicitly asks for it" in provider.requests[0].messages[0].content
 
 
 def test_create_firstcoder_app_wires_l4_service_for_default_context_manager(tmp_path: Path) -> None:

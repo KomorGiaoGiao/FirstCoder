@@ -7,7 +7,6 @@ from collections.abc import Callable
 from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
-from firstcoder.agent.session import AgentSession, create_project_permission_manager
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.app.help_commands import HelpCommandHandler
 from firstcoder.app.mcp_commands import McpCommandHandler
@@ -19,7 +18,6 @@ from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.skill_commands import SkillCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
 from firstcoder.config.settings import AppConfig, load_config
-from firstcoder.context.identity import new_session_id
 from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.context.manager import ContextWindowManager
 from firstcoder.context.provider_summarizer import ProviderLlmCompactSummarizer
@@ -31,7 +29,7 @@ from firstcoder.mcp.models import McpServerStatus, McpToolDescription
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import ProviderConfigError, create_provider, create_provider_from_config
 from firstcoder.providers.presets import PROVIDER_PRESETS
-from firstcoder.permissions.grants import FilePermissionGrantStore
+from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.fork import ForkSessionService
 from firstcoder.session.new import NewSessionService
@@ -125,16 +123,13 @@ def create_firstcoder_app(
     tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)
     current_tools = tool_provider()
     resolved_provider = provider or create_provider(project_root=project_path)
-    grant_store = FilePermissionGrantStore(resolved_data_root / "permissions.json")
-    permission_manager = create_project_permission_manager(project_path, grants=grant_store)
-    session = AgentSession.from_project(
+    session = SessionBootstrap(
         store=store,
-        session_id=session_id or new_session_id(),
         project_root=project_path,
+        data_root=resolved_data_root,
         tools=current_tools,
-        permission_manager=permission_manager,
         sandbox_access=sandbox_access,
-    )
+    ).from_project(session_id=session_id)
     current = CurrentSessionState(session)
     compact_summarizer = ProviderLlmCompactSummarizer(resolved_provider)
     context_manager = ContextWindowManager(

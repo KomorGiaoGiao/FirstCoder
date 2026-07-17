@@ -6,6 +6,8 @@ session 层服务；Textual widget 不直接扫描 JSONL，也不直接导出 Ma
 
 from __future__ import annotations
 
+from firstcoder.utils.text import display_value, model_label
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -83,7 +85,7 @@ class SessionCommandHandler:
                 "- "
                 f"{record.session_id} "
                 f"{record.title} "
-                f"updated={_value(record.updated_at)} "
+                f"updated={display_value(record.updated_at)} "
                 f"messages={record.message_count} "
                 f"status={record.status}"
             )
@@ -200,16 +202,16 @@ def _render_session_record(record: SessionRecord) -> str:
             f"Session: {record.session_id}",
             f"Title: {record.title}",
             f"Status: {record.status}",
-            f"Created: {_value(record.created_at)}",
-            f"Updated: {_value(record.updated_at)}",
-            f"Workspace: {_value(record.workspace)}",
-            f"Model: {_model_label(record.provider, record.model)}",
+            f"Created: {display_value(record.created_at)}",
+            f"Updated: {display_value(record.updated_at)}",
+            f"Workspace: {display_value(record.workspace)}",
+            f"Model: {model_label(record.provider, record.model)}",
             f"Messages: {record.message_count}",
             f"User turns: {record.user_turn_count}",
             f"Checkpoints: {record.checkpoint_count}",
             f"Archives: {record.archive_count}",
-            f"Latest user: {_value(record.latest_user_input)}",
-            f"Latest assistant: {_value(record.latest_assistant_output)}",
+            f"Latest user: {display_value(record.latest_user_input)}",
+            f"Latest assistant: {display_value(record.latest_assistant_output)}",
         ]
     )
 
@@ -251,13 +253,4 @@ def _session_picker_header(window_start: int, visible_count: int, total_count: i
     return f"Select a session: Showing {window_start + 1}-{window_end} of {total_count} sessions"
 
 
-def _model_label(provider: str | None, model: str | None) -> str:
-    if provider and model:
-        return f"{provider}/{model}"
-    return provider or model or "-"
 
-
-def _value(value: object | None) -> str:
-    if value in (None, ""):
-        return "-"
-    return str(value)

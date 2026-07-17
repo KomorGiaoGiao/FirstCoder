@@ -6,6 +6,8 @@ session snapshot。
 
 from __future__ import annotations
 
+from firstcoder.utils.text import display_value, model_label
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +46,10 @@ def _render_markdown(transcript: Transcript, *, options: ShareOptions) -> str:
         f"# {_clean_heading(title)}",
         "",
         f"- Session: {session.session_id}",
-        f"- Created: {_value(session.created_at)}",
-        f"- Updated: {_value(session.updated_at)}",
-        f"- Workspace: {_value(redact_text(session.workspace or '', redaction) if session.workspace else None)}",
-        f"- Model: {_model_label(session.provider, session.model)}",
+        f"- Created: {display_value(session.created_at)}",
+        f"- Updated: {display_value(session.updated_at)}",
+        f"- Workspace: {display_value(redact_text(session.workspace or '', redaction) if session.workspace else None)}",
+        f"- Model: {model_label(session.provider, session.model)}",
         "",
         "## Conversation",
         "",
@@ -83,13 +85,4 @@ def _clean_heading(value: str) -> str:
     return normalized or "Untitled"
 
 
-def _model_label(provider: str | None, model: str | None) -> str:
-    if provider and model:
-        return f"{provider}/{model}"
-    return provider or model or "-"
 
-
-def _value(value: object | None) -> str:
-    if value in (None, ""):
-        return "-"
-    return str(value)

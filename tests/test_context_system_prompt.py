@@ -141,6 +141,8 @@ def test_system_prompt_contains_english_agent_behavior_rules() -> None:
     assert "Do not batch tools whose inputs depend on previous tool results" in content
     assert "Prefer rg or rg --files" in content
     assert "Use todo for multi-step coding tasks" in content
+    assert "prefer action='update' to change statuses" in content
+    assert "Use action='set' again only when the plan itself is wrong or incomplete" in content
     assert "infer them from repo files, docs, or neighboring tests" in content
     assert "complete this order: verify the requested behavior, then inspect the relevant diff or status" in content
     assert "Stop calling tools and provide a final answer only after that verification and diff/status review are sufficient" in content

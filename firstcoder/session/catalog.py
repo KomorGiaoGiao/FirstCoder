@@ -15,6 +15,7 @@ from firstcoder.context.events import SessionEvent
 from firstcoder.context.metadata import merge_metadata_patch
 from firstcoder.session.errors import SessionInvalidIdError, SessionNotFoundError
 from firstcoder.session.models import SessionRecord
+from firstcoder.utils.text import optional_str
 
 
 MESSAGE_EVENT_TYPES = {"user_message", "assistant_message", "tool_result"}
@@ -46,18 +47,20 @@ class SessionCatalog:
         path = self.sessions_dir / f"{session_id}.jsonl"
         if not path.exists():
             raise SessionNotFoundError(f"session not found: {session_id}")
-        return self._record_from_path(path)
+        return record_from_path(path)
 
     def exists(self, session_id: str) -> bool:
         if not is_safe_session_id(session_id):
             return False
         return (self.sessions_dir / f"{session_id}.jsonl").exists()
 
-    def _record_from_path(self, path: Path) -> SessionRecord:
-        return _record_from_path(path)
+    @staticmethod
+    @staticmethod
+    def _record_from_path(path: Path) -> SessionRecord:
+        return record_from_path(path)
 
 
-def _record_from_path(path: Path) -> SessionRecord:
+def record_from_path(path: Path) -> SessionRecord:
     session_id = path.stem
     try:
         events = _load_events(path)
@@ -72,7 +75,7 @@ def _record_from_path(path: Path) -> SessionRecord:
     if not events:
         return SessionRecord(session_id=session_id, title=session_id, status="empty")
 
-    return _build_record_from_events(session_id=session_id, events=events)
+    return build_record_from_events(session_id=session_id, events=events)
 
 
 def _load_events(path: Path) -> list[SessionEvent]:
@@ -99,7 +102,7 @@ def _validate_session_id(session_id: str) -> None:
         raise SessionInvalidIdError(f"invalid session_id: {session_id!r}")
 
 
-def _build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> SessionRecord:
+def build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> SessionRecord:
     metadata: dict[str, Any] = {}
     message_count = 0
     user_turn_count = 0
@@ -125,8 +128,8 @@ def _build_record_from_events(*, session_id: str, events: list[SessionEvent]) ->
         if event.type == "assistant_message":
             latest_assistant_output = _preview(_first_text_part_content(event.payload))
             message_metadata = _payload_metadata(event.payload)
-            provider = _optional_str(message_metadata.get("provider")) or provider
-            model = _optional_str(message_metadata.get("model")) or model
+            provider = optional_str(message_metadata.get("provider")) or provider
+            model = optional_str(message_metadata.get("model")) or model
 
         if event.type == "tool_result":
             _collect_archive_ids(event.payload, archive_ids)
@@ -136,16 +139,16 @@ def _build_record_from_events(*, session_id: str, events: list[SessionEvent]) ->
 
         if event.type == "checkpoint_created":
             checkpoint_count += 1
-            latest_checkpoint_id = _optional_str(event.payload.get("id")) or latest_checkpoint_id
+            latest_checkpoint_id = optional_str(event.payload.get("id")) or latest_checkpoint_id
 
-    title = _optional_str(metadata.get("title")) or latest_user_input or session_id
+    title = optional_str(metadata.get("title")) or latest_user_input or session_id
     metadata["session_id"] = session_id
     return SessionRecord(
         session_id=session_id,
         title=title,
         created_at=events[0].created_at,
         updated_at=events[-1].created_at,
-        workspace=_optional_str(metadata.get("workspace")),
+        workspace=optional_str(metadata.get("workspace")),
         provider=provider,
         model=model,
         message_count=message_count,
@@ -188,11 +191,11 @@ def _collect_archive_ids(payload: dict[str, Any], archive_ids: set[str]) -> None
             continue
         metadata = part.get("metadata")
         if isinstance(metadata, dict):
-            archive_id = _optional_str(metadata.get("archive_id"))
+            archive_id = optional_str(metadata.get("archive_id"))
             if archive_id:
                 archive_ids.add(archive_id)
         if str(part.get("kind") or "") == "archive_placeholder":
-            part_id = _optional_str(part.get("id"))
+            part_id = optional_str(part.get("id"))
             if part_id:
                 archive_ids.add(part_id)
 
@@ -221,11 +224,10 @@ def _preview(value: str | None) -> str | None:
     return normalized[: PREVIEW_CHARS - 1] + "..."
 
 
-def _optional_str(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)
 
-
-def _sort_key(record: SessionRecord) -> tuple[str, str]:
+def session_sort_key(record: SessionRecord) -> tuple[str, str]:
     return (record.updated_at or "", record.session_id)
+
+
+# Compatibility alias for older call sites/tests (monkeypatch target).
+_record_from_path = record_from_path

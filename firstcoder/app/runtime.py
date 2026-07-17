@@ -6,6 +6,8 @@ Textual widget 只负责显示和输入；这里把“当前 session 可被 resu
 
 from __future__ import annotations
 
+from firstcoder.utils.text import ellipsis_truncate
+
 import asyncio
 import json
 import threading
@@ -15,11 +17,13 @@ from typing import Any
 
 import anyio
 
-from firstcoder.agent.cancellation import CancellationToken
+from firstcoder.runtime.cancellation import CancellationToken
+from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
-from firstcoder.agent.user_input import AgentTurnStatus, UserInputRequest
+from firstcoder.agent.user_input import AgentTurnStatus
+from firstcoder.runtime.user_input import UserInputRequest
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
@@ -31,7 +35,6 @@ from firstcoder.tools.types import Tool
 
 
 _DEFAULT_MAX_TOOL_ROUNDS = object()
-_HIDDEN_DISPLAY_TOOLS = {"task_boundary"}
 
 
 @dataclass(slots=True)
@@ -344,10 +347,10 @@ def _assistant_lines(parts: list[MessagePart]) -> list[str]:
         elif part.kind == "tool_call":
             metadata = part.metadata
             name = str(metadata.get("tool_name") or "tool")
-            if name in _HIDDEN_DISPLAY_TOOLS:
+            if name in HIDDEN_TOOL_STATUS_NAMES:
                 continue
             arguments = json.dumps(metadata.get("arguments") or {}, ensure_ascii=False, sort_keys=True)
-            lines.append(f"Tool call: {name} {_truncate(arguments, 400)}")
+            lines.append(f"Tool call: {name} {ellipsis_truncate(arguments, 400, normalize_ws=True)}")
     return lines
 
 
@@ -358,18 +361,11 @@ def _tool_lines(parts: list[MessagePart]) -> list[str]:
             continue
         metadata = part.metadata
         name = str(metadata.get("tool_name") or "tool")
-        if name in _HIDDEN_DISPLAY_TOOLS:
+        if name in HIDDEN_TOOL_STATUS_NAMES:
             continue
         status = "success" if metadata.get("ok", True) else "failed"
-        content = _truncate(part.content, 400)
+        content = ellipsis_truncate(part.content, 400, normalize_ws=True)
         lines.append(f"Tool result: {name} {status}: {content}")
     return lines
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    normalized = " ".join(text.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    if max_chars <= 3:
-        return "." * max_chars
-    return normalized[: max_chars - 3] + "..."

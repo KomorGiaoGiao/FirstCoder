@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 
-from firstcoder.agent.prompt_inputs import read_agents_md
-from firstcoder.agent.session import AgentSession, create_project_permission_manager
-from firstcoder.context.identity import new_session_id
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
-from firstcoder.permissions.grants import FilePermissionGrantStore
+from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.models import ResumeResult
-from firstcoder.skills.discovery import discover_all_skills
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
@@ -31,24 +27,18 @@ class NewSessionService:
     sandbox_access: SandboxAccess | None = None
 
     def create(self, *, title: str | None = None) -> ResumeResult:
-        data_root = Path(self.data_root) if self.data_root is not None else self.store.root
-        session_id = new_session_id()
-        session = AgentSession.create(
+        bootstrap = SessionBootstrap(
             store=self.store,
-            session_id=session_id,
-            agents_md=read_agents_md(self.project_root),
-            skill_catalog=discover_all_skills(self.project_root),
-            tools=self._tools(),
-            permission_manager=create_project_permission_manager(
-                self.project_root,
-                grants=FilePermissionGrantStore(data_root / "permissions.json"),
-            ),
+            project_root=self.project_root,
+            data_root=self.data_root,
+            tools=self.tools,
+            tools_provider=self.tools_provider,
             sandbox_access=self.sandbox_access,
         )
+        session = bootstrap.create()
         if title:
-            SessionEventWriter(store=self.store, session_id=session_id).append_session_metadata_updated(title=title)
-        record = SessionCatalog(self.store.root).get_session(session_id)
+            SessionEventWriter(store=self.store, session_id=session.session_id).append_session_metadata_updated(
+                title=title
+            )
+        record = SessionCatalog(self.store.root).get_session(session.session_id)
         return ResumeResult(session=session, record=record)
-
-    def _tools(self) -> list[Tool] | None:
-        return self.tools_provider() if self.tools_provider is not None else self.tools

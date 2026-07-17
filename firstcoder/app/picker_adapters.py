@@ -57,8 +57,3 @@ def render_picker_item(picker: TuiPickerState, item: TuiPickerItem, index: int) 
     return "\n".join(lines)
 
 
-def _truncate_detail(text: str, max_chars: int) -> str:
-    normalized = " ".join(text.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[: max_chars - 3] + "..."

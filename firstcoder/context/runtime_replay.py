@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from firstcoder.utils.text import optional_str
+
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.runtime_state import CompactionHistoryEntry, SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
@@ -42,7 +44,7 @@ def _apply_event(state: SessionRuntimeState, event: SessionEvent) -> None:
 
     if event.type == "compaction_skipped":
         if event.payload.get("reason") == "skipped_no_effect":
-            state.last_no_effect_compaction_fingerprint = _optional_str(event.payload.get("input_fingerprint"))
+            state.last_no_effect_compaction_fingerprint = optional_str(event.payload.get("input_fingerprint"))
         return
 
     if event.type == "llm_compaction_completed":
@@ -103,13 +105,13 @@ def _compaction_history_entry(event: SessionEvent, nested_event: dict[str, objec
         event_type=event.type,
         trigger=str(payload.get("trigger") or ""),
         target_tokens=_optional_int(payload.get("target_tokens")),
-        input_fingerprint=_optional_str(input_fingerprint),
+        input_fingerprint=optional_str(input_fingerprint),
         status=str(payload.get("status") or nested_event.get("status") or _status_from_compaction(nested_event)),
-        reason=_optional_str(payload.get("reason") or nested_event.get("reason") or nested_event.get("failure_reason")),
+        reason=optional_str(payload.get("reason") or nested_event.get("reason") or nested_event.get("failure_reason")),
         before_tokens=_optional_int(payload.get("before_tokens") or nested_event.get("before_tokens")),
         after_tokens=_optional_int(payload.get("after_tokens") or nested_event.get("after_tokens")),
-        checkpoint_id=_optional_str(payload.get("checkpoint_id") or nested_event.get("checkpoint_id")),
-        created_at=_optional_str(payload.get("created_at") or nested_event.get("created_at")),
+        checkpoint_id=optional_str(payload.get("checkpoint_id") or nested_event.get("checkpoint_id")),
+        created_at=optional_str(payload.get("created_at") or nested_event.get("created_at")),
     )
 
 
@@ -118,11 +120,6 @@ def _status_from_compaction(compaction_event: dict[str, object]) -> str:
         return "success" if compaction_event.get("success") else "failed"
     return "success"
 
-
-def _optional_str(value: object) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)
 
 
 def _optional_int(value: object) -> int | None:

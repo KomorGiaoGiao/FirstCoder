@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 
-from firstcoder.agent.prompt_inputs import read_agents_md
-from firstcoder.agent.session import AgentSession, create_project_permission_manager
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.identity import new_event_id, new_session_id
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
-from firstcoder.permissions.grants import FilePermissionGrantStore
+from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError, SessionNotFoundError
 from firstcoder.session.models import ResumeResult
-from firstcoder.skills.discovery import discover_all_skills
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
 
@@ -55,24 +52,17 @@ class ForkSessionService:
         )
         self._copy_archives(source_session_id, forked_session_id)
 
-        data_root = Path(self.data_root) if self.data_root is not None else self.store.root
-        session = AgentSession.resume(
+        bootstrap = SessionBootstrap(
             store=self.store,
-            session_id=forked_session_id,
-            agents_md=read_agents_md(self.project_root),
-            skill_catalog=discover_all_skills(self.project_root),
-            tools=self._tools(),
-            permission_manager=create_project_permission_manager(
-                self.project_root,
-                grants=FilePermissionGrantStore(data_root / "permissions.json"),
-            ),
+            project_root=self.project_root,
+            data_root=self.data_root,
+            tools=self.tools,
+            tools_provider=self.tools_provider,
             sandbox_access=self.sandbox_access,
         )
+        session = bootstrap.resume(forked_session_id)
         session.restore_pending_permission_execution()
         return ResumeResult(session=session, record=catalog.get_session(forked_session_id))
-
-    def _tools(self) -> list[Tool] | None:
-        return self.tools_provider() if self.tools_provider is not None else self.tools
 
     def _copy_archives(self, source_session_id: str, forked_session_id: str) -> None:
         source = self.store.root / "archives" / source_session_id

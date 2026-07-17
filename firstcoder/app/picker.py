@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from firstcoder.utils.text import ellipsis_truncate
+
 from dataclasses import dataclass
 from typing import Callable
 
@@ -68,7 +70,7 @@ def render_picker(
         lines.append(f"{marker} {index + 1}. {body}")
     selected = picker.selected_item
     if picker.kind == "skill" and selected is not None and selected.detail:
-        lines.append(f"Selected: {_truncate_detail(selected.detail, 140)}")
+        lines.append(f"Selected: {ellipsis_truncate(selected.detail, 140, normalize_ws=True)}")
     if picker.footer:
         lines.append(picker.footer)
     return "\n".join(lines)
@@ -87,8 +89,3 @@ def _default_item_text(item: TuiPickerItem) -> str:
     return item.label
 
 
-def _truncate_detail(text: str, max_chars: int) -> str:
-    normalized = " ".join(text.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[: max_chars - 3] + "..."

@@ -16,6 +16,7 @@ from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.errors import SessionCorruptError, SessionEmptyError
 from firstcoder.session.models import RedactionOptions, ShareOptions, Transcript, TranscriptEntry
 from firstcoder.session.redaction import redact_text
+from firstcoder.utils.text import ellipsis_truncate, optional_str
 
 
 @dataclass(slots=True)
@@ -138,18 +139,18 @@ def _tool_result_content(
     redaction: RedactionOptions,
 ) -> str:
     status = "success" if metadata.get("ok", True) else "failed"
-    archive_id = _optional_str(metadata.get("archive_id"))
+    archive_id = optional_str(metadata.get("archive_id"))
     if archive_id:
         lines = [
             f"Status: {status}",
             f"Archive: {archive_id}",
         ]
-        summary = _optional_str(metadata.get("summary"))
-        preview = _optional_str(metadata.get("preview"))
+        summary = optional_str(metadata.get("summary"))
+        preview = optional_str(metadata.get("preview"))
         if summary:
             lines.append(f"Summary: {redact_text(summary, redaction)}")
         if preview and options.archive_mode == "preview_only":
-            lines.append(f"Preview: {redact_text(_truncate(preview, options.max_tool_result_chars), redaction)}")
+            lines.append(f"Preview: {redact_text(ellipsis_truncate(preview, options.max_tool_result_chars), redaction)}")
         elif preview:
             lines.append(f"Preview: {redact_text(preview, redaction)}")
         return "\n".join(lines)
@@ -158,7 +159,7 @@ def _tool_result_content(
         return f"Status: {status}\nSummary: tool result omitted for sharing"
 
     content = redact_text(str(part.get("content") or ""), redaction)
-    return f"Status: {status}\n{_truncate(content, options.max_tool_result_chars)}"
+    return f"Status: {status}\n{ellipsis_truncate(content, options.max_tool_result_chars)}"
 
 
 def _checkpoint_entry(event: SessionEvent, *, redaction: RedactionOptions) -> TranscriptEntry:
@@ -227,18 +228,4 @@ def _title_for_event(event_type: str) -> str:
     return "User"
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    if max_chars <= 0:
-        return ""
-    if len(text) <= max_chars:
-        return text
-    ellipsis = "..."
-    if max_chars <= len(ellipsis):
-        return ellipsis[:max_chars]
-    return text[: max_chars - len(ellipsis)] + ellipsis
 
-
-def _optional_str(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    return str(value)

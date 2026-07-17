@@ -3,37 +3,37 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from typing import Any, Literal
-from typing import Protocol
+from typing import Literal, Protocol
 
 import anyio
 
-from firstcoder.agent.cancellation import AgentCancelledError, CancellationToken, cancellation_context
+from firstcoder.runtime.cancellation import AgentCancelledError, CancellationToken, cancellation_context
+from firstcoder.agent.ports import ContextManagerLike
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
+from firstcoder.agent.task_boundary_classifier import (
+    CLASSIFICATION_PROMPT as _TASK_BOUNDARY_CLASSIFICATION_PROMPT,
+    TaskBoundaryClassifier,
+)
+from firstcoder.agent.todo_policy import TodoPolicy
+from firstcoder.agent.tool_execution import ToolExecutionEvent, ToolExecutor
 from firstcoder.agent.tool_settlement import ToolCallSettlement
 from firstcoder.agent.user_input import (
     AgentTurnResult,
     AgentTurnStatus,
     UserInputRequest,
-    user_input_request_from_tool_result,
 )
-from firstcoder.agent.verification import is_successful_verification_result
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
 from firstcoder.context.system_prompt import PromptPrefixCache
 from firstcoder.context.token_budget import estimate_chat_request_tokens
-from firstcoder.context.task_boundary import TaskBoundaryService, observation_from_tool_result_data
+from firstcoder.context.task_boundary import TaskBoundaryService
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionRequest
-from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
 from firstcoder.skills.loader import SkillLoadError, SkillLoader
 from firstcoder.skills.router import SkillRouter
 from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
@@ -42,84 +42,6 @@ from firstcoder.tools.types import Tool, ToolResult, make_error_result
 
 
 _DEFAULT_MAX_TOOL_ROUNDS = object()
-_PARALLEL_READONLY_TOOL_NAMES = frozenset(
-    {
-        "ls",
-        "view",
-        "grep",
-        "glob",
-        "tree",
-        "read_multi",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "diagnostics",
-    }
-)
-_BYPASS_PARALLEL_TOOL_NAMES = _PARALLEL_READONLY_TOOL_NAMES | frozenset(
-    {
-        "write",
-        "edit",
-        "delete",
-        "apply_patch",
-        "shell",
-        "python_exec",
-        "fetch",
-        "web_search",
-    }
-)
-_TODO_STALE_TOOL_RESULT_THRESHOLD = 3
-_TODO_MISSING_TOOL_RESULT_THRESHOLD = 2
-_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS = 3
-_TASK_BOUNDARY_CLASSIFICATION_MAX_TOKENS = 512
-_TASK_BOUNDARY_CLASSIFICATION_PROMPT = """Classify whether the latest real user message starts a new task relative to the conversation.
-Choose "same" when the latest message is a continuation or follow-up of the active task, including messages that say "continue", "add", "explain further", or refer to the immediately preceding task.
-Choose "new" when it starts a different goal, subject, deliverable, or problem from the active task.
-Use "uncertain" only when the conversation does not provide enough information to distinguish same from new; do not use it merely because a continuation is short.
-Example: active task is username normalization; "continue with its acceptance criteria" -> same.
-Example: active task is username normalization; "now explain deep_merge rules instead" -> new.
-Return exactly one JSON object, with no Markdown or explanation:
-{"decision":"same|new|uncertain","basis_message_id":"CURRENT_USER_MESSAGE_ID"}
-The basis_message_id must exactly equal the ID attached to the latest user message."""
-_TASK_BOUNDARY_CLASSIFICATION_RETRY_PROMPT = """The previous classification was invalid. Return exactly one JSON object and nothing else:
-{"decision":"same|new|uncertain","basis_message_id":"CURRENT_USER_MESSAGE_ID"}
-The basis_message_id must exactly equal the ID attached to the latest user message."""
-
-
-def _parse_task_boundary_classification(content: str, *, basis_message_id: str) -> str | None:
-    """接受精确 JSON 分类，拒绝额外文本和错误的消息锚点。"""
-
-    try:
-        parsed = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    decision = parsed.get("decision")
-    if decision not in {"same", "new", "uncertain"}:
-        return None
-    if parsed.get("basis_message_id") != basis_message_id:
-        return None
-    return decision
-
-
-@dataclass(frozen=True, slots=True)
-class ToolExecutionEvent:
-    """Runtime-visible tool activity event.
-
-    These events are intentionally separate from provider stream events: provider
-    streams describe model output, while this describes local tool execution.
-    """
-
-    kind: Literal["started", "finished", "permission_requested", "denied", "skipped", "interrupted"]
-    tool_call: ToolCall
-    result: ToolResult | None = None
-    permission_request: PermissionRequest | None = None
-
-
-class ContextManagerLike(Protocol):
-    def compact_if_needed(self, request: ContextCompactRequest):
-        ...
 
 
 class AgentLoop:
@@ -155,6 +77,7 @@ class AgentLoop:
     ) -> None:
         self.session = session
         self.tool_settlement = ToolCallSettlement(session)
+        self.todo_policy = TodoPolicy(session)
         self.provider = provider
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
@@ -172,8 +95,24 @@ class AgentLoop:
         self.guidance_provider = guidance_provider
         self.cancellation_token = cancellation_token
         self._skills_prepared_for_turn: int | None = None
-        self._last_todo_stale_reminder_count = 0
-        self._missing_todo_plan_reminded = False
+        self.task_boundary_classifier = TaskBoundaryClassifier(
+            session=session,
+            provider=provider,
+            context_builder=self.context_builder,
+            compact_if_needed=self._compact_if_needed,
+            check_cancelled=self._check_cancelled,
+            check_turn_timeout=self._check_turn_timeout,
+            tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
+        )
+        self.tool_executor = ToolExecutor(
+            session=session,
+            settlement=self.tool_settlement,
+            emit_event=self._emit_tool_event,
+            check_cancelled=self._check_cancelled,
+            cancellation_token=self.cancellation_token,
+            tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
+            emit_settlements=self._emit_settlements,
+        )
         # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
         # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
         if tools:
@@ -215,7 +154,7 @@ class AgentLoop:
             pending = self.session.pending_permission_execution
             return AgentTurnResult(
                 status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                pending_input=self._permission_input_request_from_pending(pending),
+                pending_input=self.tool_executor.permission_input_request_from_pending(pending),
             )
 
         self._begin_turn()
@@ -226,7 +165,7 @@ class AgentLoop:
             self._classify_task_boundary(message_id)
         # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
         # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
 
         return self._run_tool_loop_interactive(
             self._complete_once_with_recovery,
@@ -268,7 +207,7 @@ class AgentLoop:
         self.last_stream_events = []
         if self.session.pending_permission_execution is not None:
             pending = self.session.pending_permission_execution
-            pending_input = self._permission_input_request_from_pending(pending)
+            pending_input = self.tool_executor.permission_input_request_from_pending(pending)
             return ChatResponse(
                 provider=self.provider.name,
                 model=self.provider.model,
@@ -283,7 +222,7 @@ class AgentLoop:
         message_id = self.session.append_user_message(content)
         if self._initialize_active_task_if_missing(message_id) is None:
             await self._classify_task_boundary_async(message_id)
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
 
         result = await self._run_tool_loop_interactive_async(
             self._stream_once_with_recovery,
@@ -318,66 +257,10 @@ class AgentLoop:
         return observation
 
     def _classify_task_boundary(self, basis_message_id: str) -> None:
-        """运行隐藏的 JSON 分类，并把有效结果写入既有边界状态机。"""
-
-        for attempt in range(_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS):
-            try:
-                response = self._complete_task_boundary_classification(attempt=attempt)
-            except ProviderError:
-                continue
-            decision = _parse_task_boundary_classification(response.content, basis_message_id=basis_message_id)
-            if decision is not None:
-                self._record_task_boundary_classification(decision, basis_message_id)
-                return
-        self._record_task_boundary_classification("uncertain", basis_message_id)
+        self.task_boundary_classifier.classify(basis_message_id)
 
     async def _classify_task_boundary_async(self, basis_message_id: str) -> None:
-        """流式主回复前运行隐藏分类，不向 UI 转发其任何事件。"""
-
-        for attempt in range(_TASK_BOUNDARY_CLASSIFICATION_ATTEMPTS):
-            try:
-                request = self._task_boundary_classification_request(attempt=attempt)
-                self._check_turn_timeout()
-                self._check_cancelled()
-                response = await self.provider.acomplete(request)
-            except ProviderError:
-                continue
-            decision = _parse_task_boundary_classification(response.content, basis_message_id=basis_message_id)
-            if decision is not None:
-                self._record_task_boundary_classification(decision, basis_message_id)
-                return
-        self._record_task_boundary_classification("uncertain", basis_message_id)
-
-    def _complete_task_boundary_classification(self, *, attempt: int) -> ChatResponse:
-        request = self._task_boundary_classification_request(attempt=attempt)
-        self._check_turn_timeout()
-        self._check_cancelled()
-        return self.provider.complete(request)
-
-    def _task_boundary_classification_request(self, *, attempt: int) -> ChatRequest:
-        messages = self.context_builder.build_provider_messages(
-            self.session.rebuild_view(),
-        )
-        prompt = _TASK_BOUNDARY_CLASSIFICATION_PROMPT if attempt == 0 else _TASK_BOUNDARY_CLASSIFICATION_RETRY_PROMPT
-        return ChatRequest(
-            messages=[ChatMessage(role="system", content=prompt), *messages],
-            tools=[],
-            tool_choice="none",
-            max_tokens=_TASK_BOUNDARY_CLASSIFICATION_MAX_TOKENS,
-        )
-
-    def _record_task_boundary_classification(self, decision: str, basis_message_id: str) -> None:
-        result = self.session.tool_registry.execute(
-            "task_boundary",
-            {"decision": decision, "basis_message_id": basis_message_id},
-        )
-        observation = observation_from_tool_result_data(result.data) if result.ok else None
-        if observation is None:
-            return
-        self.session.writer.append_task_boundary_observation(observation)
-        self._tag_task_boundary_messages_with_active_hash(result.data)
-        if result.data.get("should_trigger_compaction"):
-            self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
+        await self.task_boundary_classifier.classify_async(basis_message_id)
 
     def _tag_message_parts_with_task_hash(self, message_id: str, task_hash: str | None) -> None:
         if not task_hash:
@@ -462,7 +345,7 @@ class AgentLoop:
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
         return None
 
     async def _append_permission_resume_result_async(self, request_id: str, answer: str) -> AgentTurnResult | None:
@@ -509,7 +392,7 @@ class AgentLoop:
             )
             self._check_cancelled()
             result = await anyio.to_thread.run_sync(
-                self._execute_tool_call_after_permission_with_cancellation_context,
+                self.tool_executor.execute_after_permission_with_cancellation_context,
                 pending.tool_call,
             )
             self._emit_tool_event(
@@ -522,13 +405,8 @@ class AgentLoop:
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
         return None
-
-    def _execute_tool_call_after_permission_with_cancellation_context(self, tool_call: ToolCall) -> ToolResult:
-        self._check_cancelled()
-        with cancellation_context(self.cancellation_token):
-            return self.session.execute_tool_call_after_permission_confirmation(tool_call)
 
     def _complete_once(self, *, tool_choice="auto") -> ChatResponse:
         """构造一次 provider 请求并获得模型响应。
@@ -569,7 +447,7 @@ class AgentLoop:
         except ProviderError as exc:
             if not exc.requires_compaction:
                 raise
-            result = self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
+            result = self._compact_for_prompt_too_long()
             if result is None or result.status != "success":
                 raise
             return self._complete_once(tool_choice=tool_choice)
@@ -677,7 +555,7 @@ class AgentLoop:
                     return self._complete_once(tool_choice=tool_choice)
                 if not exc.requires_compaction:
                     raise
-                result = self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
+                result = self._compact_for_prompt_too_long()
                 if result is None or result.status != "success":
                     raise
                 return await self._stream_once_attempt(tool_choice=tool_choice)
@@ -720,14 +598,14 @@ class AgentLoop:
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
             self.session.append_assistant_response(response)
-            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+            self._auto_compact()
             return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
         response = self._run_todo_self_check_if_needed(response, complete_once)
 
         # 没有工具调用时，这条 response 就是最终 assistant 回复。命中轮次上限时也会写入
         # 一条纯文本说明，避免保存未执行的 tool_call。
         self.session.append_assistant_response(response)
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
     async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
@@ -752,12 +630,12 @@ class AgentLoop:
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
             self.session.append_assistant_response(response)
-            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+            self._auto_compact()
             return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
         response = await self._run_todo_self_check_if_needed_async(response, complete_once)
 
         self.session.append_assistant_response(response)
-        self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+        self._auto_compact()
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
     def _continue_tool_loop_from_response(
@@ -774,12 +652,11 @@ class AgentLoop:
             # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
             # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
             self.session.append_assistant_response(response)
-            execution = self._execute_tool_calls_interactive(response.tool_calls)
+            execution = self.tool_executor.execute_interactive(response.tool_calls)
             if execution.pending_input is not None:
                 return response, execution.pending_input
             if execution.task_hash_changed:
-                self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
-            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+                self._compact_after_task_hash_changed()
 
             if self.limits.successful_verification_stop and execution.successful_verification:
                 return self._drop_unsupported_tool_calls(complete_once(tool_choice="none")), None
@@ -789,7 +666,7 @@ class AgentLoop:
                 return self._tool_round_limit_response(response), None
             # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
             # 重新投影完整历史，让模型读取刚才的工具输出。
-            reminder = self._todo_planning_reminder_prompt() or self._todo_progress_reminder_prompt()
+            reminder = self.todo_policy.next_reminder()
             if reminder:
                 self.session.append_user_message(reminder)
             self._check_cancelled()
@@ -797,7 +674,7 @@ class AgentLoop:
         return response, None
 
     def _run_todo_self_check_if_needed(self, response: ChatResponse, complete_once) -> ChatResponse:
-        prompt = self._todo_self_check_prompt()
+        prompt = self.todo_policy.self_check_prompt()
         if not prompt:
             return response
         self.session.append_user_message(prompt)
@@ -806,7 +683,7 @@ class AgentLoop:
         return response
 
     async def _run_todo_self_check_if_needed_async(self, response: ChatResponse, complete_once) -> ChatResponse:
-        prompt = self._todo_self_check_prompt()
+        prompt = self.todo_policy.self_check_prompt()
         if not prompt:
             return response
         self.session.append_user_message(prompt)
@@ -826,12 +703,11 @@ class AgentLoop:
                 return self._tool_round_limit_response(response), None
 
             self.session.append_assistant_response(response)
-            execution = await self._execute_tool_calls_interactive_async(response.tool_calls)
+            execution = await self.tool_executor.execute_interactive_async(response.tool_calls)
             if execution.pending_input is not None:
                 return response, execution.pending_input
             if execution.task_hash_changed:
-                self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
-            self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+                self._compact_after_task_hash_changed()
 
             if self.limits.successful_verification_stop and execution.successful_verification:
                 return self._drop_unsupported_tool_calls(await complete_once(tool_choice="none")), None
@@ -839,360 +715,17 @@ class AgentLoop:
             tool_rounds += 1
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
                 return self._tool_round_limit_response(response), None
-            reminder = self._todo_planning_reminder_prompt() or self._todo_progress_reminder_prompt()
+            reminder = self.todo_policy.next_reminder()
             if reminder:
                 self.session.append_user_message(reminder)
             self._check_cancelled()
             response = self._drop_unsupported_tool_calls(await complete_once())
         return response, None
 
-    def _todo_self_check_prompt(self) -> str | None:
-        unfinished = self._latest_unfinished_todos()
-        if not unfinished:
-            return None
-        lines = [
-            "Self-check before final answer: there are unfinished todo items.",
-            "Continue the task or explicitly explain why these items no longer need action. Do not claim completion while they remain unresolved.",
-        ]
-        for item in unfinished:
-            lines.append(f"- [{item.get('status', 'pending')}] {item.get('content', '')}")
-        return "\n".join(lines)
-
-    def _todo_progress_reminder_prompt(self) -> str | None:
-        unfinished = self._latest_unfinished_todos()
-        if not unfinished:
-            return None
-        stale_count = self._non_todo_tool_results_since_latest_todo()
-        if stale_count < _TODO_STALE_TOOL_RESULT_THRESHOLD:
-            return None
-        if stale_count - self._last_todo_stale_reminder_count < _TODO_STALE_TOOL_RESULT_THRESHOLD:
-            return None
-        self._last_todo_stale_reminder_count = stale_count
-        lines = [
-            "Todo progress reminder: several tools have run since the todo list was last updated.",
-            "Update todo status if progress changed, or continue only if the current todo is still accurate.",
-        ]
-        for item in unfinished:
-            lines.append(f"- [{item.get('status', 'pending')}] {item.get('content', '')}")
-        return "\n".join(lines)
-
-    def _todo_planning_reminder_prompt(self) -> str | None:
-        if self._missing_todo_plan_reminded:
-            return None
-        if "todo" not in self.session.tool_registry.names():
-            return None
-        if self._has_todo_result():
-            return None
-        non_todo_count = self._non_todo_tool_results_since_latest_todo()
-        if non_todo_count < _TODO_MISSING_TOOL_RESULT_THRESHOLD:
-            return None
-        self._missing_todo_plan_reminded = True
-        return "\n".join(
-            [
-                "Todo planning reminder: this has become multi-step work, but no todo plan exists yet.",
-                "Call todo with action='set' and a complete 3-7 item plan before continuing implementation. Use concrete, verifiable items and keep exactly one in_progress.",
-            ]
-        )
-
-    def _latest_unfinished_todos(self) -> list[dict[str, object]]:
-        latest: list[dict[str, object]] | None = None
-        for message in self.session.rebuild_view().messages:
-            if message.role != "tool":
-                continue
-            for part in message.parts:
-                if part.kind != "tool_result":
-                    continue
-                if part.metadata.get("tool_name") != "todo":
-                    continue
-                todos = part.metadata.get("data", {}).get("todos") if isinstance(part.metadata.get("data"), dict) else None
-                if isinstance(todos, list):
-                    latest = [item for item in todos if isinstance(item, dict)]
-        if not latest:
-            return []
-        return [item for item in latest if item.get("status") not in {"completed", "done"}]
-
-    def _has_todo_result(self) -> bool:
-        for message in self.session.rebuild_view().messages:
-            if message.role != "tool":
-                continue
-            for part in message.parts:
-                if part.kind == "tool_result" and part.metadata.get("tool_name") == "todo":
-                    return True
-        return False
-
-    def _non_todo_tool_results_since_latest_todo(self) -> int:
-        count = 0
-        for message in self.session.rebuild_view().messages:
-            if message.role != "tool":
-                continue
-            for part in message.parts:
-                if part.kind != "tool_result":
-                    continue
-                if part.metadata.get("tool_name") == "todo":
-                    count = 0
-                    continue
-                count += 1
-        return count
-
     def _execute_tool_calls(self, tool_calls: list[ToolCall]) -> bool:
-        return self._execute_tool_calls_interactive(tool_calls).task_hash_changed
+        """兼容旧入口：执行工具调用并返回是否发生 task hash 变化。"""
 
-    def _execute_tool_calls_interactive(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
-        task_hash_changed = False
-        successful_verification = False
-        index = 0
-        while index < len(tool_calls):
-            tool_call = tool_calls[index]
-            # 权限检查放在工具执行前，但具体“这个路径能不能写 / 这个命令能不能跑”
-            # 的判断由 permissions 和 permission-aware tool wrapper 完成。AgentLoop 只关心
-            # allow / deny / ask 三种结果该如何写回会话。
-            preflight = self.session.preflight_tool_call_permission(tool_call)
-            if preflight is not None:
-                if preflight.decision.kind == PermissionDecisionKind.DENY:
-                    result = make_permission_denied_result(
-                        tool_name=tool_call.name,
-                        request=preflight.request,
-                        decision=preflight.decision,
-                    )
-                    self._emit_tool_event(
-                        "denied",
-                        tool_call,
-                        result=result,
-                        permission_request=preflight.request,
-                    )
-                    self.session.append_tool_result(tool_call=tool_call, result=result)
-                    continue
-                if preflight.decision.kind == PermissionDecisionKind.ASK:
-                    # 需要用户确认时不能继续执行同批次后续工具。否则用户还没批准第一个
-                    # 高风险操作，后面的工具却已经产生副作用了。
-                    pending_input = self._store_pending_permission_request(
-                        tool_call=tool_call,
-                        request=preflight.request,
-                        skipped_tool_calls=tool_calls[index + 1 :],
-                    )
-                    self._emit_tool_event(
-                        "permission_requested",
-                        tool_call,
-                        permission_request=preflight.request,
-                    )
-                    return _ToolExecutionState(
-                        task_hash_changed=task_hash_changed,
-                        pending_input=pending_input,
-                    )
-
-            if self._can_execute_in_parallel(tool_call):
-                batch_end = self._parallel_readonly_batch_end(tool_calls, index)
-                results = self._execute_parallel_readonly_batch(tool_calls[index:batch_end])
-                for batch_tool_call, result in zip(tool_calls[index:batch_end], results, strict=True):
-                    self.session.append_tool_result(tool_call=batch_tool_call, result=result)
-                index = batch_end
-                continue
-
-            result = self._execute_single_tool_call(tool_call)
-            self.session.append_tool_result(tool_call=tool_call, result=result)
-            if is_successful_verification_result(tool_call.name, result):
-                successful_verification = True
-            # ask_user 这类工具本身不会继续执行副作用，而是把“需要问用户什么”包装在
-            # ToolResult.data 中。这里把它转换成 AgentTurnResult 的 pending_input。
-            pending_input = user_input_request_from_tool_result(
-                result,
-                tool_call_id=tool_call.id,
-                tool_name=tool_call.name,
-            )
-            if pending_input is not None:
-                self._emit_settlements("skipped", self.tool_settlement.append_skipped(tool_calls[index + 1 :]))
-                return _ToolExecutionState(
-                    task_hash_changed=task_hash_changed,
-                    pending_input=pending_input,
-                )
-            if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
-                # task_boundary 是一种“语义触发”：即使上下文还没超 token 阈值，确认任务切换
-                # 后也应该整理旧任务上下文，降低旧任务信息污染新任务的概率。
-                self._tag_task_boundary_messages_with_active_hash(result.data)
-                task_hash_changed = True
-            index += 1
-        return _ToolExecutionState(
-            task_hash_changed=task_hash_changed,
-            successful_verification=successful_verification,
-        )
-
-    async def _execute_tool_calls_interactive_async(self, tool_calls: list[ToolCall]) -> "_ToolExecutionState":
-        task_hash_changed = False
-        successful_verification = False
-        index = 0
-        while index < len(tool_calls):
-            tool_call = tool_calls[index]
-            preflight = self.session.preflight_tool_call_permission(tool_call)
-            if preflight is not None:
-                if preflight.decision.kind == PermissionDecisionKind.DENY:
-                    result = make_permission_denied_result(
-                        tool_name=tool_call.name,
-                        request=preflight.request,
-                        decision=preflight.decision,
-                    )
-                    self._emit_tool_event(
-                        "denied",
-                        tool_call,
-                        result=result,
-                        permission_request=preflight.request,
-                    )
-                    self.session.append_tool_result(tool_call=tool_call, result=result)
-                    continue
-                if preflight.decision.kind == PermissionDecisionKind.ASK:
-                    pending_input = self._store_pending_permission_request(
-                        tool_call=tool_call,
-                        request=preflight.request,
-                        skipped_tool_calls=tool_calls[index + 1 :],
-                    )
-                    self._emit_tool_event(
-                        "permission_requested",
-                        tool_call,
-                        permission_request=preflight.request,
-                    )
-                    return _ToolExecutionState(
-                        task_hash_changed=task_hash_changed,
-                        pending_input=pending_input,
-                    )
-
-            if self._can_execute_in_parallel(tool_call):
-                batch_end = self._parallel_readonly_batch_end(tool_calls, index)
-                results = await self._execute_parallel_readonly_batch_async(tool_calls[index:batch_end])
-                for batch_tool_call, result in zip(tool_calls[index:batch_end], results, strict=True):
-                    self.session.append_tool_result(tool_call=batch_tool_call, result=result)
-                index = batch_end
-                continue
-
-            result = await self._execute_single_tool_call_async(tool_call)
-            self.session.append_tool_result(tool_call=tool_call, result=result)
-            if is_successful_verification_result(tool_call.name, result):
-                successful_verification = True
-            pending_input = user_input_request_from_tool_result(
-                result,
-                tool_call_id=tool_call.id,
-                tool_name=tool_call.name,
-            )
-            if pending_input is not None:
-                self._emit_settlements("skipped", self.tool_settlement.append_skipped(tool_calls[index + 1 :]))
-                return _ToolExecutionState(
-                    task_hash_changed=task_hash_changed,
-                    pending_input=pending_input,
-                )
-            if tool_call.name == "task_boundary" and result.ok and result.data.get("should_trigger_compaction"):
-                self._tag_task_boundary_messages_with_active_hash(result.data)
-                task_hash_changed = True
-            index += 1
-        return _ToolExecutionState(
-            task_hash_changed=task_hash_changed,
-            successful_verification=successful_verification,
-        )
-
-    def _parallel_readonly_batch_end(self, tool_calls: list[ToolCall], start: int) -> int:
-        end = start
-        while end < len(tool_calls) and self._can_execute_in_parallel(tool_calls[end]):
-            end += 1
-        return end
-
-    def _can_execute_in_parallel(self, tool_call: ToolCall) -> bool:
-        if tool_call.name not in self._parallel_tool_names_for_current_mode():
-            return False
-        preflight = self.session.preflight_tool_call_permission(tool_call)
-        return preflight is None or preflight.decision.kind == PermissionDecisionKind.ALLOW
-
-    def _parallel_tool_names_for_current_mode(self) -> frozenset[str]:
-        if self.session.permission_manager is not None and self.session.permission_manager.mode == PermissionMode.BYPASS:
-            return _BYPASS_PARALLEL_TOOL_NAMES
-        return _PARALLEL_READONLY_TOOL_NAMES
-
-    def _execute_single_tool_call(self, tool_call: ToolCall) -> ToolResult:
-        self._check_cancelled()
-        self._emit_tool_event("started", tool_call)
-        with cancellation_context(self.cancellation_token):
-            result = self.session.execute_tool_call(tool_call)
-        self._emit_tool_event("finished", tool_call, result=result)
-        self._check_cancelled()
-        return result
-
-    async def _execute_single_tool_call_async(self, tool_call: ToolCall) -> ToolResult:
-        self._check_cancelled()
-        self._emit_tool_event("started", tool_call)
-        result = await anyio.to_thread.run_sync(self._execute_tool_call_with_cancellation_context, tool_call)
-        self._emit_tool_event("finished", tool_call, result=result)
-        self._check_cancelled()
-        return result
-
-    def _execute_parallel_readonly_batch(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        self._check_cancelled()
-        for tool_call in tool_calls:
-            self._emit_tool_event("started", tool_call)
-        with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
-            results = list(executor.map(self._execute_tool_call_with_cancellation_context, tool_calls))
-        for tool_call, result in zip(tool_calls, results, strict=True):
-            self._emit_tool_event("finished", tool_call, result=result)
-        self._check_cancelled()
-        return results
-
-    async def _execute_parallel_readonly_batch_async(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        self._check_cancelled()
-        results: list[ToolResult | None] = [None] * len(tool_calls)
-
-        async def run_one(index: int, tool_call: ToolCall) -> None:
-            results[index] = await anyio.to_thread.run_sync(self._execute_tool_call_with_cancellation_context, tool_call)
-
-        for tool_call in tool_calls:
-            self._emit_tool_event("started", tool_call)
-        async with anyio.create_task_group() as task_group:
-            for index, tool_call in enumerate(tool_calls):
-                task_group.start_soon(run_one, index, tool_call)
-        if any(result is None for result in results):
-            raise RuntimeError("parallel readonly tool batch finished without all results")
-        resolved = [result for result in results if result is not None]
-        for tool_call, result in zip(tool_calls, resolved, strict=True):
-            self._emit_tool_event("finished", tool_call, result=result)
-        self._check_cancelled()
-        return resolved
-
-    def _execute_tool_call_with_cancellation_context(self, tool_call: ToolCall) -> ToolResult:
-        self._check_cancelled()
-        with cancellation_context(self.cancellation_token):
-            return self.session.execute_tool_call(tool_call)
-
-    def _store_pending_permission_request(
-        self,
-        *,
-        tool_call: ToolCall,
-        request: PermissionRequest,
-        skipped_tool_calls: list[ToolCall],
-    ) -> UserInputRequest:
-        if self.session.permission_manager is None:
-            raise RuntimeError("permission confirmation requires a permission manager")
-
-        confirmation = self.session.permission_manager.build_confirmation(request)
-        # UI 会看到 confirmation.payload，但恢复时不信任 UI 回传的 tool_call。真实 tool_call
-        # 保存在 session.pending_permission_execution 中，避免前端篡改参数后执行。
-        confirmation.payload["pending_tool_call"] = {
-            "id": tool_call.id,
-            "name": tool_call.name,
-            "arguments": tool_call.arguments,
-        }
-        self.session.pending_permission_execution = PendingPermissionExecution(
-            request_id=request.id,
-            tool_call=tool_call,
-            permission_request=request,
-            skipped_tool_calls=list(skipped_tool_calls),
-        )
-        return confirmation
-
-    def _permission_input_request_from_pending(self, pending: PendingPermissionExecution) -> UserInputRequest:
-        if self.session.permission_manager is None:
-            raise RuntimeError("permission confirmation requires a permission manager")
-
-        confirmation = self.session.permission_manager.build_confirmation(pending.permission_request)
-        confirmation.payload["pending_tool_call"] = {
-            "id": pending.tool_call.id,
-            "name": pending.tool_call.name,
-            "arguments": pending.tool_call.arguments,
-        }
-        return confirmation
+        return self.tool_executor.execute(tool_calls)
 
     def _append_interrupted_tool_results(self) -> None:
         self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
@@ -1241,6 +774,17 @@ class AgentLoop:
                 estimate_tokens=self._estimate_provider_request_tokens,
             )
         )
+
+    def _auto_compact(self):
+        return self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
+    def _compact_for_prompt_too_long(self):
+        return self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
+
+    def _compact_after_task_hash_changed(self):
+        self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
+        return self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
+
 
     def _estimate_provider_request_tokens(self, view) -> int:
         definitions = self._provider_tool_definitions()
@@ -1368,18 +912,6 @@ class AgentLoop:
             raw={"interrupted": True},
         )
 
-
-class _ToolExecutionState:
-    def __init__(
-        self,
-        *,
-        task_hash_changed: bool,
-        pending_input: UserInputRequest | None = None,
-        successful_verification: bool = False,
-    ) -> None:
-        self.task_hash_changed = task_hash_changed
-        self.pending_input = pending_input
-        self.successful_verification = successful_verification
 
 
 class _AgentLoopLimitReached(Exception):

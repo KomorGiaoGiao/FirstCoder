@@ -1,19 +1,23 @@
 # FirstCoder 技术文档
 
-这里是 FirstCoder 的实现说明书。它和仓库根目录 README 分工不同：README 告诉使用者怎样启动；本目录解释按下回车后系统实际做了什么、代码在哪、以及怎样验证改动没有“看着能跑，实际翻车”。
+这个目录是 FirstCoder 的实现指南，和仓库根 README 分工不同：README 告诉用户怎么启动；
+这里解释按下回车之后发生了什么、行为落在哪些源码边界、以及怎样证明改动正确。
 
-这套文档坚持一个原则：运行时结论必须落到真实实现边界。工具描述和 JSON Schema 通过 provider 请求的原生 `tools` 字段发送，不会复制塞进 system prompt；权限安全由程序侧代码保证，不是靠 prompt 里写一句“请谨慎”。
+这套文档坚持一个原则：运行时结论必须落到真实实现边界。工具描述和 JSON Schema
+通过 provider 请求的原生 `tools` 字段发送，不会复制塞进 system prompt；权限安全由
+程序侧代码保证，不是靠 prompt 里写一句“请谨慎”。
 
 ## 推荐学习路径
 
 第一次读代码，按下面顺序走最省力：
 
-1. [代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)：先得到目录地图和一条完整执行链。
-2. [CLI / TUI 设计](CLI_TUI_DESIGN.zh-CN.md)：理解启动、装配、命令、流式输出和界面状态。
-3. [Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)：理解一条用户消息如何变成模型调用与工具结果。
-4. [工具设计](TOOLS_DESIGN.zh-CN.md) 与 [权限设计](PERMISSIONS_DESIGN.zh-CN.md)：理解模型的请求怎样变成受控的本地操作。
-5. [上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)：理解会话事实、投影、压缩与任务边界。
-6. [Provider 设计](PROVIDERS_DESIGN.zh-CN.md) 与 [Skill 系统设计](SKILL_SYSTEM_DESIGN.zh-CN.md)：理解两个主要扩展点。
+1. [架构说明](ARCHITECTURE.zh-CN.md)：包边界、依赖规则与耦合清理结果。
+2. [代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)：先得到目录地图和一条完整执行链。
+3. [CLI / TUI 设计](CLI_TUI_DESIGN.zh-CN.md)：理解启动、装配、命令、流式输出和界面状态。
+4. [Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)：理解一条用户消息如何变成模型调用与工具结果。
+5. [工具设计](TOOLS_DESIGN.zh-CN.md) 与 [权限设计](PERMISSIONS_DESIGN.zh-CN.md)：理解模型的请求怎样变成受控的本地操作。
+6. [上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)：理解会话事实、投影、压缩与任务边界。
+7. [Provider 设计](PROVIDERS_DESIGN.zh-CN.md) 与 [Skill 系统设计](SKILL_SYSTEM_DESIGN.zh-CN.md)：理解两个主要扩展点。
 
 每篇设计文档都提供可观察的小实验和相关测试。建议边读边开源码；目标不是背文件名，而是建立能实际排障的运行模型。
 
@@ -21,6 +25,7 @@
 
 | 想回答的问题 | 文档 |
 | --- | --- |
+| 包边界和依赖规则是什么？ | [架构说明](ARCHITECTURE.zh-CN.md) / [English](ARCHITECTURE.md) |
 | 终端应用怎样被装配和刷新？ | [CLI / TUI 设计](CLI_TUI_DESIGN.zh-CN.md) / [English](CLI_TUI_DESIGN.md) |
 | 一轮任务何时停止、暂停、继续？ | [Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md) / [English](AGENT_LOOP_GUARDRAILS.md) |
 | 长对话怎样放进模型上下文窗口？ | [上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md) / [English](CONTEXT_MANAGEMENT_DESIGN.md) |

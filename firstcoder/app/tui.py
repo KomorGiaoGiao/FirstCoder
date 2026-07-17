@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
 from rich.markup import escape
@@ -27,6 +27,8 @@ from textual.message import Message
 from textual.widgets import Markdown, Static, TextArea
 
 from firstcoder.app.commands import CommandResult
+from firstcoder.app.ports import ChatRunnerLike, CommandHandlerLike, CurrentSessionLike
+from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.app.activity_view import (
     activity_markup,
     post_tool_reasoning_text,
@@ -65,7 +67,6 @@ from firstcoder.app.welcome import welcome_renderable
 from firstcoder.app import yuren_topbar_themes
 
 
-_HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
 _PERMISSION_MODE_COLORS = {
     "conservative": "#5fb5ff",
     "standard": "#cfd1d6",
@@ -131,20 +132,6 @@ def _observe_markdown_update(update_result) -> None:
             raise exception
 
     future.add_done_callback(observe_cancelled_update)
-
-
-class CommandHandlerLike(Protocol):
-    def handle(self, text: str) -> CommandResult:
-        ...
-
-
-class ChatRunnerLike(Protocol):
-    def run_user_turn(self, content: str):
-        ...
-
-
-class CurrentSessionLike(Protocol):
-    session_id: str
 
 
 @dataclass(slots=True)
@@ -299,9 +286,7 @@ class FirstCoderApp(App[None]):
             result = self.command_handler.handle(text)
             if result.handled:
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
-                if self._handle_command_action(result.action, output=result.output):
-                    self._refresh_session_subtitle()
-                    return
+                self._handle_command_action(result.action, output=result.output)
                 self._refresh_session_subtitle()
                 return
             self._write_line(f"Unknown command: {text}", kind=TuiEntryKind.ERROR)
@@ -475,53 +460,51 @@ class FirstCoderApp(App[None]):
             if output:
                 self._write_line(output, kind=TuiEntryKind.COMMAND)
             return False
-        if action_type == "resume_picker":
-            self._picker = TuiPickerState(
-                kind="resume",
-                title="Select a session:",
+        picker_specs = {
+            "resume_picker": (
+                "resume",
+                "Select a session:",
+                "sessions",
+                session_picker_item,
+                "No sessions.",
+                "Use up/down and enter to resume, or type a number.",
+                "sessions",
+            ),
+            "model_picker": (
+                "model",
+                "Select a model:",
+                "models",
+                model_picker_item,
+                "No model choices.",
+                "Use up/down and enter to switch, or type /model <model>.",
+                "models",
+            ),
+            "skill_picker": (
+                "skill",
+                "Select a skill:",
+                "skills",
+                skill_picker_item,
+                "No skills.",
+                "Use up/down and enter to reference, or type a number.",
+                "skills",
+            ),
+        }
+        picker_spec = picker_specs.get(action_type)
+        if picker_spec is not None:
+            kind, title, items_key, item_factory, empty_text, footer, count_label = picker_spec
+            self._open_picker(
+                kind=kind,
+                title=title,
                 items=[
-                    session_picker_item(item)
-                    for item in action.get("sessions", [])
+                    item_factory(item)
+                    for item in action.get(items_key, [])
                     if isinstance(item, dict)
                 ],
                 selected_index=int(action.get("selected_index") or 0),
-                empty_text="No sessions.",
-                footer="Use up/down and enter to resume, or type a number.",
-                count_label="sessions",
+                empty_text=empty_text,
+                footer=footer,
+                count_label=count_label,
             )
-            self._render_picker()
-            return False
-        if action_type == "model_picker":
-            self._picker = TuiPickerState(
-                kind="model",
-                title="Select a model:",
-                items=[
-                    model_picker_item(item)
-                    for item in action.get("models", [])
-                    if isinstance(item, dict)
-                ],
-                selected_index=int(action.get("selected_index") or 0),
-                empty_text="No model choices.",
-                footer="Use up/down and enter to switch, or type /model <model>.",
-                count_label="models",
-            )
-            self._render_picker()
-            return False
-        if action_type == "skill_picker":
-            self._picker = TuiPickerState(
-                kind="skill",
-                title="Select a skill:",
-                items=[
-                    skill_picker_item(item)
-                    for item in action.get("skills", [])
-                    if isinstance(item, dict)
-                ],
-                selected_index=int(action.get("selected_index") or 0),
-                empty_text="No skills.",
-                footer="Use up/down and enter to reference, or type a number.",
-                count_label="skills",
-            )
-            self._render_picker()
             return False
         if action_type == "replay_session":
             self._picker = None
@@ -587,6 +570,10 @@ class FirstCoderApp(App[None]):
             self._write_line(result.output, kind=TuiEntryKind.COMMAND)
         self._handle_command_action(result.action)
         self._refresh_session_subtitle()
+
+    def _open_picker(self, **fields) -> None:
+        self._picker = TuiPickerState(**fields)
+        self._render_picker()
 
     def _render_picker(self) -> None:
         picker = self._picker
@@ -776,13 +763,9 @@ class FirstCoderApp(App[None]):
         else:
             session_id = self.current_session.session_id
             self.sub_title = f"Session: {session_id}"
-        if getattr(self, "is_mounted", False):
-            try:
-                topbar = self.query_one("#topbar")
-            except NoMatches:
-                return
-            if hasattr(topbar, "update"):
-                topbar.update(self._topbar_text(session_id=session_id, width=self._topbar_width()))
+        topbar = self._query_mounted("#topbar")
+        if topbar is not None and hasattr(topbar, "update"):
+            topbar.update(self._topbar_text(session_id=session_id, width=self._topbar_width()))
 
     def _topbar_width(self) -> int | None:
         size = getattr(self, "size", None)
@@ -886,8 +869,7 @@ class FirstCoderApp(App[None]):
         return previous_handler
 
     def _restore_stream_event_handler(self, previous_handler) -> None:
-        if self.chat_runner is not None and hasattr(self.chat_runner, "stream_event_handler"):
-            setattr(self.chat_runner, "stream_event_handler", previous_handler)
+        self._restore_runner_handler("stream_event_handler", previous_handler)
 
     def _install_tool_event_handler(self, token: int | None = None):
         if self.chat_runner is None or not hasattr(self.chat_runner, "tool_event_handler"):
@@ -902,7 +884,7 @@ class FirstCoderApp(App[None]):
                 return
             tool_call = getattr(event, "tool_call", None)
             tool_name = str(getattr(tool_call, "name", "") or "tool")
-            if tool_name in _HIDDEN_TOOL_STATUS_NAMES:
+            if tool_name in HIDDEN_TOOL_STATUS_NAMES:
                 return
             line = tool_status_text(event)
             if not line:
@@ -924,8 +906,11 @@ class FirstCoderApp(App[None]):
         return previous_handler
 
     def _restore_tool_event_handler(self, previous_handler) -> None:
-        if self.chat_runner is not None and hasattr(self.chat_runner, "tool_event_handler"):
-            setattr(self.chat_runner, "tool_event_handler", previous_handler)
+        self._restore_runner_handler("tool_event_handler", previous_handler)
+
+    def _restore_runner_handler(self, attr: str, previous_handler) -> None:
+        if self.chat_runner is not None and hasattr(self.chat_runner, attr):
+            setattr(self.chat_runner, attr, previous_handler)
 
     def _call_ui_thread(self, callback, *args, **kwargs):
         if not getattr(self, "is_running", False):
@@ -983,10 +968,7 @@ class FirstCoderApp(App[None]):
 
     def _dismiss_welcome(self) -> None:
         self._stop_welcome_particles()
-        try:
-            output = self.query_one("#output")
-        except NoMatches:
-            output = None
+        output = self._query_mounted("#output")
         if output is not None and hasattr(output, "remove_class"):
             output.remove_class("welcome-active")
         widget = self._welcome_widget
@@ -997,22 +979,28 @@ class FirstCoderApp(App[None]):
         if remove is not None:
             remove()
 
+    def _start_interval_timer(self, attr: str, interval: float, callback, *, name: str) -> None:
+        if getattr(self, attr) is not None or getattr(self, "_loop", None) is None:
+            return
+        setattr(self, attr, self.set_interval(interval, callback, name=name))
+
+    def _stop_interval_timer(self, attr: str) -> None:
+        timer = getattr(self, attr, None)
+        if timer is None:
+            return
+        timer.stop()
+        setattr(self, attr, None)
+
     def _start_welcome_particles(self) -> None:
-        if self._welcome_particle_timer is not None:
-            return
-        if getattr(self, "_loop", None) is None:
-            return
-        self._welcome_particle_timer = self.set_interval(
+        self._start_interval_timer(
+            "_welcome_particle_timer",
             self.WELCOME_PARTICLE_INTERVAL_SECONDS,
             self._advance_welcome_particles,
             name="welcome-particles",
         )
 
     def _stop_welcome_particles(self) -> None:
-        if self._welcome_particle_timer is None:
-            return
-        self._welcome_particle_timer.stop()
-        self._welcome_particle_timer = None
+        self._stop_interval_timer("_welcome_particle_timer")
 
     def _advance_welcome_particles(self) -> None:
         if self._welcome_widget is None:
@@ -1052,19 +1040,15 @@ class FirstCoderApp(App[None]):
             self._stop_provider_glow()
 
     def _start_provider_glow(self) -> None:
-        if self._provider_glow_timer is not None or getattr(self, "_loop", None) is None:
-            return
-        self._provider_glow_timer = self.set_interval(
+        self._start_interval_timer(
+            "_provider_glow_timer",
             self.PROVIDER_GLOW_INTERVAL_SECONDS,
             self._advance_provider_glow,
             name="yuren-provider-glow",
         )
 
     def _stop_provider_glow(self) -> None:
-        if self._provider_glow_timer is None:
-            return
-        self._provider_glow_timer.stop()
-        self._provider_glow_timer = None
+        self._stop_interval_timer("_provider_glow_timer")
 
     def _advance_provider_glow(self) -> None:
         palette = yuren_topbar_themes.model_glow_palette(
@@ -1192,21 +1176,15 @@ class FirstCoderApp(App[None]):
         return f"thinking {frame} {text if text is not None else self._working_text}"
 
     def _start_working_animation(self) -> None:
-        if self._working_timer is not None:
-            return
-        if getattr(self, "_loop", None) is None:
-            return
-        self._working_timer = self.set_interval(
+        self._start_interval_timer(
+            "_working_timer",
             self.WORKING_ANIMATION_INTERVAL_SECONDS,
             self._advance_working_animation,
             name="working-indicator",
         )
 
     def _stop_working_animation(self) -> None:
-        if self._working_timer is None:
-            return
-        self._working_timer.stop()
-        self._working_timer = None
+        self._stop_interval_timer("_working_timer")
 
     def _advance_working_animation(self) -> None:
         self._working_frame_index += 1
@@ -1222,12 +1200,7 @@ class FirstCoderApp(App[None]):
         self._start_activity_animation()
 
     def _show_static_activity(self, text: str) -> None:
-        self._activity_animation_kind = "static"
-        self._activity_animation_detail = text
-        self._activity_frame_index = 0
-        self._activity_started_at = time.monotonic()
-        self._set_activity(self._activity_animation_body())
-        self._start_activity_animation()
+        self._show_activity_animation("static", text)
 
     def _activity_animation_body(self) -> str:
         if self._activity_animation_kind == "static":
@@ -1258,21 +1231,15 @@ class FirstCoderApp(App[None]):
         return max(0.0, time.monotonic() - self._turn_started_at)
 
     def _start_activity_animation(self) -> None:
-        if self._activity_timer is not None:
-            return
-        if getattr(self, "_loop", None) is None:
-            return
-        self._activity_timer = self.set_interval(
+        self._start_interval_timer(
+            "_activity_timer",
             self.ACTIVITY_ANIMATION_INTERVAL_SECONDS,
             self._advance_activity_animation,
             name="activity-indicator",
         )
 
     def _stop_activity_animation(self) -> None:
-        if self._activity_timer is None:
-            return
-        self._activity_timer.stop()
-        self._activity_timer = None
+        self._stop_interval_timer("_activity_timer")
         self._activity_animation_kind = ""
         self._activity_animation_detail = ""
 
@@ -1282,13 +1249,18 @@ class FirstCoderApp(App[None]):
         self._activity_frame_index += 1
         self._set_activity(self._activity_animation_body())
 
+    def _query_mounted(self, selector: str):
+        if not getattr(self, "is_mounted", False):
+            return None
+        try:
+            return self.query_one(selector)
+        except NoMatches:
+            return None
+
     def _set_activity(self, text: str) -> None:
         self._activity_text = text
-        if not getattr(self, "is_mounted", False):
-            return
-        try:
-            activity = self.query_one("#activity")
-        except NoMatches:
+        activity = self._query_mounted("#activity")
+        if activity is None:
             return
         rendered = self.tool_activity_line_text(text, activity)
         if hasattr(activity, "update"):
@@ -1296,13 +1268,8 @@ class FirstCoderApp(App[None]):
         self._refresh_topbar()
 
     def _refresh_topbar(self) -> None:
-        if not getattr(self, "is_mounted", False):
-            return
-        try:
-            topbar = self.query_one("#topbar")
-        except NoMatches:
-            return
-        if hasattr(topbar, "update"):
+        topbar = self._query_mounted("#topbar")
+        if topbar is not None and hasattr(topbar, "update"):
             topbar.update(self._topbar_text(width=self._topbar_width()))
 
     def _activity_renderable(self, text: str) -> Text:
@@ -1378,14 +1345,6 @@ class FirstCoderApp(App[None]):
         output = self.query_one("#output")
         self._scroll_output_end_if_pinned(output)
         return True
-
-
-def _short_session_id(session_id: str) -> str:
-    if len(session_id) <= 14:
-        return session_id
-    if session_id.startswith("sess_"):
-        return session_id[:13]
-    return session_id[:12]
 
 
 def _markup_width(markup: str) -> int:

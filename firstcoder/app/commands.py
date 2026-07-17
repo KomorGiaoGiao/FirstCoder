@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+from firstcoder.utils.text import display_value
+
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from firstcoder.context.inspector import ContextInspectionReport, ContextInspector
+from firstcoder.app.ports import ContextManagerLike
 from firstcoder.context.manager import ContextCompactRequest, ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
@@ -22,11 +25,6 @@ class SessionLike(Protocol):
     current_turn: int
 
     def rebuild_view(self) -> SessionView:
-        ...
-
-
-class ContextManagerLike(Protocol):
-    def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
         ...
 
 
@@ -98,12 +96,12 @@ def _render_context_report(report: ContextInspectionReport) -> str:
         f"Session: {report.session_id}",
         f"Estimated tokens: {report.estimated_tokens}",
         f"Tail messages: {report.tail_message_count}",
-        f"Latest checkpoint: {_value(report.latest_checkpoint_id)}",
+        f"Latest checkpoint: {display_value(report.latest_checkpoint_id)}",
         f"Checkpoint boundary: {report.checkpoint_boundary_status}",
         f"Archives: {report.archive_count}",
-        f"Active task hash: {_value(report.active_task_hash)}",
-        f"Candidate task hash: {_value(report.candidate_task_hash)}",
-        f"System prompt fingerprint: {_value(report.system_prompt_fingerprint)}",
+        f"Active task hash: {display_value(report.active_task_hash)}",
+        f"Candidate task hash: {display_value(report.candidate_task_hash)}",
+        f"System prompt fingerprint: {display_value(report.system_prompt_fingerprint)}",
     ]
     return "\n".join(lines)
 
@@ -111,12 +109,12 @@ def _render_context_report(report: ContextInspectionReport) -> str:
 def _render_compact_status(report: ContextInspectionReport) -> str:
     lines = [
         f"Auto compact: {report.auto_compact_status}",
-        f"Disabled until: {_value(report.auto_compact_disabled_until)}",
-        f"Last failure: {_value(report.last_failure_reason)}",
-        f"Last input fingerprint: {_value(report.last_compaction_input_fingerprint)}",
+        f"Disabled until: {display_value(report.auto_compact_disabled_until)}",
+        f"Last failure: {display_value(report.last_failure_reason)}",
+        f"Last input fingerprint: {display_value(report.last_compaction_input_fingerprint)}",
         f"Estimated tokens: {report.estimated_tokens}",
         f"Tail messages: {report.tail_message_count}",
-        f"Latest checkpoint: {_value(report.latest_checkpoint_id)}",
+        f"Latest checkpoint: {display_value(report.latest_checkpoint_id)}",
         "Recent compactions:",
     ]
     if not report.recent_compaction_events:
@@ -128,15 +126,10 @@ def _render_compact_status(report: ContextInspectionReport) -> str:
                 f"{event.get('event_type')} "
                 f"{event.get('trigger')} "
                 f"{event.get('status')} "
-                f"{_value(event.get('reason'))}"
+                f"{display_value(event.get('reason'))}"
             )
     return "\n".join(lines)
 
-
-def _value(value: object | None) -> str:
-    if value in (None, ""):
-        return "-"
-    return str(value)
 
 
 def _manual_target_tokens(estimated_tokens: int) -> int | None:

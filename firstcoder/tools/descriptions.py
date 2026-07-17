@@ -60,11 +60,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "answer cannot be safely discovered from the workspace or commands."
     ),
     "todo": (
-        "Track and plan multi-step work. For non-trivial coding tasks, use "
-        "action='set' with a complete 3-7 item plan before implementation and "
-        "whenever progress, blockers, or the plan changes. Items should be "
-        "short, concrete, and verifiable. Include all pending, in_progress, "
-        "and completed items; keep exactly one item in_progress."
+        "Track multi-step work. Create a complete 3-7 item plan once with "
+        "action='set' before implementation. For routine progress, prefer "
+        "action='update' to change statuses only and keep item contents/order "
+        "stable. Re-set the full plan only when the plan itself must change. "
+        "Keep exactly one item in_progress."
     ),
     "write": (
         "Write a UTF-8 text file in the workspace. Use for new files or full-file "

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from firstcoder.agent.user_input import UserInputOption, UserInputRequest
+from firstcoder.runtime.user_input import UserInputOption, UserInputRequest
 from firstcoder.permissions.grants import PermissionGrantStore
 from firstcoder.permissions.policy import DefaultPermissionPolicy
 from firstcoder.permissions.types import (

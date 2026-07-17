@@ -25,3 +25,42 @@ def safe_read_text(path: Path, *, encoding: str = "utf-8") -> str:
     """
 
     return path.read_text(encoding=encoding)
+
+
+def optional_str(value: object) -> str | None:
+    """Normalize empty-ish values to None, otherwise stringify."""
+
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def display_value(value: object | None, *, empty: str = "-") -> str:
+    """Render a value for UI/share text, mapping empty-ish inputs to a placeholder."""
+
+    if value in (None, ""):
+        return empty
+    return str(value)
+
+
+def model_label(provider: str | None, model: str | None, *, empty: str = "-") -> str:
+    """Format provider/model for display."""
+
+    if provider and model:
+        return f"{provider}/{model}"
+    return provider or model or empty
+
+
+def ellipsis_truncate(text: str, max_chars: int, *, normalize_ws: bool = False) -> str:
+    """Truncate with trailing ellipsis; optionally collapse whitespace first."""
+
+    value = " ".join(text.split()) if normalize_ws else text
+    if max_chars <= 0:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    ellipsis = "..."
+    if max_chars <= len(ellipsis):
+        return ellipsis[:max_chars]
+    return value[: max_chars - len(ellipsis)] + ellipsis
+

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from firstcoder.agent.user_input import UserInputRequest
+from firstcoder.runtime.user_input import UserInputRequest
 from firstcoder.permissions.types import PermissionDecision, PermissionRequest
 from firstcoder.providers.types import ToolCall
 from firstcoder.tools.types import ToolResult, make_error_result, make_text_result
