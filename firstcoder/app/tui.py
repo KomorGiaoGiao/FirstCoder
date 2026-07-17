@@ -62,14 +62,10 @@ from firstcoder.app.transcript_view import (
 )
 from firstcoder.app.tui_state import TuiEntryKind, TuiTodoItem, TuiTranscript, TuiTranscriptEntry
 from firstcoder.app.welcome import welcome_renderable
+from firstcoder.app import yuren_topbar_themes
 
 
 _HIDDEN_TOOL_STATUS_NAMES = {"task_boundary"}
-_YUREN_MODEL_GLOW_PALETTES = {
-    "gpt-5.6-terra": ("#b8ffdf", "#81e8bb", "#18cfcb", "#45e6df", "#5fb5ff"),
-    "gpt-5.6-sol": ("#ffb347", "#ff7a45", "#ff5c3d", "#e9422e", "#ffd166"),
-    "gpt-5.6-luna": ("#f4f6ff", "#c9d5ff", "#b9c8ff", "#a99ee8", "#d9e7ff"),
-}
 _PERMISSION_MODE_COLORS = {
     "conservative": "#5fb5ff",
     "standard": "#cfd1d6",
@@ -181,7 +177,7 @@ class FirstCoderApp(App[None]):
     ESC_INTERRUPT_WINDOW_SECONDS = 1.0
     ACTIVITY_ANIMATION_INTERVAL_SECONDS = 0.24
     WELCOME_PARTICLE_INTERVAL_SECONDS = 0.85
-    PROVIDER_GLOW_INTERVAL_SECONDS = 0.18
+    PROVIDER_GLOW_INTERVAL_SECONDS = yuren_topbar_themes.GLOW_INTERVAL_SECONDS
     COMPACT_WELCOME_MAX_WIDTH = 80
     COMPACT_WELCOME_MAX_HEIGHT = 24
     ACTIVITY_FRAMES = {
@@ -1050,7 +1046,7 @@ class FirstCoderApp(App[None]):
             self._start_welcome_particles()
 
     def _sync_provider_glow(self) -> None:
-        if _yuren_model_glow_palette(self.config.provider_name, self.config.provider_model) is not None:
+        if yuren_topbar_themes.should_animate(self.config.provider_name, self.config.provider_model):
             self._start_provider_glow()
         else:
             self._stop_provider_glow()
@@ -1071,7 +1067,10 @@ class FirstCoderApp(App[None]):
         self._provider_glow_timer = None
 
     def _advance_provider_glow(self) -> None:
-        palette = _yuren_model_glow_palette(self.config.provider_name, self.config.provider_model)
+        palette = yuren_topbar_themes.model_glow_palette(
+            self.config.provider_name,
+            self.config.provider_model,
+        )
         if palette is None:
             self._stop_provider_glow()
             return
@@ -1403,25 +1402,15 @@ def _provider_name_markup(provider: str, *, glow_frame: int = 0) -> str:
 
 
 def _provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> str:
-    """Apply a model-specific Yuren glow to the provider and model name."""
-    palette = _yuren_model_glow_palette(provider, model)
-    if palette is None:
-        return f"{_provider_name_markup(provider, glow_frame=glow_frame)}[#6e6d72]/{escape(model)}[/]"
-    return f"{_glow_markup(provider, glow_frame=glow_frame, palette=palette)}[#6e6d72]/[/]{_glow_markup(model, glow_frame=glow_frame + len(provider) + 1, palette=palette)}"
-
-
-def _yuren_model_glow_palette(provider: str, model: str) -> tuple[str, ...] | None:
-    if provider != "Yuren":
-        return None
-    return _YUREN_MODEL_GLOW_PALETTES.get(model)
-
-
-def _glow_markup(text: str, *, glow_frame: int, palette: tuple[str, ...]) -> str:
-    return "".join(
-        f"[{palette[(index + glow_frame) % len(palette)]}]"
-        f"{escape(character)}[/]"
-        for index, character in enumerate(text)
+    """Render provider/model labels, applying the optional Yuren easter egg."""
+    themed = yuren_topbar_themes.provider_model_markup(
+        provider,
+        model,
+        glow_frame=glow_frame,
     )
+    if themed is not None:
+        return themed
+    return f"{_provider_name_markup(provider, glow_frame=glow_frame)}[#6e6d72]/{escape(model)}[/]"
 
 
 def _responsive_topbar_markup(

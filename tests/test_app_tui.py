@@ -384,6 +384,15 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
         ("gpt-5.6-terra", "#18cfcb"),
         ("gpt-5.6-sol", "#ff5c3d"),
         ("gpt-5.6-luna", "#b9c8ff"),
+        ("gpt-5.5", "#7eb6ff"),
+        ("gpt-5.4", "#57c5f0"),
+        ("gpt-5.4-mini", "#9be7c8"),
+        ("grok-4.5", "#b57bff"),
+        ("fable-5", "#f0a05a"),
+        ("opus-4-7", "#ff8f6b"),
+        ("opus-4-8", "#ff6f61"),
+        ("sonnet-5", "#f0b36a"),
+        ("sonnet-4-6", "#f0a18c"),
     ],
 )
 def test_supported_yuren_models_use_distinct_moving_colour_bands(model: str, colour: str) -> None:
@@ -399,6 +408,13 @@ def test_supported_yuren_models_use_distinct_moving_colour_bands(model: str, col
 def test_other_provider_names_keep_the_standard_green() -> None:
     assert _provider_name_markup("OpenAI", glow_frame=4) == "[#7bba55]OpenAI[/]"
     assert _provider_model_markup("OpenAI", "gpt-5.6", glow_frame=4) == "[#7bba55]OpenAI[/][#6e6d72]/gpt-5.6[/]"
+    # Same model ids only glow under the Yuren provider display name.
+    assert _provider_model_markup("yurenapi", "gpt-5.5", glow_frame=0) == (
+        "[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]"
+    )
+    assert _provider_model_markup("OpenAI", "grok-4.5", glow_frame=0) == (
+        "[#7bba55]OpenAI[/][#6e6d72]/grok-4.5[/]"
+    )
 
 
 @pytest.mark.anyio

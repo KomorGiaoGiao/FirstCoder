@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Yuren Topbar Glow · Full Model Palette Preview</title>
+  <style>
+    :root {
+      --bg: #111216;
+      --panel: #17181d;
+      --panel-2: #1d1e25;
+      --border: #2a2b32;
+      --text: #e8e8ec;
+      --muted: #8b8c93;
+      --dim: #6e6d72;
+      --green: #7bba55;
+      --sep: #303238;
+      --mono: "SF Mono", "Menlo", "Consolas", "Liberation Mono", monospace;
+      --sans: "SF Pro Text", "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1b2430 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #241b20 0%, transparent 50%),
+        var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      padding: 28px 18px 64px;
+    }
+    .wrap { max-width: 1180px; margin: 0 auto; }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 24px;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 20px;
+    }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 650; }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13.5px;
+      line-height: 1.55;
+      max-width: 72ch;
+    }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button, select {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font: 12.5px/1 var(--sans);
+      cursor: pointer;
+    }
+    button:hover, select:hover { border-color: #3c3e48; }
+    button.active {
+      border-color: color-mix(in srgb, var(--green) 55%, var(--border));
+      color: #d8f0c7;
+      background: #1c2618;
+    }
+    .rule {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .rule-item {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.45;
+    }
+    .rule-item strong { color: var(--text); }
+    code {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      color: #cfd3db;
+      background: #121318;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 2px 6px;
+    }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .chip {
+      border: 1px solid var(--border);
+      background: #16171c;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .chip.active {
+      color: #e8e8ec;
+      border-color: #3d4150;
+      background: #22242c;
+    }
+    .section { margin-top: 22px; }
+    .section h2 {
+      margin: 0 0 12px;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: linear-gradient(180deg, var(--panel) 0%, #15161b 100%);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.16);
+    }
+    .card.existing { border-color: #2f3a2a; background: linear-gradient(180deg, #171b16 0%, #131612 100%); }
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 14px 14px 0;
+    }
+    .name { font-size: 14.5px; font-weight: 650; }
+    .desc { margin-top: 4px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+    .badge {
+      font-size: 11px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 8px;
+      white-space: nowrap;
+    }
+    .badge.existing { color: #b7d3ff; border-color: #334056; background: #171c24; }
+    .badge.proposed { color: #d8f0c7; border-color: #3a5230; background: #1a2417; }
+    .topbar {
+      margin: 12px 14px 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #0d0e12;
+      border: 1px solid #23242b;
+      font-family: var(--mono);
+      font-size: 13px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .topbar .brand { color: var(--green); }
+    .topbar .sep { color: var(--sep); margin: 0 0.7em; }
+    .topbar .status { color: var(--green); }
+    .topbar .slash { color: var(--dim); }
+    .topbar .mode { color: #cfd1d6; }
+    .topbar .cwd { color: var(--dim); }
+    .swatches {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 12px 14px 0;
+    }
+    .swatch {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 104px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12);
+      flex: 0 0 auto;
+    }
+    .band {
+      height: 9px;
+      margin: 12px 14px 0;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .meta {
+      padding: 12px 14px 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .tuple {
+      display: block;
+      margin-top: 6px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.55;
+    }
+    .codeblock {
+      margin-top: 18px;
+      background: #0f1014;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .codeblock h2 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .codeblock pre {
+      margin: 0;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: #d7dae2;
+      white-space: pre;
+    }
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Yuren Topbar Glow · Full Palette</h1>
+        <p class="subtitle">
+          触发规则不变：<strong>当且仅当 provider 精确为 <code>Yuren</code></strong>，
+          再按 model id 精确匹配色板。本页给出全部 12 个 model 的配色预览与可拷贝 dict。
+        </p>
+      </div>
+      <div class="controls">
+        <button id="toggleAnim" class="active" type="button">动画：开</button>
+        <select id="speed">
+          <option value="180" selected>180ms（当前实现）</option>
+          <option value="120">120ms</option>
+          <option value="240">240ms</option>
+        </select>
+      </div>
+    </header>
+
+    <div class="rule">
+      <div class="rule-item"><strong>匹配</strong><br/>provider == "Yuren" 且 model 在表中；否则普通绿字。</div>
+      <div class="rule-item"><strong>风格</strong><br/>每套 5 hex，按字符滚动 glow，深色 topbar 可读。</div>
+      <div class="rule-item"><strong>系列逻辑</strong><br/>GPT 主线冷色阶梯；Grok 霓虹紫；Fable 叙事金；Opus/Sonnet 暖陶土族。</div>
+    </div>
+
+    <div class="filters" id="filters"></div>
+    <div id="sections"></div>
+
+    <div class="codeblock">
+      <h2>Copy · MODEL_GLOW_PALETTES</h2>
+      <pre id="dictCode"></pre>
+    </div>
+
+    <footer>
+      现有已上线：terra / sol / luna。其余为提案色。确认后可直接写入
+      <code>firstcoder/app/yuren_topbar_themes.py</code>。
+    </footer>
+  </div>
+
+  <script>
+    /**
+     * All themes are Yuren-provider-only.
+     * existing = already in yuren_topbar_themes.py
+     * proposed = new for this pass
+     */
+    const themes = [
+      // —— GPT 5.6 celestial trio (existing) ——
+      {
+        family: "gpt-5.6",
+        model: "gpt-5.6-terra",
+        status: "existing",
+        vibe: "地平线绿青蓝 · 现有",
+        palette: ["#b8ffdf", "#81e8bb", "#18cfcb", "#45e6df", "#5fb5ff"],
+      },
+      {
+        family: "gpt-5.6",
+        model: "gpt-5.6-sol",
+        status: "existing",
+        vibe: "落日橙红金 · 现有",
+        palette: ["#ffb347", "#ff7a45", "#ff5c3d", "#e9422e", "#ffd166"],
+      },
+      {
+        family: "gpt-5.6",
+        model: "gpt-5.6-luna",
+        status: "existing",
+        vibe: "月光银蓝紫 · 现有",
+        palette: ["#f4f6ff", "#c9d5ff", "#b9c8ff", "#a99ee8", "#d9e7ff"],
+      },
+
+      // —— GPT mainline ladder ——
+      {
+        family: "gpt-mainline",
+        model: "gpt-5.5",
+        status: "proposed",
+        vibe: "旗舰冷蓝银 · 比 luna 更“钢”，比 terra 更静",
+        palette: ["#e8f1ff", "#b9d4ff", "#7eb6ff", "#4f8cff", "#9aa4b2"],
+      },
+      {
+        family: "gpt-mainline",
+        model: "gpt-5.4",
+        status: "proposed",
+        vibe: "中坚青蓝 · 5.5 的暖一度版本，略带青绿",
+        palette: ["#dff7ff", "#9edfff", "#57c5f0", "#3aa7d6", "#6ec8b8"],
+      },
+      {
+        family: "gpt-mainline",
+        model: "gpt-5.4-mini",
+        status: "proposed",
+        vibe: "mini 浅薄荷 · 同族更轻、更亮",
+        palette: ["#f0fff8", "#c9f5e1", "#9be7c8", "#6fd4d0", "#8ec5ff"],
+      },
+
+      // —— Grok ——
+      {
+        family: "grok",
+        model: "grok-4.5",
+        status: "proposed",
+        vibe: "电光紫 + 氰闪 · xAI 夜空霓虹",
+        palette: ["#f0e7ff", "#d2b4ff", "#b57bff", "#8b5cf6", "#5ce1ff"],
+      },
+
+      // —— Fable ——
+      {
+        family: "fable",
+        model: "fable-5",
+        status: "proposed",
+        vibe: "羊皮纸金 → 铜橙 → 故事紫",
+        palette: ["#ffe9bf", "#ffc857", "#f0a05a", "#e07850", "#c7a0ff"],
+      },
+
+      // —— Opus family ——
+      {
+        family: "opus",
+        model: "opus-4-7",
+        status: "proposed",
+        vibe: "经典珊瑚陶土 · 稳重旗舰",
+        palette: ["#ffe0d1", "#ffb899", "#ff8f6b", "#e86a4a", "#f4c27a"],
+      },
+      {
+        family: "opus",
+        model: "opus-4-8",
+        status: "proposed",
+        vibe: "更新一代 · 更深玫陶 + 琥珀高光",
+        palette: ["#ffd6e0", "#ff9aa8", "#ff6f61", "#d94848", "#ffc36b"],
+      },
+
+      // —— Sonnet family ——
+      {
+        family: "sonnet",
+        model: "sonnet-5",
+        status: "proposed",
+        vibe: "柔沙琥珀 · 比 Opus 更轻、更文",
+        palette: ["#fff0d8", "#ffd29a", "#f0b36a", "#d7925a", "#e8c4a2"],
+      },
+      {
+        family: "sonnet",
+        model: "sonnet-4-6",
+        status: "proposed",
+        vibe: "玫瑰沙丘 · 4.x 代偏粉杏，仍属暖族",
+        palette: ["#ffe8ef", "#ffc2d1", "#f0a18c", "#d9896c", "#f2d0a8"],
+      },
+    ];
+
+    const familyMeta = {
+      "gpt-5.6": "GPT-5.6 Celestial",
+      "gpt-mainline": "GPT Mainline",
+      "grok": "Grok",
+      "fable": "Fable",
+      "opus": "Opus",
+      "sonnet": "Sonnet",
+      all: "All",
+    };
+
+    const PROVIDER = "Yuren";
+    const state = {
+      animating: true,
+      intervalMs: 180,
+      frames: new Map(),
+      timer: null,
+      filter: "all",
+    };
+
+    function esc(text) {
+      return String(text)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function bandGradient(palette) {
+      const stops = palette.map((c, i) => `${c} ${(i / (palette.length - 1)) * 100}%`).join(", ");
+      return `linear-gradient(90deg, ${stops})`;
+    }
+
+    function glowText(text, palette, frame) {
+      return [...text].map((ch, index) => {
+        const color = palette[(index + frame) % palette.length];
+        return `<span style="color:${color}">${esc(ch)}</span>`;
+      }).join("");
+    }
+
+    function cardHtml(item) {
+      const badge = item.status === "existing" ? "existing" : "proposed";
+      const badgeText = item.status === "existing" ? "已有" : "提案";
+      const tuple = `("${item.palette.join('", "')}")`;
+      return `
+        <article class="card ${item.status}" data-id="${esc(item.model)}" data-family="${esc(item.family)}">
+          <div class="card-head">
+            <div>
+              <div class="name">Yuren / ${esc(item.model)}</div>
+              <div class="desc">${esc(item.vibe)}</div>
+            </div>
+            <span class="badge ${badge}">${badgeText} · ${esc(familyMeta[item.family] || item.family)}</span>
+          </div>
+          <div class="topbar" data-role="topbar"></div>
+          <div class="swatches">
+            ${item.palette.map((c) => `<div class="swatch"><span class="dot" style="background:${c}"></span>${c}</div>`).join("")}
+          </div>
+          <div class="band" style="background:${bandGradient(item.palette)}"></div>
+          <div class="meta">
+            <div>match: <code>provider == "Yuren" and model == "${esc(item.model)}"</code></div>
+            <div>tuple:<code class="tuple">${esc(tuple)}</code></div>
+          </div>
+        </article>
+      `;
+    }
+
+    function filteredThemes() {
+      if (state.filter === "all") return themes;
+      return themes.filter((t) => t.family === state.filter);
+    }
+
+    function renderFilters() {
+      const families = ["all", ...Object.keys(familyMeta).filter((k) => k !== "all")];
+      const root = document.getElementById("filters");
+      root.innerHTML = families.map((f) => {
+        const count = f === "all" ? themes.length : themes.filter((t) => t.family === f).length;
+        if (f !== "all" && count === 0) return "";
+        return `<button class="chip ${state.filter === f ? "active" : ""}" data-filter="${f}" type="button">${familyMeta[f]} (${count})</button>`;
+      }).join("");
+      root.querySelectorAll("[data-filter]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.filter = btn.getAttribute("data-filter");
+          renderAll();
+        });
+      });
+    }
+
+    function renderSections() {
+      const list = filteredThemes();
+      const byFamily = new Map();
+      for (const item of list) {
+        if (!byFamily.has(item.family)) byFamily.set(item.family, []);
+        byFamily.get(item.family).push(item);
+      }
+      const root = document.getElementById("sections");
+      root.innerHTML = [...byFamily.entries()].map(([family, items]) => `
+        <section class="section">
+          <h2>${esc(familyMeta[family] || family)}</h2>
+          <div class="cards">
+            ${items.map(cardHtml).join("")}
+          </div>
+        </section>
+      `).join("");
+
+      for (const item of list) {
+        if (!state.frames.has(item.model)) state.frames.set(item.model, 0);
+        paint(item);
+      }
+    }
+
+    function paint(item) {
+      const card = document.querySelector(`[data-id="${CSS.escape(item.model)}"]`);
+      if (!card) return;
+      const topbar = card.querySelector('[data-role="topbar"]');
+      const frame = state.frames.get(item.model) || 0;
+      const providerHtml = glowText(PROVIDER, item.palette, frame);
+      const modelHtml = glowText(item.model, item.palette, frame + PROVIDER.length + 1);
+      topbar.innerHTML = `
+        <span class="brand">FirstCoder</span>
+        <span class="sep">·</span>
+        <span class="status">idle · ready</span>
+        <span class="sep">·</span>
+        ${providerHtml}<span class="slash">/</span>${modelHtml}
+        <span class="sep">·</span>
+        <span class="mode">standard</span>
+        <span class="sep">·</span>
+        <span class="cwd">cwd FirstCoder</span>
+      `;
+    }
+
+    function renderDict() {
+      const lines = ["MODEL_GLOW_PALETTES: dict[str, tuple[str, ...]] = {"];
+      for (const item of themes) {
+        const tuple = ", ".join ? null : null;
+        const body = item.palette.map((c) => `"${c}"`).join(", ");
+        const note = item.status === "existing" ? "  # existing" : "  # proposed";
+        lines.push(`    "${item.model}": (${body}),${note}`);
+      }
+      lines.push("}");
+      // fix fake join
+      document.getElementById("dictCode").textContent = lines.join("\n").replace("const lines error", "");
+    }
+
+    function renderAll() {
+      renderFilters();
+      renderSections();
+      renderDict();
+    }
+
+    function tick() {
+      if (!state.animating) return;
+      for (const item of filteredThemes()) {
+        const next = ((state.frames.get(item.model) || 0) + 1) % item.palette.length;
+        state.frames.set(item.model, next);
+        paint(item);
+      }
+    }
+
+    function restartTimer() {
+      if (state.timer) clearInterval(state.timer);
+      state.timer = setInterval(tick, state.intervalMs);
+    }
+
+    renderAll();
+    restartTimer();
+
+    document.getElementById("toggleAnim").addEventListener("click", (e) => {
+      state.animating = !state.animating;
+      e.currentTarget.textContent = state.animating ? "动画：开" : "动画：关";
+      e.currentTarget.classList.toggle("active", state.animating);
+      if (state.animating) restartTimer();
+      else if (state.timer) clearInterval(state.timer);
+    });
+
+    document.getElementById("speed").addEventListener("change", (e) => {
+      state.intervalMs = Number(e.target.value) || 180;
+      if (state.animating) restartTimer();
+    });
+  </script>
+</body>
+</html>
