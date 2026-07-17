@@ -101,6 +101,12 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         api_key_env="ANTHROPIC_API_KEY",
         model_env="ANTHROPIC_MODEL",
         default_model="claude-sonnet-4-5",
-        capabilities=ProviderCapabilities(supports_streaming=False, supports_forced_tool_choice=False),
+        base_url_env="ANTHROPIC_BASE_URL",
+        # 与 OpenAI-compatible 主线对齐：streaming + tools + forced tool_choice。
+        capabilities=ProviderCapabilities(
+            supports_streaming=True,
+            supports_forced_tool_choice=True,
+            supports_parallel_tool_calls=True,
+        ),
     ),
 }

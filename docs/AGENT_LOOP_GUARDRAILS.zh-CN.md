@@ -36,13 +36,34 @@
 
 `swe_lite()` 为 60 轮、100 次调用、1800 秒；`summary()` 为 1、3、120。数值设为 `None` 只代表关闭对应的一个上限，绝不代表关闭权限检查或 tool-result 配对校验。
 
-显式 stop reason 是 `tool_round_limit`、`provider_call_limit`、`turn_timeout`。取消是另一条机制：`CancellationToken` 让用户/UI 主动中断，不能假装成某一种 budget 命中。
+显式 stop reason 是 `tool_round_limit`、`provider_call_limit`、`turn_timeout`。取消是另一条机制：`CancellationToken`（定义在 `firstcoder.runtime.cancellation`，并由 `agent.cancellation` 再导出）让用户/UI 主动中断，不能假装成某一种 budget 命中。
 
 ## 普通工具轮之前发生什么
 
 工具可用时，每轮开头 loop 可能强制调用 session 注入的 `task_boundary`。稳定 task hash 由程序生成；模型只能对真实 user-message id 申报判断。边界确认后，context 可按 task-switch trigger 压缩。
 
 随后 loop 构造稳定 system prefix，并经 `ContextBuilder` 投影会话历史。生成的 `ChatRequest` 有两个独立通道：`messages` 放指令/历史，`tools` 放原生工具定义；工具 JSON Schema 不会再复制到 system message。
+
+## `agent/` 内模块地图
+
+`AgentLoop` 仍是协调器；若干 helper 拆开轮次职责：
+
+| 模块 | 作用 |
+| --- | --- |
+| `loop.py` | 轮次事务、压缩触发、停止/暂停编排 |
+| `loop_limits.py` | 预算与 stop-reason 枚举 |
+| `tool_execution.py` | 执行/记录 tool call |
+| `tool_flow.py` / `tool_settlement.py` | 批次流控与 settle |
+| `todo_policy.py` | loop 侧 todo 提醒策略 |
+| `task_boundary_classifier.py` | 任务边界分类辅助 |
+| `verification.py` | 合格验证后的提前收尾 |
+| `ports.py` | loop 用的最小 `ContextManagerLike` |
+
+压缩调用点优先用 loop 上的具名 helper（`_auto_compact`、
+`_compact_for_prompt_too_long`、`_compact_after_task_hash_changed`），让意图可读。
+
+tools/permissions/utils 共用的 DTO 在 `firstcoder.runtime`，不在 loop 包里。
+详见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
 
 ## 工具调度与质量提醒
 
@@ -83,4 +104,4 @@ rg -n "TOOL_ROUND_LIMIT|max_provider_calls|prompt too long|PendingPermission" te
 
 护栏配置改 `loop_limits.py`，执行改 `loop.py`，并加一条同时断言 stop reason 与对话形状的测试。别把隐藏 timer 塞到 provider adapter：限制属于用户 turn 语义，应归协调器所有。
 
-关联：[工具设计](TOOLS_DESIGN.zh-CN.md)、[权限设计](PERMISSIONS_DESIGN.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)、[权限设计](PERMISSIONS_DESIGN.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)。

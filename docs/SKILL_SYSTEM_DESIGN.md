@@ -14,13 +14,16 @@ adds the content to the stable prompt-prefix inputs.
 
 ```text
 user message + AGENTS.md
-  -> discover_all_skills(project root and optional global roots)
+  -> SessionBootstrap loads skill_catalog via discover_all_skills(project + optional global roots)
   -> SkillRouter chooses explicit/AGENTS/metadata match
   -> SkillLoader validates root-relative paths and loads content
   -> append skill_selected / skill_loaded / required-file events
   -> system-prefix build receives loaded skill context
   -> provider sees the instructions for this turn
 ```
+
+Skill discovery at session construction is centralized in `SessionBootstrap` so
+create/resume/fork do not each invent a different catalog load path.
 
 Routing is model-free. This makes the selection reproducible and avoids spending
 another model call merely to choose a local instruction file.
@@ -101,5 +104,5 @@ session rather than assuming resume preserves old bytes.
 | required file unexpectedly readable | ensure it is root-relative; path traversal should fail |
 | resumed session behaves differently | skill file changed after the original session |
 
-Related: [Context Management](CONTEXT_MANAGEMENT_DESIGN.md) and
+Related: [Architecture](ARCHITECTURE.md), [Context Management](CONTEXT_MANAGEMENT_DESIGN.md), and
 [Codebase Reading Guide](CODEBASE_READING_GUIDE.md).

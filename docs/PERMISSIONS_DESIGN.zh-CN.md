@@ -20,7 +20,7 @@ ToolPermissionSpec -> PermissionRequest -> PermissionManager
 1. 模型请求 `write(path, content)`。
 2. permission-aware registry 用 write 的 spec 构造 request，含 action、规范化 target、cwd、policy hint。
 3. `PermissionManager.preflight` 先匹配 grant，未命中才按当前 mode 进入默认 policy。
-4. `ALLOW` 执行；`DENY` 变 tool result；`ASK` 变结构化 `UserInputRequest`，turn 暂停。
+4. `ALLOW` 执行；`DENY` 变 tool result；`ASK` 变结构化 `UserInputRequest`（定义在 `firstcoder.runtime.user_input`），turn 暂停。
 5. 用户回答后，`resolve_confirmation` 再做必要检查，然后执行原 pending call 或写 denied result。
 
 模型只会看到最后的 tool message；它不能越过 registry 执行工具，也不能自己写 grant 文件。
@@ -56,6 +56,10 @@ Mode 影响 policy：
 
 `FilePermissionGrantStore` 将 grant 存到 data root 的 `permissions.json`。`allow always` 会通过 `default_scope_for_request` 算出 scope，不会保存成无限制的自然语言“以后都行”。
 
+## 共享请求类型归属
+
+`UserInputRequest` / `UserInputOption` 定义在 `firstcoder.runtime.user_input`，这样 `permissions`、`tools` 和 UI 可以共享它们，**不必** import `firstcoder.agent`。`agent.user_input` 仍可能再导出兼容旧调用点。
+
 ## 暂停、恢复与回放
 
 `ASK` 必须保留 assistant 的原始 tool call。`AgentSession` 保存 `PendingPermissionExecution`，交互调用者得到 `pending_input`；恢复时 loop 解析选择并完成同一条 tool-call transaction，provider 序列因此合法。
@@ -86,4 +90,4 @@ Mode 影响 policy：
 
 动作分类规则放 `policy.py`，scope 算法放 manager/types，工具专属 target 提取放 `ToolPermissionSpec`。不要让每个工具都手搓确认弹窗。回归测试至少覆盖预期 allow 和最近的危险邻居。
 
-关联：[工具设计](TOOLS_DESIGN.zh-CN.md)、[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)、[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)。

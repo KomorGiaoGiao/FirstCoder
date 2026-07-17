@@ -47,8 +47,10 @@ conversation.
 disable permission checks or tool-result sequence validation.
 
 The explicit stop reasons are `tool_round_limit`, `provider_call_limit`, and
-`turn_timeout`. Cancellation is separate: `CancellationToken` lets a user or
-UI interrupt active work, rather than masquerading as one of these budgets.
+`turn_timeout`. Cancellation is separate: `CancellationToken` (defined in
+`firstcoder.runtime.cancellation`, re-exported from `agent.cancellation`) lets a
+user or UI interrupt active work, rather than masquerading as one of these
+budgets.
 
 ## What Happens Before a Normal Tool Round
 
@@ -61,6 +63,28 @@ The loop also constructs a stable system prefix and projects conversation
 history through `ContextBuilder`. The resulting `ChatRequest` contains two
 separate channels: `messages` for instructions/history and `tools` for native
 tool definitions. Tool JSON schemas are not duplicated in the system message.
+
+## Module Map Inside `agent/`
+
+`AgentLoop` stays the coordinator; several helpers keep turn concerns separated:
+
+| Module | Role |
+| --- | --- |
+| `loop.py` | turn transaction, compact triggers, stop/pause orchestration |
+| `loop_limits.py` | budgets and stop-reason enums |
+| `tool_execution.py` | execute/record tool calls |
+| `tool_flow.py` / `tool_settlement.py` | batch flow and settlement |
+| `todo_policy.py` | todo reminder policy for the loop |
+| `task_boundary_classifier.py` | task-boundary classification helpers |
+| `verification.py` | successful-verification early stop |
+| `ports.py` | minimal `ContextManagerLike` for the loop |
+
+Compact call sites should prefer named helpers on the loop
+(`_auto_compact`, `_compact_for_prompt_too_long`,
+`_compact_after_task_hash_changed`) so the *intent* is obvious.
+
+Shared DTOs used by tools/permissions/utils live in `firstcoder.runtime`, not
+in the loop package. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Tool Scheduling and Quality Nudges
 
@@ -115,5 +139,6 @@ that asserts both the stop reason and resulting conversation shape. Do not add
 an invisible timer in a provider adapter: limits are user-turn semantics and
 belong at the coordinator.
 
-Related: [Tools](TOOLS_DESIGN.md), [Permissions](PERMISSIONS_DESIGN.md), and
+Related: [Architecture](ARCHITECTURE.md), [Tools](TOOLS_DESIGN.md),
+[Permissions](PERMISSIONS_DESIGN.md), and
 [Context Management](CONTEXT_MANAGEMENT_DESIGN.md).

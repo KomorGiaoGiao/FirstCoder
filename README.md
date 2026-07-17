@@ -42,7 +42,7 @@ Compared with larger projects like OpenCode, FirstCoder is intentionally smaller
 | Dimension | FirstCoder | Larger projects like OpenCode |
 | --- | --- | --- |
 | Primary goal | Make agent internals readable and teachable | Deliver a broader production-style coding-agent platform |
-| Codebase shape | Roughly 17k lines of Python runtime code in this repo | Roughly 575k lines of TS/JS across a much larger multi-surface codebase |
+| Codebase shape | Roughly 23k lines of Python under `firstcoder/` (~170 files) | Roughly 575k lines of TS/JS across a much larger multi-surface codebase |
 | Engineering tradeoff | Drops some extra platform surface area to stay inspectable | Accepts more complexity to support a broader product surface |
 | Best fit | Learning, modification, interview prep, portfolio projects, and local experimentation | Users who want a larger, more full-surface coding-agent environment |
 
@@ -126,7 +126,7 @@ global:  ~/.config/firstcoder/config.toml
 project: ./firstcoder.toml
 ```
 
-Provider support is centered on the OpenAI Chat Completions-compatible path. The OpenAI-compatible streaming adapter is the mainline streaming implementation and normalizes provider errors such as `PROMPT_TOO_LONG`. The Anthropic provider is still experimental and does not yet expose native Anthropic thinking, caching, or streaming. FirstCoder does not use the OpenAI Responses API yet, so native reasoning and multimodal support are future provider work rather than current runtime behavior.
+Provider support is centered on the OpenAI Chat Completions-compatible path and a native Anthropic Messages API adapter. Both paths implement the same internal complete/streaming contracts (text deltas, tool-call accumulation, forced `tool_choice`, usage, and `PROMPT_TOO_LONG`-style error classification). Anthropic-only extras such as prompt caching remain optional future work. FirstCoder does not use the OpenAI Responses API yet, so native multimodal support is still future provider work rather than current runtime behavior.
 
 > A small detail for observant users: some provider/model combinations give the
 > TUI topbar a little more character.

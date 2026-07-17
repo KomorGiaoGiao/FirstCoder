@@ -17,7 +17,7 @@ storage are improvised.
 ```text
 firstcoder [flags]
   -> cli.py chooses TUI, REPL, or one-shot mode
-  -> factory.py builds store + provider + tools + permissions + session
+  -> factory.py builds store + provider + tools (+ MCP) + SessionBootstrap session
   -> AgentChatRunner starts AgentLoop for the current session
   -> stream/tool/input events become TUI transcript/activity updates
   -> durable events remain in <project>/.firstcoder
@@ -34,28 +34,36 @@ agent loop; their presentation and interruption behavior differ.
 In order, it creates:
 
 1. `JsonlSessionStore` under `<project>/.firstcoder` unless `data_root` is set.
-2. `SandboxAccess` and the builtin tools from `create_builtin_registry`.
-3. A configured `ChatProvider`.
-4. `FilePermissionGrantStore` plus a project `PermissionManager`.
-5. `AgentSession`, which creates the session-scoped registry.
+2. `SandboxAccess` and builtin tools from `create_builtin_registry`.
+3. `McpManager` (background connect) and `McpToolProvider` to merge MCP tools
+   with builtins when the caller did not inject a fixed tool list.
+4. A configured `ChatProvider`.
+5. `SessionBootstrap` — the single assembly path for grants, skills, AGENTS.md,
+   tools, and sandbox wiring — then `from_project` / resume paths yield an
+   `AgentSession` with its session-scoped registry.
 6. `ContextWindowManager` with provider-backed L4 summarization.
-7. session catalog/new/resume/fork/share services and slash-command handlers.
+7. session catalog/new/resume/fork/share services and slash-command handlers
+   (new/resume/fork also go through `SessionBootstrap`, not a second glue copy).
 8. `AgentChatRunner`, `RuntimeModelSwitcher`, and finally `FirstCoderApp`.
 
-This order is meaningful: a session needs concrete tools and a permission
-manager; a runner needs both the session and context manager. Tests can pass a
-fake provider or a small tool list to this factory without reaching the network.
+UI/CLI code should depend on `firstcoder.app.ports` (`ChatRunnerLike`,
+`CommandHandlerLike`, …) rather than concrete loop internals. This order is
+meaningful: a session needs concrete tools and a permission manager; a runner
+needs both the session and context manager. Tests can pass a fake provider or a
+small tool list to this factory without reaching the network.
+
+Package boundaries and dependency rules live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Interfaces and State That Cross the Boundary
 
 | Object | Producer | Consumer | Why it matters |
 | --- | --- | --- | --- |
 | `AppConfig` | `config/settings.py` | factory/provider switcher | resolved configuration, not raw env access everywhere |
-| `AgentSession` | factory/session services | runner and command handlers | current durable conversation and tool registry |
+| `AgentSession` | `SessionBootstrap` / session services | runner and command handlers | current durable conversation and tool registry |
 | `CurrentSessionState` | `app/runtime.py` | TUI and runner | replaceable pointer when `/new`, `/fork`, or resume changes session |
 | `ChatStreamEvent` | provider | runner/TUI | normalized text, reasoning, and tool-call deltas |
 | `ToolExecutionEvent` | agent loop | runner/TUI | local work is separate from model streaming |
-| `UserInputRequest` | permissions or `ask_user` | interactive UI | explicit pause/resume contract |
+| `UserInputRequest` | `firstcoder.runtime.user_input` (permissions / `ask_user`) | interactive UI | explicit pause/resume contract shared outside `agent/` |
 
 ## User-Facing Modes
 
@@ -81,6 +89,11 @@ where every CLI option wins.
 `app/tui_state.py`: entries, tool activity, todo items, provider/session state,
 and a pending input prompt. It buffers streaming text before flushing it so a
 token stream does not cause a widget update per token.
+
+Internal control-plane tools listed in
+`firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES` (currently `task_boundary`)
+should stay out of noisy human activity streams even though they remain
+callable by the agent.
 
 There are two event lanes:
 
@@ -124,10 +137,12 @@ that `task_boundary` is session-injected before the first provider request.
 ## Extension Rules
 
 - Add a presentation behavior in `app/`, not in provider adapters.
-- Add reusable runtime construction in the factory, keeping constructors
-  injectable for tests.
+- Session create/resume/fork wiring belongs in `SessionBootstrap`, not a fifth
+  hand-rolled copy next to the factory.
+- New UI dependencies should extend `app.ports` before binding concrete types.
 - Preserve the distinction between stream events and local tool events.
 - Add a focused `test_app_*` or `test_cli.py` case before changing visible flow.
 
-Related: [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md),
+Related: [Architecture](ARCHITECTURE.md),
+[Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md),
 [Permissions](PERMISSIONS_DESIGN.md), and [Providers](PROVIDERS_DESIGN.md).

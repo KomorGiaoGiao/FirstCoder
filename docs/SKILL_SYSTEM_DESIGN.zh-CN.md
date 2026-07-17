@@ -10,13 +10,15 @@ Skill 是基于文件系统、可复用的指令工作流。它不是可执行 p
 
 ```text
 用户消息 + AGENTS.md
-  -> discover_all_skills（项目根与可选全局根）
+  -> SessionBootstrap 经 discover_all_skills 装入 skill_catalog（项目根与可选全局根）
   -> SkillRouter 选 explicit/AGENTS/metadata 命中
   -> SkillLoader 校验 root-relative path 并加载
   -> 写 skill_selected / skill_loaded / required-file event
   -> system-prefix 构建接收 loaded skill context
   -> provider 在本轮看到这些指令
 ```
+
+会话构造时的 skill 发现集中在 `SessionBootstrap`，避免 create/resume/fork 各自抄不同加载路径。
 
 路由不调用模型，因此可复现，也不会为“选本地 instruction 文件”再多花一次模型调用。
 
@@ -76,4 +78,4 @@ Session 会写入 `skill_selected`、`skill_loaded`、`skill_required_file_loade
 | required file 不该可读却读到了 | 应为 root-relative；path traversal 必须失败 |
 | resume 行为不同 | 原 session 后 skill 文件已被修改 |
 
-关联：[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)、[代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)、[代码阅读指南](CODEBASE_READING_GUIDE.zh-CN.md)。

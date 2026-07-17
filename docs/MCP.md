@@ -12,9 +12,13 @@ firstcoder mcp add / TOML configuration
   -> AppConfig loads desired servers
   -> McpManager connects and calls tools/list
   -> adapter creates regular Tool objects
-  -> PermissionAwareToolRegistry asks for server/tool permission
+  -> app.factory.McpToolProvider merges them with builtins at composition time
+  -> SessionBootstrap / session registry + PermissionAwareToolRegistry
   -> AgentLoop calls the tool and records the normal session events
 ```
+
+MCP is merged at the **composition root**, not by inventing a second tool
+registry or agent loop. Failed or disabled servers simply omit tools.
 
 Configuration is persistent intent. Connection state (`connected`, `failed`,
 or `disabled`) is process-local and is rebuilt when FirstCoder starts.
@@ -132,3 +136,5 @@ FirstCoder's built-in `web_search` tool.
 ```sh
 .venv/bin/python -m pytest tests/test_mcp_integration.py -q
 ```
+
+See also: [Architecture](ARCHITECTURE.md) and [Tools](TOOLS_DESIGN.md).

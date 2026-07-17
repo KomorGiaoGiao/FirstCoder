@@ -73,15 +73,16 @@ Streaming chunks are accumulated inside the adapter until a complete tool call
 exists; callers receive stable `ChatStreamEvent` values rather than raw SDK
 chunks.
 
-## Anthropic Path: Explicitly Narrower
+## Anthropic Path: Contract Parity With OpenAI-Compatible
 
-`AnthropicProvider` is experimental. It supports normal completion and limited
-tool use, moves system messages to Anthropic's dedicated `system` field, and
-converts schemas with `input_schema`. It does not implement the same native
-streaming/thinking/cache-control surface as the OpenAI-compatible adapter.
+`AnthropicProvider` implements the same internal contracts as the OpenAI-compatible
+adapter: non-stream `complete`, async `astream` (`text_delta` / tool-call events /
+`message_completed`), tools, forced `tool_choice`, parallel-tool gating, usage, and
+error classification. It moves system messages to Anthropic's dedicated `system`
+field and maps schemas through `input_schema`. Consecutive `tool` messages are
+merged into one user `tool_result` block list. Anthropic-only extras such as prompt
+caching remain optional and are not required for agent-loop parity.
 
-Do not market a capability merely because an internal type has a field for it;
-check the adapter and its `ProviderCapabilities`.
 
 ## Error and Recovery Contract
 
@@ -109,4 +110,4 @@ and error classification. Never require a live API key for core tests.
 4. Normalize errors; do not leak SDK-only exceptions past the adapter.
 5. Add fake-client tests for malformed and truncated tool calls.
 
-Related: [Tools](TOOLS_DESIGN.md) and [Context Management](CONTEXT_MANAGEMENT_DESIGN.md).
+Related: [Architecture](ARCHITECTURE.md), [Tools](TOOLS_DESIGN.md), and [Context Management](CONTEXT_MANAGEMENT_DESIGN.md).

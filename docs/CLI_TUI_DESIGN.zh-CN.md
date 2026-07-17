@@ -13,7 +13,7 @@
 ```text
 firstcoder [flags]
   -> cli.py 选择 TUI、REPL 或单轮模式
-  -> factory.py 组装 store + provider + tools + permissions + session
+  -> factory.py 组装 store + provider + tools（+ MCP）+ SessionBootstrap session
   -> AgentChatRunner 为当前 session 启动 AgentLoop
   -> stream/tool/input event 变成 TUI transcript/activity 更新
   -> 事实持久化留在 <project>/.firstcoder
@@ -27,25 +27,27 @@ firstcoder [flags]
 
 1. 默认位于 `<project>/.firstcoder` 的 `JsonlSessionStore`（可由 `data_root` 覆盖）。
 2. `SandboxAccess` 与 `create_builtin_registry` 创建的内置工具。
-3. 已配置好的 `ChatProvider`。
-4. `FilePermissionGrantStore` 和项目级 `PermissionManager`。
-5. `AgentSession`，它会创建 session 级 registry。
+3. `McpManager`（后台连接）与 `McpToolProvider`：调用方未注入固定 tools 时，把 MCP 工具与 builtins 合并。
+4. 已配置好的 `ChatProvider`。
+5. `SessionBootstrap`——grants、skills、AGENTS.md、tools、sandbox 的统一装配入口——再经 `from_project` / resume 得到带 session 级 registry 的 `AgentSession`。
 6. 带 provider L4 摘要能力的 `ContextWindowManager`。
-7. session catalog/new/resume/fork/share 服务与 slash command handler。
+7. session catalog/new/resume/fork/share 服务与 slash command handler（new/resume/fork 也走 `SessionBootstrap`，不要再抄一套胶水）。
 8. `AgentChatRunner`、`RuntimeModelSwitcher`，最后才是 `FirstCoderApp`。
 
-这个顺序不是摆设：session 要先拿到工具和权限 manager，runner 又依赖 session 和 context manager。测试能给 factory 注入 fake provider 或小型 tools，不需要真打网络。
+UI/CLI 应依赖 `firstcoder.app.ports`（`ChatRunnerLike`、`CommandHandlerLike` 等），不要绑死 loop 内部实现。这个顺序不是摆设：session 要先拿到工具和权限 manager，runner 又依赖 session 和 context manager。测试能给 factory 注入 fake provider 或小型 tools，不需要真打网络。
+
+包边界与依赖规则见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
 
 ## 跨层关键对象
 
 | 对象 | 谁产生 | 谁消费 | 意义 |
 | --- | --- | --- | --- |
 | `AppConfig` | `config/settings.py` | factory/provider switcher | 解析后的配置，避免各处直接读环境变量 |
-| `AgentSession` | factory/session service | runner、command handler | 当前可持久化对话和 tool registry |
+| `AgentSession` | `SessionBootstrap` / session service | runner、command handler | 当前可持久化对话和 tool registry |
 | `CurrentSessionState` | `app/runtime.py` | TUI、runner | `/new`、`/fork`、resume 时可替换的当前指针 |
 | `ChatStreamEvent` | provider | runner/TUI | 规范化的文本、reasoning、tool-call 增量 |
 | `ToolExecutionEvent` | agent loop | runner/TUI | 本地执行和模型流是两条事件线 |
-| `UserInputRequest` | permission 或 `ask_user` | 交互 UI | 明确的暂停/恢复契约 |
+| `UserInputRequest` | `firstcoder.runtime.user_input`（permission / `ask_user`） | 交互 UI | 跨包共享的暂停/恢复契约（tools 不得为此 import agent） |
 
 ## 用户可见模式
 
@@ -65,6 +67,8 @@ firstcoder [flags]
 ## TUI 实际渲染什么
 
 `app/tui.py` 的 `FirstCoderApp` 渲染 `app/tui_state.py` 的 transcript 型状态：对话条目、工具活动、todo、provider/session 状态和 pending input。它会先缓冲 token，再批量刷新，避免一个 token 刷一次 widget。
+
+列在 `firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES` 的内部控制面工具（当前是 `task_boundary`）仍可被 agent 调用，但不应刷进人机活动流。
 
 运行时有两条事件线：
 
@@ -99,8 +103,9 @@ Slash command 经 `CompositeCommandHandler` 拼装。主要类别：session（`/
 ## 扩展规则
 
 - 展示行为加在 `app/`，不要加到 provider adapter。
-- 可复用 runtime 构建放 factory，构造参数保持可注入，方便测试。
+- 会话 create/resume/fork 接线走 `SessionBootstrap`，不要在 factory 旁边再抄一套。
+- 新的 UI 依赖先扩 `app.ports`，再绑具体实现。
 - 不要混淆 stream event 与本地 tool event。
 - 改可见流程前加聚焦 `test_app_*` 或 `test_cli.py`。
 
-关联：[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)、[权限设计](PERMISSIONS_DESIGN.zh-CN.md)、[Provider 设计](PROVIDERS_DESIGN.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)、[权限设计](PERMISSIONS_DESIGN.zh-CN.md)、[Provider 设计](PROVIDERS_DESIGN.zh-CN.md)。

@@ -112,6 +112,11 @@ manager 先跑确定性层，记录结果，必要时才调用 L4。自动压缩
 | checkpoint/retry | `context/llm_compact.py`、`context/provider_summarizer.py` |
 | 可回放 runtime facts | `context/runtime_state.py`、`context/runtime_replay.py` |
 
+### 软边：目录维护
+
+`context.store` 可能懒加载 `session.index`，以便写入事实时同步会话目录。保持懒加载且接口窄——不要再长出第二条会话发现写入路径。包规则见
+[ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)。
+
 ## 最小验证
 
 ```sh
@@ -131,4 +136,4 @@ manager 先跑确定性层，记录结果，必要时才调用 L4。自动压缩
 - **把 placeholder 当数据丢失：** 应使用 session-scoped retrieval tool，原文仍在 archive。
 - **源码长就压缩：** 那可能正是 coding agent 写 patch 需要的证据。
 
-关联：[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)、[Provider 设计](PROVIDERS_DESIGN.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[Agent 主循环护栏](AGENT_LOOP_GUARDRAILS.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)、[Provider 设计](PROVIDERS_DESIGN.zh-CN.md)。

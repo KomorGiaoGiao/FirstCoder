@@ -26,7 +26,7 @@ matters when reviewing safety—not the wording in a system message.
 3. `PermissionManager.preflight` first checks matching grants, then the default
    policy under the active mode.
 4. `ALLOW` executes; `DENY` becomes a tool result; `ASK` becomes a structured
-   `UserInputRequest` and the turn pauses.
+   `UserInputRequest` (from `firstcoder.runtime.user_input`) and the turn pauses.
 5. After an answer, `resolve_confirmation` rechecks guards and either executes
    the original pending call or appends a denied result.
 
@@ -75,6 +75,13 @@ not an invisible model superpower.
 An “allow always” is converted to a calculated scope via
 `default_scope_for_request`, never stored as an unbounded free-form approval.
 
+## Shared Request Type Ownership
+
+`UserInputRequest` / `UserInputOption` are defined in
+`firstcoder.runtime.user_input` so `permissions`, `tools`, and UI code can share
+them **without** importing `firstcoder.agent`. Compatibility re-exports may still
+exist under `agent.user_input` for older call sites.
+
 ## Pause, Resume, and Replay
 
 `ASK` must preserve the assistant's original tool call. `AgentSession` records
@@ -115,4 +122,4 @@ tool-specific target extraction in `ToolPermissionSpec`. Do not have every tool
 reimplement a permission dialog. Add regression tests for both the intended
 allow path and the nearest unsafe neighbor.
 
-Related: [Tools](TOOLS_DESIGN.md) and [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md).
+Related: [Architecture](ARCHITECTURE.md), [Tools](TOOLS_DESIGN.md), and [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md).

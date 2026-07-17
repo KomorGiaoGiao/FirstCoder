@@ -56,11 +56,15 @@ ContextBuilder + session registry
 
 原始 stream chunk 在 adapter 内聚合，直到 tool call 完整；上层拿到的是稳定的 `ChatStreamEvent`，不是 SDK 的一坨原始对象。
 
-## Anthropic 路径：能力更窄
+## Anthropic 路径：与 OpenAI-compatible 契约对齐
 
-`AnthropicProvider` 是实验性实现：支持普通 completion 和有限 tool use；会把 system message 移到 Anthropic 独立 `system` 字段，用 `input_schema` 转 schema。它目前没有 OpenAI-compatible 那条路径完整的原生 streaming/thinking/cache-control 能力。
+`AnthropicProvider` 与 OpenAI-compatible 主线共享同一套内部契约：非流式 `complete`、
+异步 `astream`（`text_delta` / tool-call 事件 / `message_completed`）、tools、
+forced `tool_choice`、并行工具开关、usage，以及错误归类。system message 会挪到
+Anthropic 独立 `system` 字段，schema 走 `input_schema`。连续的 `tool` 消息会合并成
+同一条 user 里的 `tool_result` 列表。prompt cache 等 Anthropic 专有增强仍是可选项，
+不是 agent loop 对齐的最低门槛。
 
-内部类型有字段，不等于 provider 已支持。要看 adapter 实现与 `ProviderCapabilities`，别自我感动式宣布“全支持”。
 
 ## 错误与恢复契约
 
@@ -83,4 +87,4 @@ adapter 将失败归类为 `ProviderErrorKind`（如 unsupported、prompt-too-lo
 4. 规范化 error，不能把 SDK 专属异常泄出 adapter。
 5. 给畸形与截断 tool call 加 fake-client 测试。
 
-关联：[工具设计](TOOLS_DESIGN.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)。
+关联：[架构说明](ARCHITECTURE.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)、[上下文管理](CONTEXT_MANAGEMENT_DESIGN.zh-CN.md)。

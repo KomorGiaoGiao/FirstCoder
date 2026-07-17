@@ -10,9 +10,12 @@ firstcoder mcp add / TOML 配置
   -> AppConfig 读取想要连接的 server
   -> McpManager 连接并执行 tools/list
   -> adapter 转成现有 Tool
-  -> PermissionAwareToolRegistry 按 server/tool 确认权限
+  -> app.factory.McpToolProvider 在装配期与 builtins 合并
+  -> SessionBootstrap / session registry + PermissionAwareToolRegistry
   -> AgentLoop 调用工具并照常写入 session
 ```
+
+MCP 在**组合根**合并进工具面，不会另起一套 registry 或 agent loop。失败/禁用的 server 只是不注入工具。
 
 配置是持久化的“想连接什么”；`connected`、`failed`、`disabled` 是进程内运行状态，重启后会重新建立。
 
@@ -110,3 +113,5 @@ URL 与 headers。`allowed_tools` 可选，支持工具名 glob 过滤。
 ```sh
 .venv/bin/python -m pytest tests/test_mcp_integration.py -q
 ```
+
+另见：[架构说明](ARCHITECTURE.zh-CN.md)、[工具设计](TOOLS_DESIGN.zh-CN.md)。

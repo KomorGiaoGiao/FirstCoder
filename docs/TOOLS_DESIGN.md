@@ -56,6 +56,17 @@ adds `task_boundary`, optionally `retrieve_archive`, and wraps the base
 Session injection is essential because those tools need session state and must
 not be globally stateless.
 
+At composition time, `app.factory` may also merge MCP tools via
+`McpToolProvider` before the session registry is built. That is still one tool
+surface for the loop—not a second agent.
+
+### Hidden control-plane tools
+
+`firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES` is the single list of tools
+that should stay out of noisy human activity streams (currently
+`task_boundary`). They remain callable; only UI/status presentation filters them.
+Do not special-case tool names inside `tui.py` for this purpose.
+
 ## Execution Rules
 
 `ToolRegistry.execute(name, arguments)` resolves exactly one name and
@@ -86,6 +97,12 @@ invent a tool result in UI code or remove one during context compaction.
 These are runtime participants, not merely convenience commands. Treat a
 change to their output schema as a compatibility change for context and tests.
 
+## Dependency Rule
+
+`tools` (like `permissions` and `utils`) may import `firstcoder.runtime` for
+shared cancel/user-input types. It must **not** import `firstcoder.agent`. If a
+DTO is needed both below and above the loop, put it in `runtime/`.
+
 ## Add a Tool Safely
 
 1. Write a small executor returning a truthful `ToolResult`.
@@ -111,4 +128,4 @@ change to their output schema as a compatibility change for context and tests.
 | provider rejects history after a call | missing/mismatched tool result id |
 | tool works in a unit test but not a session | session-scoped registry assembly |
 
-Related: [Permissions](PERMISSIONS_DESIGN.md) and [Providers](PROVIDERS_DESIGN.md).
+Related: [Architecture](ARCHITECTURE.md), [Permissions](PERMISSIONS_DESIGN.md), and [Providers](PROVIDERS_DESIGN.md).

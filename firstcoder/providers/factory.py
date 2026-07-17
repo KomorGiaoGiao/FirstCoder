@@ -76,7 +76,14 @@ def create_provider_from_config(config: AppConfig) -> ChatProvider:
         )
 
     if preset.kind == "anthropic":
-        return AnthropicProvider(model=model, api_key=api_key)
+        return AnthropicProvider(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            capabilities=preset.capabilities,
+            extra_headers=preset.extra_headers,
+            extra_body=preset.extra_body,
+        )
 
     raise ProviderConfigError(f"provider 类型未实现：{preset.kind}")
 

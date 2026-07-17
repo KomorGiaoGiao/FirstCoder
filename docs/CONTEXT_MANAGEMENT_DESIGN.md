@@ -149,6 +149,13 @@ not silently skipped by that breaker.
 | checkpoint generation/retry | `context/llm_compact.py`, `context/provider_summarizer.py` |
 | replayable runtime facts | `context/runtime_state.py`, `context/runtime_replay.py` |
 
+### Soft edge: catalog maintenance
+
+`context.store` may lazily touch `session.index` so session catalogs stay in
+sync when facts are written. Keep that edge lazy and narrow—do not grow a second
+write path for session discovery. Package rules:
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Minimal Verification
 
 ```sh
@@ -174,5 +181,6 @@ and replay/resume idempotence.
 - **Compressing current source just because it is long:** this is exactly the
   evidence a coding agent may need to patch correctly.
 
-Related: [Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md),
+Related: [Architecture](ARCHITECTURE.md),
+[Agent Loop Guardrails](AGENT_LOOP_GUARDRAILS.md),
 [Tools](TOOLS_DESIGN.md), and [Providers](PROVIDERS_DESIGN.md).

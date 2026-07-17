@@ -511,19 +511,169 @@ class _FakeAnthropicMessages:
 
     def create(self, **params):
         self.last_params = params
+        if params.get("stream"):
+            return self._stream_events(params)
         return _Object(
             model=params["model"],
             stop_reason="tool_use",
+            usage=_Object(input_tokens=12, output_tokens=8),
             content=[
                 _Object(type="text", text="我需要读取文件。"),
                 _Object(type="tool_use", id="toolu_1", name="read_file", input={"path": "README.md"}),
             ],
         )
 
+    def _stream_events(self, params):
+        return iter(
+            [
+                _Object(
+                    type="message_start",
+                    message=_Object(model=params["model"], usage=_Object(input_tokens=12, output_tokens=0)),
+                ),
+                _Object(
+                    type="content_block_start",
+                    index=0,
+                    content_block=_Object(type="text", text=""),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=0,
+                    delta=_Object(type="text_delta", text="我需要"),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=0,
+                    delta=_Object(type="text_delta", text="读取文件。"),
+                ),
+                _Object(type="content_block_stop", index=0),
+                _Object(
+                    type="content_block_start",
+                    index=1,
+                    content_block=_Object(type="tool_use", id="toolu_1", name="read_file", input={}),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=1,
+                    delta=_Object(type="input_json_delta", partial_json='{"path"'),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=1,
+                    delta=_Object(type="input_json_delta", partial_json=': "README.md"}'),
+                ),
+                _Object(type="content_block_stop", index=1),
+                _Object(
+                    type="message_delta",
+                    delta=_Object(stop_reason="tool_use"),
+                    usage=_Object(output_tokens=8),
+                ),
+                _Object(type="message_stop"),
+            ]
+        )
+
 
 class _FakeAnthropicClient:
     def __init__(self):
         self.messages = _FakeAnthropicMessages()
+
+
+class _FakeAnthropicTextStreamMessages:
+    def __init__(self):
+        self.last_params = None
+
+    def create(self, **params):
+        self.last_params = params
+        assert params.get("stream") is True
+        return iter(
+            [
+                _Object(type="message_start", message=_Object(model=params["model"], usage=_Object(input_tokens=3))),
+                _Object(type="content_block_start", index=0, content_block=_Object(type="text", text="")),
+                _Object(type="content_block_delta", index=0, delta=_Object(type="text_delta", text="你")),
+                _Object(type="content_block_delta", index=0, delta=_Object(type="text_delta", text="好")),
+                _Object(type="content_block_stop", index=0),
+                _Object(type="message_delta", delta=_Object(stop_reason="end_turn"), usage=_Object(output_tokens=2)),
+                _Object(type="message_stop"),
+            ]
+        )
+
+
+class _FakeAnthropicTextStreamClient:
+    def __init__(self):
+        self.messages = _FakeAnthropicTextStreamMessages()
+
+
+class _FakeAnthropicThinkingStreamMessages:
+    def create(self, **params):
+        return iter(
+            [
+                _Object(type="message_start", message=_Object(model=params["model"])),
+                _Object(
+                    type="content_block_delta",
+                    index=0,
+                    delta=_Object(type="thinking_delta", thinking="先想"),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=0,
+                    delta=_Object(type="thinking_delta", thinking="一下"),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=1,
+                    delta=_Object(type="text_delta", text="答"),
+                ),
+                _Object(type="message_delta", delta=_Object(stop_reason="end_turn")),
+                _Object(type="message_stop"),
+            ]
+        )
+
+
+class _FakeAnthropicThinkingStreamClient:
+    def __init__(self):
+        self.messages = _FakeAnthropicThinkingStreamMessages()
+
+
+class _FakeAnthropicTruncatedToolStreamMessages:
+    def create(self, **params):
+        return iter(
+            [
+                _Object(type="message_start", message=_Object(model=params["model"])),
+                _Object(
+                    type="content_block_start",
+                    index=0,
+                    content_block=_Object(type="tool_use", id="toolu_1", name="read_file", input={}),
+                ),
+                _Object(
+                    type="content_block_delta",
+                    index=0,
+                    delta=_Object(type="input_json_delta", partial_json='{"path":'),
+                ),
+                _Object(type="message_delta", delta=_Object(stop_reason="max_tokens")),
+                _Object(type="message_stop"),
+            ]
+        )
+
+
+class _FakeAnthropicTruncatedToolStreamClient:
+    def __init__(self):
+        self.messages = _FakeAnthropicTruncatedToolStreamMessages()
+
+
+class _FakeAnthropicLengthMessages:
+    def create(self, **params):
+        return _Object(
+            model=params["model"],
+            stop_reason="max_tokens",
+            usage=_Object(input_tokens=5, output_tokens=9),
+            content=[
+                _Object(type="tool_use", id="toolu_1", name="read_file", input={"path": "README.md"}),
+            ],
+        )
+
+
+class _FakeAnthropicLengthClient:
+    def __init__(self):
+        self.messages = _FakeAnthropicLengthMessages()
 
 
 class _NoStreamProvider(ChatProvider):
@@ -1106,21 +1256,52 @@ def test_anthropic_provider_parses_text_and_tool_calls():
     assert response.tool_calls[0].arguments == {"path": "README.md"}
     assert response.finish_reason == "tool_calls"
     assert response.diagnostics.raw_finish_reason == "tool_use"
+    assert response.usage is not None
+    assert response.usage.input_tokens == 12
+    assert response.usage.output_tokens == 8
+    assert response.usage.total_tokens == 20
 
 
-def test_anthropic_provider_rejects_non_auto_tool_choice():
-    provider = AnthropicProvider(model="claude-test", api_key="test-key", client=_FakeAnthropicClient())
+def test_anthropic_provider_serializes_forced_tool_choice():
+    client = _FakeAnthropicClient()
+    provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
 
-    with pytest.raises(ProviderError) as exc_info:
-        provider.complete(
-            ChatRequest(
-                messages=[ChatMessage(role="user", content="读取 README")],
-                tools=[ToolDefinition(name="read_file", description="读取文件")],
-                tool_choice=ToolChoiceFunction(name="read_file"),
-            )
+    provider.complete(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="读取 README")],
+            tools=[ToolDefinition(name="read_file", description="读取文件")],
+            tool_choice=ToolChoiceFunction(name="read_file"),
         )
+    )
 
-    assert exc_info.value.kind == ProviderErrorKind.CONFIG_ERROR
+    assert client.messages.last_params["tool_choice"] == {"type": "tool", "name": "read_file"}
+
+
+def test_anthropic_provider_maps_required_and_disables_parallel_when_unsupported():
+    client = _FakeAnthropicClient()
+    provider = AnthropicProvider(
+        model="claude-test",
+        api_key="test-key",
+        client=client,
+        capabilities=ProviderCapabilities(
+            supports_streaming=True,
+            supports_forced_tool_choice=True,
+            supports_parallel_tool_calls=False,
+        ),
+    )
+
+    provider.complete(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="读取 README")],
+            tools=[ToolDefinition(name="read_file", description="读取文件")],
+            tool_choice="required",
+        )
+    )
+
+    assert client.messages.last_params["tool_choice"] == {
+        "type": "any",
+        "disable_parallel_tool_use": True,
+    }
 
 
 def test_anthropic_provider_serializes_assistant_tool_calls():
@@ -1144,3 +1325,159 @@ def test_anthropic_provider_serializes_assistant_tool_calls():
     sent_message = client.messages.last_params["messages"][0]
     assert sent_message["content"][0]["type"] == "tool_use"
     assert sent_message["content"][0]["input"] == {"path": "README.md"}
+
+
+def test_anthropic_provider_merges_consecutive_tool_results():
+    client = _FakeAnthropicClient()
+    provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
+
+    provider.complete(
+        ChatRequest(
+            messages=[
+                ChatMessage(role="tool", content="a", tool_call_id="toolu_1"),
+                ChatMessage(role="tool", content="b", tool_call_id="toolu_2"),
+            ]
+        )
+    )
+
+    messages = client.messages.last_params["messages"]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert [block["tool_use_id"] for block in messages[0]["content"]] == ["toolu_1", "toolu_2"]
+
+
+def test_anthropic_provider_parses_usage_and_discards_tools_on_length():
+    provider = AnthropicProvider(model="claude-test", api_key="test-key", client=_FakeAnthropicLengthClient())
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert response.finish_reason == "length"
+    assert response.tool_calls == []
+    assert response.usage is not None
+    assert response.usage.input_tokens == 5
+    assert response.usage.output_tokens == 9
+    assert response.usage.total_tokens == 14
+    assert any("length" in warning for warning in response.diagnostics.warnings)
+
+
+def test_anthropic_provider_streams_text_deltas_and_final_response():
+    async def collect_events():
+        client = _FakeAnthropicTextStreamClient()
+        provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
+        events = [
+            event
+            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        ]
+        return client, events
+
+    client, events = asyncio.run(collect_events())
+
+    assert client.messages.last_params["stream"] is True
+    assert [event.kind for event in events] == [
+        "message_started",
+        "text_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    assert [event.text for event in events if event.kind == "text_delta"] == ["你", "好"]
+    assert events[-1].response is not None
+    assert events[-1].response.content == "你好"
+    assert events[-1].response.finish_reason == "stop"
+    assert events[-1].response.usage is not None
+    assert events[-1].response.usage.input_tokens == 3
+    assert events[-1].response.usage.output_tokens == 2
+
+
+def test_anthropic_provider_streams_reasoning_and_tool_calls():
+    async def collect_events():
+        client = _FakeAnthropicClient()
+        provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
+        events = [
+            event
+            async for event in provider.astream(
+                ChatRequest(
+                    messages=[ChatMessage(role="user", content="读取 README")],
+                    tools=[ToolDefinition(name="read_file", description="读取文件")],
+                )
+            )
+        ]
+        return client, events
+
+    client, events = asyncio.run(collect_events())
+
+    assert client.messages.last_params["stream"] is True
+    assert "tools" in client.messages.last_params
+    kinds = [event.kind for event in events]
+    assert kinds[0] == "message_started"
+    assert "text_delta" in kinds
+    assert "tool_call_started" in kinds
+    assert "tool_call_delta" in kinds
+    assert "tool_call_completed" in kinds
+    assert kinds[-1] == "message_completed"
+    completed = [event.tool_call for event in events if event.kind == "tool_call_completed"][0]
+    assert completed is not None
+    assert completed.id == "toolu_1"
+    assert completed.arguments == {"path": "README.md"}
+    assert events[-1].response is not None
+    assert events[-1].response.finish_reason == "tool_calls"
+
+
+def test_anthropic_provider_streams_thinking_deltas_into_diagnostics():
+    async def collect_events():
+        provider = AnthropicProvider(
+            model="claude-test",
+            api_key="test-key",
+            client=_FakeAnthropicThinkingStreamClient(),
+        )
+        return [
+            event
+            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        ]
+
+    events = asyncio.run(collect_events())
+    assert [event.kind for event in events] == [
+        "message_started",
+        "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "message_completed",
+    ]
+    assert events[-1].response is not None
+    assert events[-1].response.diagnostics.reasoning == "先想一下"
+
+
+def test_anthropic_provider_does_not_complete_truncated_streaming_tool_call():
+    async def collect_events():
+        provider = AnthropicProvider(
+            model="claude-test",
+            api_key="test-key",
+            client=_FakeAnthropicTruncatedToolStreamClient(),
+        )
+        return [
+            event
+            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
+        ]
+
+    events = asyncio.run(collect_events())
+    assert "tool_call_completed" not in [event.kind for event in events]
+    assert events[-1].response is not None
+    assert events[-1].response.tool_calls == []
+    assert events[-1].response.finish_reason == "length"
+
+
+def test_anthropic_provider_rejects_streaming_when_capability_disabled():
+    provider = AnthropicProvider(
+        model="claude-test",
+        api_key="test-key",
+        client=_FakeAnthropicClient(),
+        capabilities=ProviderCapabilities(supports_streaming=False),
+    )
+
+    async def collect_stream_error():
+        events = provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+        with pytest.raises(ProviderError) as exc_info:
+            await anext(events)
+        return exc_info.value
+
+    error = asyncio.run(collect_stream_error())
+    assert error.kind == ProviderErrorKind.UNSUPPORTED
