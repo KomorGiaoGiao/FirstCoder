@@ -274,7 +274,7 @@ class FirstCoderApp(App[None]):
             yield Static("idle · ready", id="activity", classes="activity-line")
             with Vertical(id="composer", classes="composer"):
                 yield ComposerTextArea(
-                    placeholder="输入消息，Enter 发送，Shift+Enter 换行，F8 粘贴剪贴板图片",
+                    placeholder="输入消息，Enter 发送，Shift+Enter 换行，Ctrl/Cmd+V 粘贴图片",
                     id="input",
                     show_line_numbers=False,
                     soft_wrap=True,

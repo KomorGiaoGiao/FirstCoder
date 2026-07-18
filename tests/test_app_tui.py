@@ -1082,6 +1082,16 @@ async def test_firstcoder_app_pasting_plain_text_keeps_text_in_composer(monkeypa
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_composer_advertises_ctrl_or_cmd_v_for_image_paste() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test():
+        composer = app.query_one("#input", ComposerTextArea)
+        assert composer.placeholder == "输入消息，Enter 发送，Shift+Enter 换行，Ctrl/Cmd+V 粘贴图片"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
 async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_composer_is_focused(
     tmp_path, monkeypatch, paste_key
