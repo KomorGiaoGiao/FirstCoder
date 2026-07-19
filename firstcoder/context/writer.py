@@ -137,7 +137,7 @@ class SessionEventWriter:
                 )
             )
         for tool_call in response.tool_calls:
-            parts.append(_tool_call_part(message_id=message_id, tool_call=tool_call))
+            parts.append(tool_call_to_part(message_id=message_id, tool_call=tool_call))
         self._attach_turn_metadata(parts)
         self._append_message_event(
             "assistant_message",
@@ -300,7 +300,7 @@ class SessionEventWriter:
             part.metadata = self._part_metadata(part.metadata)
 
 
-def _tool_call_part(*, message_id: str, tool_call: ToolCall) -> MessagePart:
+def tool_call_to_part(*, message_id: str, tool_call: ToolCall) -> MessagePart:
     return MessagePart(
         id=new_part_id(),
         message_id=message_id,

@@ -6,19 +6,24 @@ from firstcoder.agent.session import AgentSession
 from firstcoder.agent.tool_flow import (
     InvalidToolCallSequenceError,
     assistant_response_to_parts,
+    tool_call_to_part,
     tool_result_to_part,
     validate_tool_call_sequence,
 )
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.store import JsonlSessionStore
-from firstcoder.context.writer import SessionEventWriter
+from firstcoder.context.writer import SessionEventWriter, tool_call_to_part as writer_tool_call_to_part
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.apply_patch import create_apply_patch_tool
 from firstcoder.tools.python_exec import create_python_exec_tool
 from firstcoder.tools.session_registry import create_session_tool_registry
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.types import ToolResult
+
+
+def test_agent_reexports_context_tool_call_conversion() -> None:
+    assert tool_call_to_part is writer_tool_call_to_part
 
 
 def test_assistant_tool_calls_are_persisted_as_tool_call_parts(tmp_path) -> None:

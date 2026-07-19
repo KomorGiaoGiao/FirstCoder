@@ -383,6 +383,7 @@ def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
         "Tool result: ask_user success: 继续吗？ 1. 继续 2. 取消",
         "继续吗？",
     ]
+    assert runner._active_cancellation_token is None
 
 
 def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
@@ -426,6 +427,7 @@ def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
         "Tool result: write success: 已写入文件：README.md",
         "写好了",
     ]
+    assert runner._active_cancellation_token is None
 
 
 @pytest.mark.anyio
@@ -448,6 +450,7 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     ]
     assert runner.last_display_lines == ["streamed"]
     assert len(provider.requests) == 1
+    assert runner._active_cancellation_token is None
 
 
 @pytest.mark.anyio
@@ -606,6 +609,7 @@ async def test_agent_chat_runner_streaming_resume_permission_uses_streaming(tmp_
         "text_delta",
         "message_completed",
     ]
+    assert runner._active_cancellation_token is None
 
 
 @pytest.mark.anyio

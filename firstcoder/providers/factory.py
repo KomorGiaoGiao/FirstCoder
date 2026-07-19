@@ -101,8 +101,6 @@ def create_provider_for_model(config: AppConfig, profile: ModelProfile) -> ChatP
     provider_type = profile.provider.type
     if provider_type in {"openai-compatible", "custom"}:
         return _create_catalog_openai_compatible(config, profile)
-    if provider_type == "anthropic":
-        return _create_catalog_anthropic(config, profile)
     if provider_type in PROVIDER_PRESETS:
         return _create_catalog_preset(config, profile)
     raise ProviderConfigError(f"不支持的 provider 类型：{provider_type}")
@@ -135,27 +133,6 @@ def _create_catalog_openai_compatible(config: AppConfig, profile: ModelProfile) 
         api_key=api_key,
         base_url=profile.provider.base_url,
         capabilities=capabilities,
-    )
-
-
-def _create_catalog_anthropic(config: AppConfig, profile: ModelProfile) -> ChatProvider:
-    preset = PROVIDER_PRESETS.get("anthropic")
-    api_key, env_name = _catalog_api_key(config, profile, preset.api_key_env if preset else "ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ProviderConfigError(f"缺少环境变量：{env_name}")
-    assert preset is not None  # anthropic is an existing preset
-    base_url = profile.provider.base_url
-    if base_url is None and preset.base_url_env:
-        base_url = config.get_env(preset.base_url_env)
-    base_url = base_url or preset.default_base_url
-    return AnthropicProvider(
-        name=profile.provider.id,
-        model=profile.model_id,
-        api_key=api_key,
-        base_url=base_url,
-        capabilities=_catalog_capabilities(preset.capabilities, profile),
-        extra_headers=preset.extra_headers,
-        extra_body=preset.extra_body,
     )
 
 

@@ -299,20 +299,7 @@ class RuntimeModelSwitcher:
             profile = self._catalog.get(ref)
             if profile is None:
                 raise ValueError(f"未配置模型：{ref}。请在 [models] 中添加它。")
-            try:
-                provider = create_provider_for_model(self._app_config, profile)
-            except ProviderConfigError as error:
-                raise ValueError(str(error)) from error
-            self._current_profile = profile
-            self._chat_runner.set_model(
-                provider,
-                request_options=_main_request_options(profile),
-                use_streaming=_should_use_streaming(provider, self._app_config),
-            )
-            self._compact_summarizer.provider = provider
-            if self._state_store is not None:
-                self._state_store.record_selection(profile.ref)
-            return ModelState(provider=provider.name, model=provider.model)
+            return self._apply_profile(profile, persist=True)
 
         if selected_provider is None and self._current_profile is not None:
             # 保留 `/model <model>` 兼容快捷方式：沿用当前 Profile 的
@@ -323,18 +310,7 @@ class RuntimeModelSwitcher:
                 model_id=model,
                 label=model,
             )
-            try:
-                provider = create_provider_for_model(self._app_config, profile)
-            except ProviderConfigError as error:
-                raise ValueError(str(error)) from error
-            self._current_profile = profile
-            self._chat_runner.set_model(
-                provider,
-                request_options=_main_request_options(profile),
-                use_streaming=_should_use_streaming(provider, self._app_config),
-            )
-            self._compact_summarizer.provider = provider
-            return ModelState(provider=provider.name, model=provider.model)
+            return self._apply_profile(profile, persist=False)
 
         config = _config_for_model_switch(
             self._app_config,
@@ -350,6 +326,22 @@ class RuntimeModelSwitcher:
         self._app_config = config
         self._chat_runner.set_provider(provider, use_streaming=_should_use_streaming(provider, config))
         self._compact_summarizer.provider = provider
+        return ModelState(provider=provider.name, model=provider.model)
+
+    def _apply_profile(self, profile: ModelProfile, *, persist: bool) -> ModelState:
+        try:
+            provider = create_provider_for_model(self._app_config, profile)
+        except ProviderConfigError as error:
+            raise ValueError(str(error)) from error
+        self._current_profile = profile
+        self._chat_runner.set_model(
+            provider,
+            request_options=_main_request_options(profile),
+            use_streaming=_should_use_streaming(provider, self._app_config),
+        )
+        self._compact_summarizer.provider = provider
+        if persist and self._state_store is not None:
+            self._state_store.record_selection(profile.ref)
         return ModelState(provider=provider.name, model=provider.model)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from firstcoder.context.identity import new_part_id
 from firstcoder.context.models import MessagePart
 from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
+from firstcoder.context.writer import tool_call_to_part
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -22,20 +23,6 @@ def assistant_response_to_parts(*, message_id: str, response: ChatResponse) -> l
     for tool_call in response.tool_calls:
         parts.append(tool_call_to_part(message_id=message_id, tool_call=tool_call))
     return parts
-
-
-def tool_call_to_part(*, message_id: str, tool_call: ToolCall) -> MessagePart:
-    return MessagePart(
-        id=new_part_id(),
-        message_id=message_id,
-        kind="tool_call",
-        content="",
-        metadata={
-            "tool_call_id": tool_call.id,
-            "tool_name": tool_call.name,
-            "arguments": tool_call.arguments,
-        },
-    )
 
 
 def tool_result_to_part(*, message_id: str, tool_call: ToolCall, result: ToolResult) -> MessagePart:

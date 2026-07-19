@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `tests/test_app_runtime.py`
 
-- [ ] **Step 1: Add sync/streaming bookkeeping parity tests**
+- [x] **Step 1: Add sync/streaming bookkeeping parity tests**
 
 Cover completed response and pending permission response. Assert `last_pending_input`, `last_display_lines`, `last_stream_events`, and active cancellation-token cleanup.
 
@@ -25,7 +25,7 @@ assert runner.last_pending_input is None
 assert runner.last_display_lines == ["streamed"]
 ```
 
-- [ ] **Step 2: Prove failure detection**
+- [x] **Step 2: Prove failure detection**
 
 Temporarily assert a non-empty active token, run the new test, observe failure, restore the assertion, and observe pass.
 
@@ -35,7 +35,7 @@ Temporarily assert a non-empty active token, run the new test, observe failure, 
 - Modify: `firstcoder/app/runtime.py`
 - Test: `tests/test_app_runtime.py`
 
-- [ ] **Step 1: Add start/finalize helpers**
+- [x] **Step 1: Add start/finalize helpers**
 
 ```python
 def _start_turn(self, *, streaming: bool = False) -> tuple[int, CancellationToken, AgentLoop]:
@@ -50,11 +50,11 @@ def _refresh_turn_output(self, before_count: int, loop: AgentLoop) -> None:
     self.last_display_lines = _display_lines_from_messages(messages)
 ```
 
-- [ ] **Step 2: Apply helpers to four entry points**
+- [x] **Step 2: Apply helpers to four entry points**
 
 Use them in `run_user_turn`, `resume_with_user_input`, `arun_user_turn`, and `aresume_with_user_input`. Preserve the exact rules that append pending questions or fallback response content to `last_display_lines`.
 
-- [ ] **Step 3: Run runtime tests**
+- [x] **Step 3: Run runtime tests**
 
 ```sh
 .venv/bin/python -m pytest tests/test_app_runtime.py tests/test_app_tui.py -q
@@ -68,7 +68,7 @@ Expected: all pass. Revert if production lines do not decrease.
 - Modify: `firstcoder/app/factory.py`
 - Test: `tests/test_app_factory.py`
 
-- [ ] **Step 1: Extract the repeated profile application**
+- [x] **Step 1: Extract the repeated profile application**
 
 ```python
 def _apply_profile(self, profile: ModelProfile, *, persist: bool) -> ModelState:
@@ -88,11 +88,11 @@ def _apply_profile(self, profile: ModelProfile, *, persist: bool) -> ModelState:
     return ModelState(provider=provider.name, model=provider.model)
 ```
 
-- [ ] **Step 2: Replace both catalog branches**
+- [x] **Step 2: Replace both catalog branches**
 
 The explicit `provider/model` branch calls `_apply_profile(profile, persist=True)`. The current-provider shortcut calls it with `persist=False`. Keep legacy provider switching untouched.
 
-- [ ] **Step 3: Run model tests**
+- [x] **Step 3: Run model tests**
 
 ```sh
 .venv/bin/python -m pytest tests/test_app_factory.py tests/test_app_model_commands.py tests/test_config.py -q
@@ -113,7 +113,7 @@ Expected: all pass.
 - Test: `tests/test_context_writer.py`
 - Test: `tests/test_agent_tool_flow.py`
 
-- [ ] **Step 1: Share context-view fingerprinting**
+- [x] **Step 1: Share context-view fingerprinting**
 
 Add one domain helper:
 
@@ -127,13 +127,13 @@ def session_view_fingerprint(view: SessionView) -> str:
 
 Replace `_view_fingerprint` and `_effective_context_fingerprint`. Do not move unrelated identity helpers.
 
-- [ ] **Step 2: Reuse tool-call part conversion**
+- [x] **Step 2: Reuse tool-call part conversion**
 
 Rename `context.writer._tool_call_part()` to `tool_call_to_part()` and make `agent/tool_flow.py` import and re-export that function. This preserves `firstcoder.agent.tool_flow.tool_call_to_part` for existing callers without making the context package import the agent package. Remove the duplicate function body and its now-unused identity/model imports from `agent/tool_flow.py`.
 
 The five-line `_positive_int()` functions remain explicit in CLI and SWE-bench. Creating a cross-domain parsing module would increase total production lines and couple the application CLI to the evaluation CLI.
 
-- [ ] **Step 3: Run focused tests**
+- [x] **Step 3: Run focused tests**
 
 ```sh
 .venv/bin/python -m pytest tests/test_context_compaction_pipeline.py tests/test_context_window_manager.py tests/test_context_writer.py tests/test_agent_tool_flow.py tests/test_cli.py tests/test_eval_swebench.py -q
@@ -146,7 +146,7 @@ Expected: all pass.
 **Files:**
 - Modify: `docs/superpowers/plans/2026-07-19-simplify-runtime-factory-helpers.md`
 
-- [ ] **Step 1: Verify all public exports import**
+- [x] **Step 1: Verify all public exports import**
 
 ```sh
 .venv/bin/python - <<'PY'
@@ -164,7 +164,7 @@ print("public exports ok")
 PY
 ```
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 ```sh
 .venv/bin/python -m pytest tests -q
@@ -175,7 +175,7 @@ git diff --check
 
 Treat vulture output as candidates, not failures; document every remaining high-confidence result.
 
-- [ ] **Step 3: Calculate final production delta**
+- [x] **Step 3: Calculate final production delta**
 
 ```sh
 find firstcoder -name '*.py' -type f -print0 | xargs -0 wc -l | tail -n 1
@@ -185,9 +185,37 @@ git diff --numstat -- firstcoder
 
 Report current total, reduction from the 25,616-line baseline, files changed, and rejected candidates. Tests/docs/benchmark do not count.
 
-- [ ] **Step 4: Commit the final batch**
+- [x] **Step 4: Commit the final batch**
 
 ```sh
 git add firstcoder tests docs/superpowers/plans/2026-07-19-simplify-runtime-factory-helpers.md
 git commit -m "Simplify runtime and shared helpers"
 ```
+
+## Actual Results
+
+- Focused context/helper suite: `105 passed`.
+- Runtime/model/provider regression suite: passed with exit code 0.
+- Full suite: `1190 passed, 30 warnings`.
+- Public `__all__` export audit: `public exports ok`.
+- `compileall` and `git diff --check`: passed.
+- Production Python total: 25,474 lines, down 142 from the 25,616-line baseline.
+- Committed batches account for 83 lines; this final working-tree batch accounts for 59 lines.
+
+The reduction came from repeated Agent Loop terminal/todo bookkeeping, provider streaming
+usage and tool-call assembly, session event envelopes and resume/fork validation, runtime
+turn bookkeeping, model-profile application, Anthropic catalog construction, context-view
+fingerprinting, and tool-call part conversion.
+
+Vulture's remaining high-confidence results were retained after manual inspection:
+
+- `_TASK_BOUNDARY_CLASSIFICATION_PROMPT` is a compatibility alias exercised by tests.
+- `legacy_config` is a compatibility keyword on the public model-catalog builder.
+- The unreachable `yield` in the default provider stream is an async-generator contract
+  sentinel; removing it would change `astream()` call semantics.
+
+Rejected candidates included sharing sync and async scheduling, cross-domain positive-int
+parsers, generated tool registries/decorators, and broader TUI command collapsing. They either
+saved no production lines, coupled unrelated domains, changed timing semantics, or reduced
+readability. The original 1,000-line target was therefore not forced through feature removal
+or obscure abstractions.

@@ -20,7 +20,7 @@ from firstcoder.context.content.html import HtmlRouteCompressor
 from firstcoder.context.content.json import JsonRouteCompressor
 from firstcoder.context.content.router import RouteCompactRouter, RouteContentType
 from firstcoder.context.content.search import SearchResultsRouteCompressor
-from firstcoder.context.identity import stable_json_hash
+from firstcoder.context.identity import session_view_fingerprint
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView, latest_user_message_id, utc_now_iso
 from firstcoder.context.token_budget import estimate_text_tokens
 from firstcoder.context.tool_lifecycle import (
@@ -90,7 +90,7 @@ class CompactionPipeline:
 
     def compact(self, request: CompactionRequest) -> CompactionResult:
         view = _clone_view(request.view)
-        input_fingerprint = _view_fingerprint(request.view)
+        input_fingerprint = session_view_fingerprint(request.view)
         before_tokens = _estimate_view_tokens(view)
         lifecycle_records = index_tool_result_lifecycles(
             _effective_tail_messages(view),
@@ -408,16 +408,6 @@ class CompactionPipeline:
 
 def _estimate_view_tokens(view: SessionView) -> int:
     return sum(estimate_text_tokens(part.content) for message in view.messages for part in message.parts)
-
-
-def _view_fingerprint(view: SessionView) -> str:
-    return stable_json_hash(
-        {
-            "session_id": view.session_id,
-            "messages": [message.to_dict() for message in view.messages],
-        },
-        length=24,
-    )
 
 
 def _clone_view(view: SessionView) -> SessionView:

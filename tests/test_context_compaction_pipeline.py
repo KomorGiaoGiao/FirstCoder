@@ -3,6 +3,7 @@ from pathlib import Path
 from firstcoder.context.archive import ToolResultArchive
 from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
+from firstcoder.context.identity import session_view_fingerprint
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.tool_sequence import validate_tool_call_sequence
 
@@ -92,6 +93,16 @@ def _tool_result(
             )
         ],
     )
+
+
+def test_session_view_fingerprint_tracks_persisted_message_content() -> None:
+    original = SessionView(session_id="sess_test", messages=[_message("msg_1", content="original")])
+    same = SessionView(session_id="sess_test", messages=[_message("msg_1", content="original")])
+    changed = SessionView(session_id="sess_test", messages=[_message("msg_1", content="changed")])
+
+    assert session_view_fingerprint(original) == session_view_fingerprint(same)
+    assert session_view_fingerprint(original) != session_view_fingerprint(changed)
+    assert len(session_view_fingerprint(original)) == 24
 
 
 def test_l1_skips_current_task_content(tmp_path: Path) -> None:

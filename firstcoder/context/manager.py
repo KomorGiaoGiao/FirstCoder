@@ -14,7 +14,7 @@ from typing import Protocol, Literal
 
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest, CompactionEvent, CompactionResult
 from firstcoder.context.fallback import CompactFallbackPolicy, FallbackStep
-from firstcoder.context.identity import stable_json_hash
+from firstcoder.context.identity import session_view_fingerprint
 from firstcoder.context.llm_compact import LlmCompactRequest, LlmCompactService, LlmCompactEvent
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState, auto_compact_circuit_is_open
@@ -118,7 +118,7 @@ class ContextWindowManager:
         trigger_decision = self._trigger_decision(request.view, request)
         before_tokens = trigger_decision.estimated_tokens
         auto_failure_count_before = request.runtime_state.auto_compact_failure_count
-        input_fingerprint = _effective_context_fingerprint(request.view)
+        input_fingerprint = session_view_fingerprint(request.view)
 
         if not self._should_compact(trigger=trigger, decision=trigger_decision):
             # AUTO 场景下多数调用都会走到这里。返回 skipped 是有意义的状态，方便
@@ -626,14 +626,4 @@ def _with_fallback(
         event,
         fallback_steps=fallback_steps,
         final_failure_reason=final_failure_reason,
-    )
-
-
-def _effective_context_fingerprint(view: SessionView) -> str:
-    return stable_json_hash(
-        {
-            "session_id": view.session_id,
-            "messages": [message.to_dict() for message in view.messages],
-        },
-        length=24,
     )
