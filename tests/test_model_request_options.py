@@ -113,4 +113,3 @@ def test_main_request_options_copy_extra_body() -> None:
     kwargs["extra_body"]["nested"]["value"] = 3
 
     assert options.extra_body == {"nested": {"value": 1}}
-
