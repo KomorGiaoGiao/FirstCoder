@@ -339,7 +339,7 @@ class RuntimeModelSwitcher:
         config = _config_for_model_switch(
             self._app_config,
             current_provider=self._chat_runner.provider,
-            selected_provider=selected_provider,
+            selected_provider=selected_provider.lower() if selected_provider else None,
             model=model,
         )
         try:
@@ -397,7 +397,7 @@ def _parse_model_spec(spec: str) -> tuple[str | None, str]:
     else:
         value = parts[0] if parts else ""
         provider, model = value.split("/", 1) if "/" in value else (None, value)
-    provider = provider.strip().lower() if provider else None
+    provider = provider.strip() if provider else None
     model = model.strip()
     if not model:
         raise ValueError("model name is required")

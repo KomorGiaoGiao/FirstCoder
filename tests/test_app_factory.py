@@ -370,6 +370,43 @@ def test_catalog_model_switch_records_selection_and_request_options(tmp_path: Pa
     assert ModelStateStore(tmp_path / ".firstcoder" / "model_state.json").load().last_selected == "mimo/pro"
 
 
+def test_catalog_picker_can_switch_mixed_case_provider_ref(tmp_path: Path) -> None:
+    config = AppConfig(
+        provider_name="openai-compatible",
+        env={"YUREN_KEY": "test-key"},
+        project_config={
+            "default_model": "Yuren/main",
+            "providers": {
+                "Yuren": {
+                    "type": "openai-compatible",
+                    "base_url": "https://example.test/v1",
+                    "api_key_env": "YUREN_KEY",
+                }
+            },
+            "models": {
+                "Yuren/main": {},
+                "Yuren/pro": {},
+            },
+        },
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        app_config=config,
+        session_id="sess_test",
+        tools=[],
+    )
+
+    picker = app.command_handler.handle("/models")
+    selected = picker.action["models"][1]
+    result = app.command_handler.handle(f"/model {selected['provider']}/{selected['model']}")
+
+    assert selected == {"provider": "Yuren", "model": "pro"}
+    assert result.output == "Model switched: Yuren/pro"
+    assert app.chat_runner.provider.name == "Yuren"
+    assert ModelStateStore(tmp_path / ".firstcoder" / "model_state.json").load().last_selected == "Yuren/pro"
+
+
 def test_app_factory_configures_default_loop_limits(tmp_path: Path) -> None:
     app = create_firstcoder_app(project_root=tmp_path, provider=FakeProvider([]), tools=[])
 
