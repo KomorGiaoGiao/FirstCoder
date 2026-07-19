@@ -581,7 +581,7 @@ class FirstCoderApp(App[None]):
                 "models",
                 model_picker_item,
                 "No model choices.",
-                "Use up/down and enter to switch, or type /model <model>.",
+                "Use up/down and enter to switch, or type /model <provider>/<model>.",
                 "models",
             ),
             "skill_picker": (

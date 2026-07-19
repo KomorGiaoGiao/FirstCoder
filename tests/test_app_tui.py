@@ -286,7 +286,7 @@ class RecordingCommandHandler:
 
     def handle(self, text: str) -> CommandResult:
         self.commands.append(text)
-        if text == "/model":
+        if text in {"/model", "/models"}:
             return CommandResult(
                 handled=True,
                 output="Select a model:",
@@ -1349,6 +1349,26 @@ async def test_firstcoder_app_model_picker_switches_selected_model() -> None:
     assert handler.commands == ["/model", "/model fake/new"]
     assert app.config.provider_name == "fake"
     assert app.config.provider_model == "new"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_models_alias_opens_model_picker() -> None:
+    handler = RecordingCommandHandler()
+    app = FirstCoderApp(
+        command_handler=handler,
+        config=FirstCoderTuiConfig(provider_name="fake", provider_model="old"),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/models")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+
+    assert handler.commands == ["/models"]
+    assert "Select a model:" in output_text
 
 
 @pytest.mark.anyio

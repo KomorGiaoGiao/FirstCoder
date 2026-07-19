@@ -42,6 +42,33 @@ def test_model_command_shows_current_model() -> None:
     }
 
 
+def test_models_command_is_an_alias_for_model_picker() -> None:
+    switcher = FakeSwitcher(
+        choices=[
+            ModelState(provider="yuren", model="gpt-main"),
+            ModelState(provider="mimo", model="mimo-v2.5-pro"),
+        ]
+    )
+
+    result = ModelCommandHandler(switcher).handle("/models")
+
+    assert result.handled is True
+    assert result.action == {
+        "type": "model_picker",
+        "models": [
+            {"provider": "yuren", "model": "gpt-main"},
+            {"provider": "mimo", "model": "mimo-v2.5-pro"},
+        ],
+        "selected_index": 0,
+    }
+
+
+def test_models_command_does_not_accept_a_model_argument() -> None:
+    result = ModelCommandHandler(FakeSwitcher()).handle("/models fake/new")
+
+    assert result.handled is False
+
+
 def test_model_command_switches_model() -> None:
     switcher = FakeSwitcher()
 
@@ -61,6 +88,16 @@ def test_model_command_reports_switch_errors() -> None:
     assert result.action is None
 
 
-@pytest.mark.parametrize("text", ["/models", "/mode", "hello"])
+def test_model_command_reports_unknown_catalog_model() -> None:
+    result = ModelCommandHandler(FakeSwitcher(error=ValueError("未配置模型：missing/model"))).handle(
+        "/model missing/model"
+    )
+
+    assert result.handled is True
+    assert result.output == "Model switch failed: 未配置模型：missing/model"
+    assert result.action is None
+
+
+@pytest.mark.parametrize("text", ["/mode", "hello"])
 def test_model_command_ignores_other_input(text: str) -> None:
     assert ModelCommandHandler(FakeSwitcher()).handle(text).handled is False
