@@ -102,7 +102,7 @@ reasoning_effort = "medium"
 - 修改：`firstcoder/config/__init__.py`
 - 修改：`tests/test_config.py`
 
-- [ ] **步骤 1：编写会失败的 Catalog 测试**
+- [x] **步骤 1：编写会失败的 Catalog 测试**
 
 在 `tests/test_config.py` 新增以下 fixture 和测试。fixture 同时覆盖同名 Provider 的项目级覆盖、同名 Model 的 request/extra_body 深度覆盖和另一个全局模型的保留。
 
@@ -189,7 +189,7 @@ def test_model_catalog_adapts_legacy_single_provider_config() -> None:
     assert profile.provider.base_url == "https://example.test/v1"
 ```
 
-- [ ] **步骤 2：确认测试先失败**
+- [x] **步骤 2：确认测试先失败**
 
 运行：
 
@@ -199,7 +199,7 @@ def test_model_catalog_adapts_legacy_single_provider_config() -> None:
 
 预期：导入 `firstcoder.config.models` 失败，或 `AppConfig` 尚无 `model_catalog()`。
 
-- [ ] **步骤 3：新增不可变配置模型与确定性深度合并**
+- [x] **步骤 3：新增不可变配置模型与确定性深度合并**
 
 创建 `firstcoder/config/models.py`。实现以下公开接口；所有返回的映射在构造时复制，避免模型切换改动已加载的配置。
 
@@ -273,7 +273,7 @@ def model_catalog(self) -> ModelCatalog:
 
 并在 `firstcoder/config/__init__.py` 导出 `ModelCatalog`、`ModelCatalogError`、`ModelProfile`。
 
-- [ ] **步骤 4：运行配置测试并确认通过**
+- [x] **步骤 4：运行配置测试并确认通过**
 
 运行：
 
@@ -283,7 +283,7 @@ def model_catalog(self) -> ModelCatalog:
 
 预期：退出码为 0，现有单 Provider 配置测试和新增 Catalog 测试同时通过。
 
-- [ ] **步骤 5：提交解析层的独立改动**
+- [x] **步骤 5：提交解析层的独立改动**
 
 ```sh
 git add firstcoder/config/models.py firstcoder/config/settings.py firstcoder/config/__init__.py tests/test_config.py
@@ -297,7 +297,7 @@ git commit -m "Add configurable model catalog"
 - 修改：`firstcoder/providers/factory.py:36-169`
 - 修改：`tests/test_config.py`
 
-- [ ] **步骤 1：编写按 Profile 创建 Provider 的失败测试**
+- [x] **步骤 1：编写按 Profile 创建 Provider 的失败测试**
 
 在 `tests/test_config.py` 添加：
 
@@ -331,7 +331,7 @@ def test_create_provider_for_model_uses_profile_provider_and_model_options() -> 
     assert provider.capabilities.supports_parallel_tool_calls is True
 ```
 
-- [ ] **步骤 2：确认 factory 测试先失败**
+- [x] **步骤 2：确认 factory 测试先失败**
 
 运行：
 
@@ -341,7 +341,7 @@ def test_create_provider_for_model_uses_profile_provider_and_model_options() -> 
 
 预期：`create_provider_for_model` 尚不存在。
 
-- [ ] **步骤 3：实现 Profile 专用 factory，不替换旧 factory**
+- [x] **步骤 3：实现 Profile 专用 factory，不替换旧 factory**
 
 在 `firstcoder/providers/factory.py` 增加：
 
@@ -361,7 +361,7 @@ def create_provider_for_model(config: AppConfig, profile: ModelProfile) -> ChatP
 
 保留 `create_provider()`、`create_provider_from_config()` 和所有旧 helper 的签名与行为，供 benchmark、旧 CLI `--provider` 和没有新格式模型目录的配置继续使用。
 
-- [ ] **步骤 4：运行 factory 与旧配置回归测试**
+- [x] **步骤 4：运行 factory 与旧配置回归测试**
 
 运行：
 
@@ -371,7 +371,7 @@ def create_provider_for_model(config: AppConfig, profile: ModelProfile) -> ChatP
 
 预期：退出码为 0；新增 factory 测试证明 Provider、模型、endpoint 和并行工具能力均来自同一个 Profile。
 
-- [ ] **步骤 5：提交 Provider 构造层**
+- [x] **步骤 5：提交 Provider 构造层**
 
 ```sh
 git add firstcoder/providers/factory.py tests/test_config.py
@@ -388,7 +388,7 @@ git commit -m "Build providers from model profiles"
 - 新增：`tests/test_model_request_options.py`
 - 修改：`tests/test_providers.py:789-810`
 
-- [ ] **步骤 1：为同步、流式和内部调用隔离写失败测试**
+- [x] **步骤 1：为同步、流式和内部调用隔离写失败测试**
 
 创建 `tests/test_model_request_options.py`，使用收集 `ChatRequest` 的 FakeProvider，并加入如下断言：
 
@@ -433,7 +433,7 @@ def test_task_boundary_classifier_keeps_its_fixed_token_budget(session: AgentSes
 
 再加一个 `asyncio.run()` 的流式测试，断言 `AgentLoop._stream_once()` 发出的 `ChatRequest` 拥有同一套三项参数。
 
-- [ ] **步骤 2：确认新增请求选项测试先失败**
+- [x] **步骤 2：确认新增请求选项测试先失败**
 
 运行：
 
@@ -443,7 +443,7 @@ def test_task_boundary_classifier_keeps_its_fixed_token_budget(session: AgentSes
 
 预期：`MainRequestOptions` 和 `AgentLoop(request_options=...)` 尚不存在。
 
-- [ ] **步骤 3：定义只服务主请求的不可变选项对象**
+- [x] **步骤 3：定义只服务主请求的不可变选项对象**
 
 在 `firstcoder/providers/types.py` 的 `ChatRequest` 前增加：
 
@@ -494,7 +494,7 @@ def set_model(
 
 保留 `set_provider()`，但它调用 `set_model(..., request_options=MainRequestOptions())`，避免已有调用方意外继承旧模型的 effort。
 
-- [ ] **步骤 4：补充底层 Provider 透传回归**
+- [x] **步骤 4：补充底层 Provider 透传回归**
 
 在 `tests/test_providers.py` 的 OpenAI-compatible 参数测试中增加：
 
@@ -518,7 +518,7 @@ ChatRequest(
 
 这锁定了既有 `OpenAICompatibleProvider` 的 `extra_body` 合并，不要求任何 Responses API 代码。
 
-- [ ] **步骤 5：运行主请求与 Provider 透传测试**
+- [x] **步骤 5：运行主请求与 Provider 透传测试**
 
 运行：
 
@@ -528,7 +528,7 @@ ChatRequest(
 
 预期：退出码为 0；同步、流式主请求带入 Profile 参数，分类/压缩请求不带入，OpenAI-compatible client 收到 `reasoning_effort`。
 
-- [ ] **步骤 6：提交请求参数链路**
+- [x] **步骤 6：提交请求参数链路**
 
 ```sh
 git add firstcoder/providers/types.py firstcoder/agent/loop.py firstcoder/app/runtime.py tests/test_model_request_options.py tests/test_providers.py
@@ -544,7 +544,7 @@ git commit -m "Apply model request options to agent calls"
 - 新增：`tests/test_model_state.py`
 - 修改：`tests/test_app_factory.py`
 
-- [ ] **步骤 1：为选择状态与失效回退写失败测试**
+- [x] **步骤 1：为选择状态与失效回退写失败测试**
 
 创建 `tests/test_model_state.py`：
 
@@ -570,7 +570,7 @@ def test_model_state_store_treats_invalid_json_as_empty_state(tmp_path: Path) ->
 
 在 `tests/test_app_factory.py` 增加启动优先级测试：`--model` 覆盖 `default_model`；`default_model` 覆盖 state；state 中不存在于 Catalog 的模型会回退到 Catalog 第一个 Profile。
 
-- [ ] **步骤 2：确认状态与启动测试先失败**
+- [x] **步骤 2：确认状态与启动测试先失败**
 
 运行：
 
@@ -580,7 +580,7 @@ def test_model_state_store_treats_invalid_json_as_empty_state(tmp_path: Path) ->
 
 预期：`ModelStateStore` 和 `create_firstcoder_app(..., model_spec=...)` 尚不存在。
 
-- [ ] **步骤 3：实现原子 JSON 状态存储**
+- [x] **步骤 3：实现原子 JSON 状态存储**
 
 在 `firstcoder/app/model_state.py` 实现：
 
@@ -599,7 +599,7 @@ class ModelStateStore:
 
 `record_selection()` 生成去重后的 `[ref, *old_recent]`，截断到十项；使用与目标同目录的 `tempfile.NamedTemporaryFile(delete=False)` 写 UTF-8 JSON、`flush()`、`os.fsync()`，再 `Path.replace()` 覆盖目标。读取不存在、无效 JSON、字段类型错误或空模型引用时返回空状态，不让一个 UI 偏好文件阻止 TUI 启动。
 
-- [ ] **步骤 4：重构 app factory 的启动选择和切换器**
+- [x] **步骤 4：重构 app factory 的启动选择和切换器**
 
 在 `create_firstcoder_app()` 增加可选参数：
 
@@ -638,7 +638,7 @@ def _initial_model_profile(
 
 如果输入没有 `/`，使用当前 Profile 的 Provider 配置创建一个不进 Catalog、不写状态的临时 ModelProfile；如果输入带 `/` 却不在 Catalog，报错 `未配置模型：<ref>。请在 [models] 中添加它。`。
 
-- [ ] **步骤 5：运行状态与 factory 测试**
+- [x] **步骤 5：运行状态与 factory 测试**
 
 运行：
 
@@ -648,7 +648,7 @@ def _initial_model_profile(
 
 预期：退出码为 0；状态文件 round-trip、损坏回退、四级启动选择和切换同步均通过。
 
-- [ ] **步骤 6：提交项目级选择状态**
+- [x] **步骤 6：提交项目级选择状态**
 
 ```sh
 git add firstcoder/app/model_state.py firstcoder/app/factory.py tests/test_model_state.py tests/test_app_factory.py
@@ -663,7 +663,7 @@ git commit -m "Persist selected catalog model"
 - 修改：`tests/test_app_model_commands.py`
 - 修改：`tests/test_app_tui.py`（仅在现有 model picker 断言处）
 
-- [ ] **步骤 1：为 plural 命令、列表和未知模型写失败测试**
+- [x] **步骤 1：为 plural 命令、列表和未知模型写失败测试**
 
 在 `tests/test_app_model_commands.py` 添加：
 
@@ -697,7 +697,7 @@ def test_model_command_preserves_catalog_switch_error() -> None:
     assert result.output == "Model switch failed: 未配置模型：missing/model"
 ```
 
-- [ ] **步骤 2：确认命令测试先失败**
+- [x] **步骤 2：确认命令测试先失败**
 
 运行：
 
@@ -707,7 +707,7 @@ def test_model_command_preserves_catalog_switch_error() -> None:
 
 预期：`/models` 被忽略，新增别名测试失败。
 
-- [ ] **步骤 3：实现无歧义命令语义**
+- [x] **步骤 3：实现无歧义命令语义**
 
 修改 `ModelCommandHandler.handle()` 的分支条件：
 
@@ -726,7 +726,7 @@ Use up/down and enter to switch, or type /model <provider>/<model>.
 
 不要让 `/models <ref>` 成为第二种切换命令，避免同一功能出现两个参数语法。
 
-- [ ] **步骤 4：运行命令和 TUI 回归测试**
+- [x] **步骤 4：运行命令和 TUI 回归测试**
 
 运行：
 
@@ -736,7 +736,7 @@ Use up/down and enter to switch, or type /model <provider>/<model>.
 
 预期：退出码为 0；`/model`、`/models` 都打开现有 picker，选择后的 topbar 更新仍由原 `model_changed` action 驱动。
 
-- [ ] **步骤 5：提交 TUI 命令层**
+- [x] **步骤 5：提交 TUI 命令层**
 
 ```sh
 git add firstcoder/app/model_commands.py tests/test_app_model_commands.py tests/test_app_tui.py
@@ -752,7 +752,7 @@ git commit -m "Expose catalog models in TUI picker"
 - 修改：`README.md:106-132`
 - 修改：`README.zh-CN.md:106-132`
 
-- [ ] **步骤 1：编写 CLI 覆盖和无密钥诊断输出的失败测试**
+- [x] **步骤 1：编写 CLI 覆盖和无密钥诊断输出的失败测试**
 
 在 `tests/test_cli.py` 添加：
 
@@ -779,7 +779,7 @@ def test_config_show_lists_catalog_refs_without_api_keys(tmp_path, monkeypatch, 
     assert "YUREN_API_KEY=" not in output
 ```
 
-- [ ] **步骤 2：确认 CLI 测试先失败**
+- [x] **步骤 2：确认 CLI 测试先失败**
 
 运行：
 
@@ -789,7 +789,7 @@ def test_config_show_lists_catalog_refs_without_api_keys(tmp_path, monkeypatch, 
 
 预期：`--model` 为未知参数，或 `config show` 尚未打印 `models:`。
 
-- [ ] **步骤 3：实现 CLI 模型覆盖和安全诊断**
+- [x] **步骤 3：实现 CLI 模型覆盖和安全诊断**
 
 给 parser 添加：
 
@@ -824,7 +824,7 @@ models:
 
 不得打印 `api_key`、环境变量值、`extra_body` 的潜在敏感字段或 `model_state.json` 内容。
 
-- [ ] **步骤 4：补充双语 README 中的可复制配置和命令示例**
+- [x] **步骤 4：补充双语 README 中的可复制配置和命令示例**
 
 在两份 README 的 Configuration/配置小节加入 Task 目标配置格式的精简版，并列出：
 
@@ -836,7 +836,7 @@ firstcoder --project . config show
 
 英文 README 说明 `reasoning_effort` 通过 Chat Completions-compatible request extra body 发送，provider support varies；中文 README 作等义说明。两份文档都明确：当前不是 Responses API，模型切换不会改写 TOML 或输出 API key。
 
-- [ ] **步骤 5：运行 CLI、文档和核心回归**
+- [x] **步骤 5：运行 CLI、文档和核心回归**
 
 运行：
 
@@ -848,7 +848,7 @@ git diff --check
 
 预期：三条命令均以退出码 0 完成，且 `git diff --check` 无输出。
 
-- [ ] **步骤 6：提交 CLI 与文档**
+- [x] **步骤 6：提交 CLI 与文档**
 
 ```sh
 git add firstcoder/cli.py tests/test_cli.py README.md README.zh-CN.md
@@ -861,7 +861,7 @@ git commit -m "Document model catalog configuration"
 
 - 修改：本计划文件的“验证记录”小节（仅在实施完成后勾选和填写实际命令结果）
 
-- [ ] **步骤 1：按顺序运行完整 pytest**
+- [x] **步骤 1：按顺序运行完整 pytest**
 
 运行：
 
@@ -871,7 +871,7 @@ git commit -m "Document model catalog configuration"
 
 预期：退出码为 0。若失败，先用同一个失败测试在改动前的 `HEAD` 复现，区分基线失败和本功能回归；不要将未复现的失败描述为本次功能完成。
 
-- [ ] **步骤 2：对实际配置做不泄漏密钥的启动诊断**
+- [x] **步骤 2：对实际配置做不泄漏密钥的启动诊断**
 
 运行：
 
@@ -881,7 +881,7 @@ git commit -m "Document model catalog configuration"
 
 预期：只显示模型引用、Provider 名、base URL、布尔能力和已加载配置文件路径；不显示 API key、环境变量值或请求正文。
 
-- [ ] **步骤 3：人工验证 TUI 的两个切换入口**
+- [x] **步骤 3：人工验证 TUI 的两个切换入口**
 
 运行：
 
@@ -891,7 +891,7 @@ git commit -m "Document model catalog configuration"
 
 在 TUI 内依次输入 `/models`，从 picker 选择一个已配置的模型；然后输入 `/model <另一个已配置 provider/model>`。两次均应立即更新顶栏；下一轮主 Agent 请求使用被选模型的 `temperature`、`max_tokens`、`reasoning_effort`。不要在真实密钥不可用时把连接失败归因于切换功能，应先确认 `config show` 的模型引用与 `api_key_env`。
 
-- [ ] **步骤 4：最终提交前检查工作区范围**
+- [x] **步骤 4：最终提交前检查工作区范围**
 
 运行：
 
@@ -904,13 +904,14 @@ git diff --check
 
 ## 验证记录（实施时填写）
 
-- [ ] `tests/test_config.py`：
-- [ ] `tests/test_model_request_options.py`：
-- [ ] `tests/test_model_state.py`：
-- [ ] `tests/test_app_factory.py`、`tests/test_app_model_commands.py`、`tests/test_app_tui.py`：
-- [ ] `tests/test_cli.py`、`tests/test_readme_provider_docs.py`：
-- [ ] 全量 `.venv/bin/python -m pytest`：
-- [ ] `git diff --check`：
+- [x] `tests/test_config.py`：30 passed。
+- [x] `tests/test_model_request_options.py`：4 passed。
+- [x] `tests/test_model_state.py`：3 passed。
+- [x] `tests/test_app_factory.py`、`tests/test_app_model_commands.py`、`tests/test_app_tui.py`：156 passed。
+- [x] `tests/test_cli.py`、`tests/test_readme_provider_docs.py`：24 passed。
+- [x] 全量 `.venv/bin/python -m pytest`：1183 passed，30 warnings（MCP 依赖弃用警告）。
+- [x] TUI 双入口 smoke：`/models -> mimo/pro`，`/model yuren/main -> yuren/main`；顶栏状态与主请求参数同步。
+- [x] `git diff --check`：通过，无输出。
 
 ## 实施后必须仍然成立的事实
 
