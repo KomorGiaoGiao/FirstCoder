@@ -37,17 +37,20 @@ class SessionEventWriter:
         self.session_id = session_id
         self.current_turn = current_turn
 
-    def append_session_created(self, **metadata: Any) -> None:
-        payload = {"session_id": self.session_id}
-        payload.update(metadata_without_reserved_keys(metadata))
+    def append_event(self, event_type: str, payload: dict[str, Any]) -> None:
         self.store.append_event(
             SessionEvent(
                 id=new_event_id(),
                 session_id=self.session_id,
-                type="session_created",
+                type=event_type,
                 payload=payload,
             )
         )
+
+    def append_session_created(self, **metadata: Any) -> None:
+        payload = {"session_id": self.session_id}
+        payload.update(metadata_without_reserved_keys(metadata))
+        self.append_event("session_created", payload)
 
     def append_session_metadata_updated(self, **metadata: Any) -> None:
         """追加用户可见 session metadata patch。
@@ -56,27 +59,16 @@ class SessionEventWriter:
         provider context。
         """
 
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="session_metadata_updated",
-                payload=metadata_without_reserved_keys(metadata),
-            )
-        )
+        self.append_event("session_metadata_updated", metadata_without_reserved_keys(metadata))
 
     def append_message_part_metadata_updated(self, *, message_id: str, part_id: str, metadata: dict[str, Any]) -> None:
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="message_part_metadata_updated",
-                payload={
-                    "message_id": message_id,
-                    "part_id": part_id,
-                    "metadata": dict(metadata),
-                },
-            )
+        self.append_event(
+            "message_part_metadata_updated",
+            {
+                "message_id": message_id,
+                "part_id": part_id,
+                "metadata": dict(metadata),
+            },
         )
 
     def append_user_message(
@@ -145,7 +137,7 @@ class SessionEventWriter:
                 )
             )
         for tool_call in response.tool_calls:
-            parts.append(_tool_call_part(message_id=message_id, tool_call=tool_call))
+            parts.append(tool_call_to_part(message_id=message_id, tool_call=tool_call))
         self._attach_turn_metadata(parts)
         self._append_message_event(
             "assistant_message",
@@ -213,25 +205,21 @@ class SessionEventWriter:
         event: CompactionEvent,
     ) -> None:
         event_payload = asdict(event)
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="compaction_completed",
-                payload={
-                    "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
-                    "trigger": trigger,
-                    "target_tokens": target_tokens,
-                    "created_at": event.created_at,
-                    "input_fingerprint": event.input_fingerprint,
-                    "status": "success" if event.success else "failed",
-                    "reason": event.reason,
-                    "before_tokens": event.before_tokens,
-                    "after_tokens": event.after_tokens,
-                    "checkpoint_id": event.checkpoint_id,
-                    "event": event_payload,
-                },
-            )
+        self.append_event(
+            "compaction_completed",
+            {
+                "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
+                "trigger": trigger,
+                "target_tokens": target_tokens,
+                "created_at": event.created_at,
+                "input_fingerprint": event.input_fingerprint,
+                "status": "success" if event.success else "failed",
+                "reason": event.reason,
+                "before_tokens": event.before_tokens,
+                "after_tokens": event.after_tokens,
+                "checkpoint_id": event.checkpoint_id,
+                "event": event_payload,
+            },
         )
 
     def append_llm_compaction_completed(
@@ -243,41 +231,33 @@ class SessionEventWriter:
     ) -> None:
         event_payload = asdict(event)
         created_at = utc_now_iso()
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="llm_compaction_completed",
-                payload={
-                    "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
-                    "trigger": trigger,
-                    "target_tokens": target_tokens,
-                    "created_at": created_at,
-                    "input_fingerprint": event.source_fingerprint,
-                    "status": event.status,
-                    "reason": event.failure_reason or event.status,
-                    "before_tokens": None,
-                    "after_tokens": None,
-                    "checkpoint_id": event.checkpoint_id,
-                    "event": event_payload,
-                },
-            )
+        self.append_event(
+            "llm_compaction_completed",
+            {
+                "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
+                "trigger": trigger,
+                "target_tokens": target_tokens,
+                "created_at": created_at,
+                "input_fingerprint": event.source_fingerprint,
+                "status": event.status,
+                "reason": event.failure_reason or event.status,
+                "before_tokens": None,
+                "after_tokens": None,
+                "checkpoint_id": event.checkpoint_id,
+                "event": event_payload,
+            },
         )
 
     def append_compaction_skipped(self, *, trigger: str, input_fingerprint: str, reason: str) -> None:
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="compaction_skipped",
-                payload={
-                    "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
-                    "trigger": trigger,
-                    "input_fingerprint": input_fingerprint,
-                    "reason": reason,
-                    "created_at": utc_now_iso(),
-                },
-            )
+        self.append_event(
+            "compaction_skipped",
+            {
+                "event_version": CONTEXT_EVENT_SCHEMA_VERSION,
+                "trigger": trigger,
+                "input_fingerprint": input_fingerprint,
+                "reason": reason,
+                "created_at": utc_now_iso(),
+            },
         )
 
     def append_task_boundary_observation(self, observation: TaskBoundaryObservation) -> None:
@@ -290,14 +270,7 @@ class SessionEventWriter:
         payload: dict[str, Any] = {"todos": [dict(item) for item in todos]}
         if task_hash is not None:
             payload["task_hash"] = task_hash
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type="todo_updated",
-                payload=payload,
-            )
-        )
+        self.append_event("todo_updated", payload)
 
     def _append_message_event(
         self,
@@ -307,17 +280,13 @@ class SessionEventWriter:
         parts: list[MessagePart],
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        self.store.append_event(
-            SessionEvent(
-                id=new_event_id(),
-                session_id=self.session_id,
-                type=event_type,
-                payload={
-                    "message_id": message_id,
-                    "parts": [part.to_dict() for part in parts],
-                    "metadata": metadata or {},
-                },
-            )
+        self.append_event(
+            event_type,
+            {
+                "message_id": message_id,
+                "parts": [part.to_dict() for part in parts],
+                "metadata": metadata or {},
+            },
         )
 
     def _part_metadata(self, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -331,7 +300,7 @@ class SessionEventWriter:
             part.metadata = self._part_metadata(part.metadata)
 
 
-def _tool_call_part(*, message_id: str, tool_call: ToolCall) -> MessagePart:
+def tool_call_to_part(*, message_id: str, tool_call: ToolCall) -> MessagePart:
     return MessagePart(
         id=new_part_id(),
         message_id=message_id,

@@ -383,6 +383,7 @@ def test_agent_chat_runner_exposes_pending_user_input(tmp_path) -> None:
         "Tool result: ask_user success: 继续吗？ 1. 继续 2. 取消",
         "继续吗？",
     ]
+    assert runner._active_cancellation_token is None
 
 
 def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
@@ -426,6 +427,49 @@ def test_agent_chat_runner_can_resume_permission_confirmation(tmp_path) -> None:
         "Tool result: write success: 已写入文件：README.md",
         "写好了",
     ]
+    assert runner._active_cancellation_token is None
+
+
+def test_agent_chat_runner_reuses_pending_loop_budget_on_permission_resume(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_permission_budget_runner",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(session),
+        provider=provider,
+        limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=1, max_turn_seconds=None),
+    )
+
+    waiting = runner.run_user_turn("写 README")
+    assert waiting.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    original_loop = runner.loops[-1]
+    response = runner.resume_with_user_input(runner.last_pending_input.id, "deny")
+
+    assert response.finish_reason == "tool_round_limit"
+    assert runner.loops[-1] is original_loop
+    assert len(runner.loops) == 1
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.anyio
@@ -448,6 +492,7 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     ]
     assert runner.last_display_lines == ["streamed"]
     assert len(provider.requests) == 1
+    assert runner._active_cancellation_token is None
 
 
 @pytest.mark.anyio
@@ -606,6 +651,51 @@ async def test_agent_chat_runner_streaming_resume_permission_uses_streaming(tmp_
         "text_delta",
         "message_completed",
     ]
+    assert runner._active_cancellation_token is None
+
+
+@pytest.mark.anyio
+async def test_agent_chat_runner_streaming_reuses_pending_loop_budget_on_resume(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_stream_permission_budget",
+        project_root=tmp_path,
+        tools=[create_write_tool(tmp_path)],
+    )
+    provider = FakeStreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_write",
+                        name="write",
+                        arguments={"path": "README.md", "content": "hello"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+        ]
+    )
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(session),
+        provider=provider,
+        use_streaming=True,
+        limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=1, max_turn_seconds=None),
+    )
+
+    waiting = await runner.arun_user_turn("写 README")
+    assert waiting.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
+    original_loop = runner.loops[-1]
+    response = await runner.aresume_with_user_input(runner.last_pending_input.id, "deny")
+
+    assert response.finish_reason == "tool_round_limit"
+    assert runner.loops[-1] is original_loop
+    assert len(runner.loops) == 1
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.anyio

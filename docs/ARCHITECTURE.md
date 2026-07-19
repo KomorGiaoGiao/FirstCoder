@@ -152,7 +152,7 @@ providers / config
 
 4. **Hidden control-plane tools are listed once.**
    - `firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES`
-   - Currently includes `task_boundary` (useful to the agent, noisy for humans).
+   - The session registry retains internal `task_boundary` for the hidden classifier, but the main model request filters it out.
 
 ### Soft edges (known, keep narrow)
 
@@ -208,7 +208,9 @@ agent.loop.AgentLoop
        on direct file mutation: build trusted prewrite diff; standard asks for
          permission, allowed/aggressive paths ask for review-only Apply
        on allow: execute; append tool result fact
-  7. settle / verify / stop according to AgentLoopLimits and content
+  7. settle according to AgentLoopLimits; verification results return to the model as evidence
+  8. if the model stops with unfinished active-task Todos, send one ephemeral
+     system instruction to reconcile them; it is neither a user message nor a durable fact
   │
   ▼
 runtime events → AgentChatRunner → TUI transcript / activity / permission UI
@@ -227,6 +229,11 @@ runtime events → AgentChatRunner → TUI transcript / activity / permission UI
 
 Resume rebuilds what it can by replaying JSONL. Anything that must not be lost
 across restarts must be a fact or an explicit grant—not only a Python object.
+
+Successful Todo tool results also emit runtime tool events so the TUI refreshes
+immediately. Replay later projects the same complete `todo_updated` snapshot;
+the UI labels it as model-reported state and does not infer completion from
+commands, file mutations, or passing tests.
 
 ### Key objects that cross boundaries
 
@@ -309,9 +316,8 @@ Related modules (splits of loop concerns):
 | `agent/tool_execution.py` | Executing and recording tool calls |
 | `agent/tool_flow.py` | Flow control around tool batches |
 | `agent/tool_settlement.py` | Settling tool outcomes into the turn |
-| `agent/todo_policy.py` | Todo-related loop policy |
 | `agent/task_boundary_classifier.py` | Task-boundary classification |
-| `agent/verification.py` | Verification / successful-stop helpers |
+| `agent/todo_policy.py` | Active-task Todo lookup and one-time final reconciliation instruction |
 | `agent/loop_limits.py` | Budgets and stop-reason enums |
 
 ### Compact trigger helpers

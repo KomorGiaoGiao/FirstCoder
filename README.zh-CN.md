@@ -121,6 +121,32 @@ export FIRSTCODER_API_KEY="your-api-key"
 
 Provider 主线同时覆盖 OpenAI Chat Completions 兼容路径与原生 Anthropic Messages API；二者在 complete/streaming、tools、forced `tool_choice`、usage 与错误归类上对齐同一内部契约。TUI 可以暂存粘贴进来的文件路径和剪贴板图片；图片及小型文本文件会经过 session/context 管道交给支持视觉的 provider。实际能否看图仍取决于模型与 provider 的视觉能力；OpenAI Responses API 目前尚未接入。
 
+### 多模型与请求参数
+
+可以在同一个全局或项目 TOML 中保存多个 provider/model 配置。项目配置会覆盖全局配置，因此只需要写项目差异：
+
+```toml
+default_model = "yuren/gpt-5.6-terra"
+
+[providers.yuren]
+type = "openai-compatible"
+base_url = "https://yurenapi.cn/v1"
+api_key_env = "YURENAPI_API_KEY"
+
+[models."yuren/gpt-5.6-terra"]
+label = "Yuren Terra"
+
+[models."yuren/gpt-5.6-terra".request]
+temperature = 0.2
+max_tokens = 8192
+reasoning_effort = "high"
+extra_body = { reasoning_summary = "auto" }
+```
+
+命令行可以用 `firstcoder --model provider/model` 指定本次运行的初始模型。TUI 中 `/models` 会打开已配置模型的选择器，`/model provider/model` 可以立即切换。`firstcoder config show` 只显示模型引用和标签，不会显示 API key、环境变量值、请求体或模型状态文件内容。
+
+`temperature`、`max_tokens` 和 `extra_body` 会随主模型请求发送。`reasoning_effort` 作为请求扩展参数透传；是否支持取决于所选 provider，不支持的 provider 可能忽略或拒绝它。内部分类器和上下文压缩仍使用各自固定的 token 上限。
+
 默认配置路径：
 
 ```text

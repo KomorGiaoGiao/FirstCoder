@@ -35,7 +35,7 @@ from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, MainRequestOptions, ToolCall
 from firstcoder.skills.loader import SkillLoadError, SkillLoader
 from firstcoder.skills.router import SkillRouter
 from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
@@ -44,6 +44,7 @@ from firstcoder.tools.permission_results import (
     make_prewrite_review_failed_result,
     make_prewrite_review_stale_result,
 )
+from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.tools.types import Tool, ToolResult
 
 
@@ -80,11 +81,13 @@ class AgentLoop:
         tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None,
         guidance_provider: Callable[[], list[str]] | None = None,
         cancellation_token: CancellationToken | None = None,
+        request_options: MainRequestOptions | None = None,
     ) -> None:
         self.session = session
         self.tool_settlement = ToolCallSettlement(session)
         self.todo_policy = TodoPolicy(session)
         self.provider = provider
+        self.request_options = request_options or MainRequestOptions()
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
         resolved_limits = limits or AgentLoopLimits.default()
@@ -101,12 +104,15 @@ class AgentLoop:
         self.guidance_provider = guidance_provider
         self.cancellation_token = cancellation_token
         self._skills_prepared_for_turn: int | None = None
+        self._todo_reconciliation_attempted = False
+        self._tool_rounds_completed = 0
         self.task_boundary_classifier = TaskBoundaryClassifier(
             session=session,
             provider=provider,
             context_builder=self.context_builder,
             compact_if_needed=self._compact_if_needed,
             check_cancelled=self._check_cancelled,
+            reserve_provider_call=self._reserve_provider_call,
             check_turn_timeout=self._check_turn_timeout,
             tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
         )
@@ -152,6 +158,15 @@ class AgentLoop:
             raw={"pending_input": pending},
         )
 
+    def replace_cancellation_token(self, token: CancellationToken | None) -> None:
+        """Rebind cooperative cancellation when a paused turn resumes in the runner."""
+
+        self.cancellation_token = token
+        self.tool_executor.cancellation_token = token
+
+    def clear_stream_events(self) -> None:
+        self.last_stream_events = []
+
     def run_user_turn_interactive(
         self,
         content: str,
@@ -177,11 +192,16 @@ class AgentLoop:
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         message_id = self.session.append_user_message(content, attachments=attachments)
-        if self._initialize_active_task_if_missing(message_id) is None:
-            self._classify_task_boundary(message_id)
-        # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
-        # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
-        self._auto_compact()
+        try:
+            if self._initialize_active_task_if_missing(message_id) is None:
+                self._classify_task_boundary(message_id)
+            # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
+            # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
+            self._auto_compact()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason))
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response())
 
         return self._run_tool_loop_interactive(
             self._complete_once_with_recovery,
@@ -195,10 +215,17 @@ class AgentLoop:
         用本地 pending 状态补齐最终 tool_result，再继续下一次 provider 调用。
         """
 
+        try:
+            self._check_turn_timeout()
+            self._check_cancelled()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason))
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response())
         result = self._append_permission_resume_result(request_id, answer)
         if result is not None:
             return result
-        self._begin_turn()
+        self._begin_turn(new_user_turn=False)
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
@@ -206,10 +233,17 @@ class AgentLoop:
     async def resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
         """流式模式下恢复权限确认，并继续消费 provider stream。"""
 
+        try:
+            self._check_turn_timeout()
+            self._check_cancelled()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason))
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response())
         result = await self._append_permission_resume_result_async(request_id, answer)
         if result is not None:
             return result
-        self._begin_turn()
+        self._begin_turn(new_user_turn=False)
         self._check_cancelled()
         return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
 
@@ -241,9 +275,14 @@ class AgentLoop:
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         message_id = self.session.append_user_message(content, attachments=attachments)
-        if self._initialize_active_task_if_missing(message_id) is None:
-            await self._classify_task_boundary_async(message_id)
-        self._auto_compact()
+        try:
+            if self._initialize_active_task_if_missing(message_id) is None:
+                await self._classify_task_boundary_async(message_id)
+            self._auto_compact()
+        except _AgentLoopLimitReached as exc:
+            return self._complete_turn(self._limit_response(exc.reason)).response
+        except AgentCancelledError:
+            return self._complete_turn(self._interrupted_response()).response
 
         result = await self._run_tool_loop_interactive_async(
             self._stream_once_with_recovery,
@@ -403,6 +442,7 @@ class AgentLoop:
         self.session.pending_permission_execution = None
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
+        self._tool_rounds_completed += 1
         self._auto_compact()
 
     def _resolve_pending_confirmation(
@@ -455,7 +495,12 @@ class AgentLoop:
             request=pending.permission_request,
         )
 
-    def _complete_once(self, *, tool_choice="auto") -> ChatResponse:
+    def _complete_once(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
         """构造一次 provider 请求并获得模型响应。
 
         这一步只负责“问模型一次”，不处理工具循环。拆开后，同步调用、streaming 调用、
@@ -467,19 +512,26 @@ class AgentLoop:
         self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
-        system_prefix = self.session.build_system_prefix(
-            provider_name=self.provider.name,
-            provider_model=self.provider.model,
-            provider_capabilities=getattr(self.provider, "capabilities", None),
-        )
-        messages = self._build_provider_messages(self.session.rebuild_view(), system_prefix=system_prefix)
-        self._check_provider_call_limit()
+        messages = self._request_messages(runtime_instruction=runtime_instruction)
+        self._reserve_provider_call()
         self._check_turn_timeout()
         self._check_cancelled()
-        self.provider_call_count += 1
-        return self.provider.complete(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice))
+        return self.provider.complete(self._main_chat_request(messages, definitions, tool_choice))
 
-    def _complete_once_with_recovery(self, *, tool_choice="auto") -> ChatResponse:
+    def _main_chat_request(self, messages, definitions, tool_choice) -> ChatRequest:
+        return ChatRequest(
+            messages=messages,
+            tools=definitions,
+            tool_choice=tool_choice,
+            **self.request_options.as_chat_request_kwargs(),
+        )
+
+    def _complete_once_with_recovery(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
         """同步模式下一次 provider 调用，并处理 prompt-too-long 的单次恢复。
 
         provider 如果拒绝请求，说明 assistant 回复还没有产生，也就没有新消息要落库。
@@ -487,14 +539,20 @@ class AgentLoop:
         """
 
         try:
-            return self._complete_once(tool_choice=tool_choice)
+            return self._complete_once(
+                tool_choice=tool_choice,
+                runtime_instruction=runtime_instruction,
+            )
         except ProviderError as exc:
             if not exc.requires_compaction:
                 raise
             result = self._compact_for_prompt_too_long()
             if result is None or result.status != "success":
                 raise
-            return self._complete_once(tool_choice=tool_choice)
+            return self._complete_once(
+                tool_choice=tool_choice,
+                runtime_instruction=runtime_instruction,
+            )
 
     def _prepare_skills_for_current_turn(self) -> None:
         current_turn = self.session.current_turn
@@ -546,7 +604,12 @@ class AgentLoop:
             return "\n".join(part.content for part in message.parts if part.kind == "text")
         return ""
 
-    async def _stream_once(self, *, tool_choice="auto") -> ChatResponse:
+    async def _stream_once(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
         """消费一次 provider stream，最终仍返回完整 ChatResponse。
 
         UI 可以读取 `last_stream_events` 展示 text_delta；但工具调用必须等 stream 完成后
@@ -558,18 +621,12 @@ class AgentLoop:
         self._append_pending_guidance()
         self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
-        system_prefix = self.session.build_system_prefix(
-            provider_name=self.provider.name,
-            provider_model=self.provider.model,
-            provider_capabilities=getattr(self.provider, "capabilities", None),
-        )
-        messages = self._build_provider_messages(self.session.rebuild_view(), system_prefix=system_prefix)
+        messages = self._request_messages(runtime_instruction=runtime_instruction)
         final_response: ChatResponse | None = None
-        self._check_provider_call_limit()
+        self._reserve_provider_call()
         self._check_turn_timeout()
         self._check_cancelled()
-        self.provider_call_count += 1
-        async for event in self.provider.astream(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice)):
+        async for event in self.provider.astream(self._main_chat_request(messages, definitions, tool_choice)):
             self._check_cancelled()
             self.last_stream_events.append(event)
             if self.stream_event_handler is not None:
@@ -583,28 +640,50 @@ class AgentLoop:
             )
         return final_response
 
-    async def _stream_once_with_recovery(self, *, tool_choice="auto") -> ChatResponse:
+    async def _stream_once_with_recovery(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
         retryable_failures = 0
         while True:
             try:
-                return await self._stream_once_attempt(tool_choice=tool_choice)
+                return await self._stream_once_attempt(
+                    tool_choice=tool_choice,
+                    runtime_instruction=runtime_instruction,
+                )
             except ProviderError as exc:
                 if exc.retryable:
                     if retryable_failures == 0:
                         retryable_failures += 1
                         continue
-                    return self._complete_once(tool_choice=tool_choice)
+                    return self._complete_once(
+                        tool_choice=tool_choice,
+                        runtime_instruction=runtime_instruction,
+                    )
                 if not exc.requires_compaction:
                     raise
                 result = self._compact_for_prompt_too_long()
                 if result is None or result.status != "success":
                     raise
-                return await self._stream_once_attempt(tool_choice=tool_choice)
+                return await self._stream_once_attempt(
+                    tool_choice=tool_choice,
+                    runtime_instruction=runtime_instruction,
+                )
 
-    async def _stream_once_attempt(self, *, tool_choice="auto") -> ChatResponse:
+    async def _stream_once_attempt(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> ChatResponse:
         start_event_count = len(self.last_stream_events)
         try:
-            return await self._stream_once(tool_choice=tool_choice)
+            return await self._stream_once(
+                tool_choice=tool_choice,
+                runtime_instruction=runtime_instruction,
+            )
         except ProviderError:
             # streaming 尝试失败时，不能把已经收到的局部 delta 当成真实回答留给 UI。
             # 真正成功的重试会重新产生完整事件。
@@ -620,17 +699,30 @@ class AgentLoop:
         - 某个工具需要用户输入或权限确认：暂停并把 pending_input 交给 UI。
         """
 
+        guardrail_stop = False
         try:
+            if self.max_tool_rounds is not None and self._tool_rounds_completed >= self.max_tool_rounds:
+                return self._complete_turn(self._limit_response(AgentLoopStopReason.TOOL_ROUND_LIMIT))
             response = self._drop_unsupported_tool_calls(complete_once(tool_choice=initial_tool_choice))
-            tool_rounds = 0
-            response, pending_input = self._continue_tool_loop_from_response(response, complete_once, tool_rounds)
+            tool_rounds = self._tool_rounds_completed
+            response, pending_input, tool_rounds = self._continue_tool_loop_from_response(
+                response,
+                complete_once,
+                tool_rounds,
+            )
             if pending_input is not None:
-                return AgentTurnResult(
-                    status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                    pending_input=pending_input,
+                return self._pending_turn_result(pending_input)
+            if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
+                response, pending_input, _ = self._run_todo_self_check_if_needed(
+                    response,
+                    complete_once,
+                    tool_rounds,
                 )
+                if pending_input is not None:
+                    return self._pending_turn_result(pending_input)
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
+            guardrail_stop = True
         except AgentCancelledError:
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
@@ -638,36 +730,41 @@ class AgentLoop:
         if self._is_cancelled():
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
-            self.session.append_assistant_response(response)
-            self._auto_compact()
-            return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
-        response, pending_input = self._run_todo_self_check_if_needed(response, complete_once)
-        if pending_input is not None:
-            return AgentTurnResult(
-                status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                pending_input=pending_input,
-            )
+            return self._complete_turn(response)
+        if guardrail_stop:
+            return self._complete_turn(response)
 
         # 没有工具调用时，这条 response 就是最终 assistant 回复。命中轮次上限时也会写入
         # 一条纯文本说明，避免保存未执行的 tool_call。
-        self.session.append_assistant_response(response)
-        self._auto_compact()
-        return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
+        return self._complete_turn(response)
 
     async def _run_tool_loop_interactive_async(self, complete_once, *, initial_tool_choice="auto") -> AgentTurnResult:
         """streaming 版本的工具循环，语义与同步版本一致。"""
 
+        guardrail_stop = False
         try:
+            if self.max_tool_rounds is not None and self._tool_rounds_completed >= self.max_tool_rounds:
+                return self._complete_turn(self._limit_response(AgentLoopStopReason.TOOL_ROUND_LIMIT))
             response = self._drop_unsupported_tool_calls(await complete_once(tool_choice=initial_tool_choice))
-            tool_rounds = 0
-            response, pending_input = await self._continue_tool_loop_from_response_async(response, complete_once, tool_rounds)
+            tool_rounds = self._tool_rounds_completed
+            response, pending_input, tool_rounds = await self._continue_tool_loop_from_response_async(
+                response,
+                complete_once,
+                tool_rounds,
+            )
             if pending_input is not None:
-                return AgentTurnResult(
-                    status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                    pending_input=pending_input,
+                return self._pending_turn_result(pending_input)
+            if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
+                response, pending_input, _ = await self._run_todo_self_check_if_needed_async(
+                    response,
+                    complete_once,
+                    tool_rounds,
                 )
+                if pending_input is not None:
+                    return self._pending_turn_result(pending_input)
         except _AgentLoopLimitReached as exc:
             response = self._limit_response(exc.reason)
+            guardrail_stop = True
         except AgentCancelledError:
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
@@ -675,16 +772,17 @@ class AgentLoop:
         if self._is_cancelled():
             self._append_interrupted_tool_results()
             response = self._interrupted_response()
-            self.session.append_assistant_response(response)
-            self._auto_compact()
-            return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
-        response, pending_input = await self._run_todo_self_check_if_needed_async(response, complete_once)
-        if pending_input is not None:
-            return AgentTurnResult(
-                status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
-                pending_input=pending_input,
-            )
+            return self._complete_turn(response)
+        if guardrail_stop:
+            return self._complete_turn(response)
 
+        return self._complete_turn(response)
+
+    @staticmethod
+    def _pending_turn_result(pending_input: UserInputRequest) -> AgentTurnResult:
+        return AgentTurnResult(status=AgentTurnStatus.WAITING_FOR_USER_INPUT, pending_input=pending_input)
+
+    def _complete_turn(self, response: ChatResponse) -> AgentTurnResult:
         self.session.append_assistant_response(response)
         self._auto_compact()
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
@@ -694,92 +792,93 @@ class AgentLoop:
         response: ChatResponse,
         complete_once,
         tool_rounds: int,
-    ) -> tuple[ChatResponse, UserInputRequest | None]:
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
         while response.tool_calls:
             self._check_cancelled()
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None
+                return self._tool_round_limit_response(response), None, tool_rounds
 
             # 关键顺序：必须先写 assistant tool_call，再写对应 tool_result。provider 后续
             # 才能看到合法的 “assistant(tool_calls) -> tool(result)” 消息序列。
             self.session.append_assistant_response(response)
             execution = self.tool_executor.execute_interactive(response.tool_calls)
             if execution.pending_input is not None:
-                return response, execution.pending_input
+                return response, execution.pending_input, tool_rounds
             self._auto_compact()
             if execution.task_hash_changed:
                 self._compact_after_task_hash_changed()
 
-            if self.limits.successful_verification_stop and execution.successful_verification:
-                return self._drop_unsupported_tool_calls(complete_once(tool_choice="none")), None
-
             tool_rounds += 1
+            self._tool_rounds_completed = tool_rounds
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None
-            # 工具结果已经写进 session log；下一次 complete_once() 会通过 ContextBuilder
-            # 重新投影完整历史，让模型读取刚才的工具输出。
-            reminder = self.todo_policy.next_reminder()
-            if reminder:
-                self.session.append_user_message(reminder)
+                return self._tool_round_limit_response(response), None, tool_rounds
             self._check_cancelled()
             response = self._drop_unsupported_tool_calls(complete_once())
-        return response, None
+        return response, None, tool_rounds
 
     def _run_todo_self_check_if_needed(
         self,
         response: ChatResponse,
         complete_once,
-    ) -> tuple[ChatResponse, UserInputRequest | None]:
-        prompt = self.todo_policy.self_check_prompt()
-        if not prompt:
-            return response, None
-        self.session.append_user_message(prompt)
-        response = self._drop_unsupported_tool_calls(complete_once())
-        return self._continue_tool_loop_from_response(response, complete_once, 0)
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        instruction = self._todo_reconciliation_instruction()
+        if instruction is None:
+            return response, None, tool_rounds
+        response = self._drop_unsupported_tool_calls(
+            complete_once(runtime_instruction=instruction)
+        )
+        return self._continue_tool_loop_from_response(response, complete_once, tool_rounds)
 
     async def _run_todo_self_check_if_needed_async(
         self,
         response: ChatResponse,
         complete_once,
-    ) -> tuple[ChatResponse, UserInputRequest | None]:
-        prompt = self.todo_policy.self_check_prompt()
-        if not prompt:
-            return response, None
-        self.session.append_user_message(prompt)
-        response = self._drop_unsupported_tool_calls(await complete_once())
-        return await self._continue_tool_loop_from_response_async(response, complete_once, 0)
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        instruction = self._todo_reconciliation_instruction()
+        if instruction is None:
+            return response, None, tool_rounds
+        response = self._drop_unsupported_tool_calls(
+            await complete_once(runtime_instruction=instruction)
+        )
+        return await self._continue_tool_loop_from_response_async(response, complete_once, tool_rounds)
+
+    def _todo_reconciliation_instruction(self) -> str | None:
+        if self._todo_reconciliation_attempted:
+            return None
+        instruction = self.todo_policy.final_reconciliation_instruction()
+        if instruction is None:
+            return None
+        self._todo_reconciliation_attempted = True
+        return instruction
 
     async def _continue_tool_loop_from_response_async(
         self,
         response: ChatResponse,
         complete_once,
         tool_rounds: int,
-    ) -> tuple[ChatResponse, UserInputRequest | None]:
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
         while response.tool_calls:
             self._check_cancelled()
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None
+                return self._tool_round_limit_response(response), None, tool_rounds
 
             self.session.append_assistant_response(response)
             execution = await self.tool_executor.execute_interactive_async(response.tool_calls)
             if execution.pending_input is not None:
-                return response, execution.pending_input
+                return response, execution.pending_input, tool_rounds
             self._auto_compact()
             if execution.task_hash_changed:
                 self._compact_after_task_hash_changed()
 
-            if self.limits.successful_verification_stop and execution.successful_verification:
-                return self._drop_unsupported_tool_calls(await complete_once(tool_choice="none")), None
-
             tool_rounds += 1
+            self._tool_rounds_completed = tool_rounds
             if self.max_tool_rounds is not None and tool_rounds >= self.max_tool_rounds:
-                return self._tool_round_limit_response(response), None
-            reminder = self.todo_policy.next_reminder()
-            if reminder:
-                self.session.append_user_message(reminder)
+                return self._tool_round_limit_response(response), None, tool_rounds
             self._check_cancelled()
             response = self._drop_unsupported_tool_calls(await complete_once())
-        return response, None
+        return response, None, tool_rounds
 
     def _append_interrupted_tool_results(self) -> None:
         self._emit_settlements("interrupted", self.tool_settlement.append_interrupted_tail())
@@ -880,17 +979,40 @@ class AgentLoop:
             kwargs["store_root"] = self.session.store.root
         return build(view, **kwargs)
 
+    def _request_messages(self, *, runtime_instruction: str | None = None):
+        system_prefix = self.session.build_system_prefix(
+            provider_name=self.provider.name,
+            provider_model=self.provider.model,
+            provider_capabilities=getattr(self.provider, "capabilities", None),
+        )
+        if runtime_instruction:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(role="system", content=runtime_instruction),
+            ]
+        return self._build_provider_messages(
+            self.session.rebuild_view(),
+            system_prefix=system_prefix,
+        )
+
     def _provider_tool_definitions(self):
         """根据 provider 能力决定是否向模型暴露工具 schema。"""
 
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is not None and not capabilities.supports_tools:
             return []
-        return self.session.tool_registry.definitions()
+        return [
+            definition
+            for definition in self.session.tool_registry.definitions()
+            if definition.name not in HIDDEN_TOOL_STATUS_NAMES
+        ]
 
-    def _begin_turn(self) -> None:
-        self.provider_call_count = 0
-        self.turn_started_at = self.clock()
+    def _begin_turn(self, *, new_user_turn: bool = True) -> None:
+        if new_user_turn:
+            self.provider_call_count = 0
+            self.turn_started_at = self.clock()
+            self._todo_reconciliation_attempted = False
+            self._tool_rounds_completed = 0
 
     def _append_pending_guidance(self) -> None:
         if self.guidance_provider is None:
@@ -905,6 +1027,10 @@ class AgentLoop:
         limit = self.limits.max_provider_calls
         if limit is not None and self.provider_call_count >= limit:
             raise _AgentLoopLimitReached(AgentLoopStopReason.PROVIDER_CALL_LIMIT)
+
+    def _reserve_provider_call(self) -> None:
+        self._check_provider_call_limit()
+        self.provider_call_count += 1
 
     def _check_turn_timeout(self) -> None:
         limit = self.limits.max_turn_seconds

@@ -133,7 +133,7 @@ providers / config
 
 4. **对用户隐藏的控制面工具只维护一份名单。**
    - `firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES`
-   - 当前包含 `task_boundary`（对 agent 有用，对人太吵）。
+   - Session registry 保留内部 `task_boundary` 供隐藏分类器使用；主模型请求会过滤并拒绝它。
 
 ### 软边（已知，保持窄）
 
@@ -187,7 +187,8 @@ agent.loop.AgentLoop
        ASK：以 UserInputRequest(kind=permission_confirmation) 暂停
        直接改文件：先生成可信 prewrite diff；standard 走权限确认，已允许/aggressive 走仅 review 的 Apply
        allow：执行；追加 tool result 事实
-  7. 按 AgentLoopLimits 与内容 settle / verify / stop
+  7. 按 AgentLoopLimits settle；验证结果作为证据返回模型
+  8. 模型自然停止但当前任务仍有未完成 Todo 时，最多发送一次不落盘的临时 system 对账指令
   │
   ▼
 runtime 事件 → AgentChatRunner → TUI 转写 / 活动流 / 权限 UI
@@ -205,6 +206,8 @@ runtime 事件 → AgentChatRunner → TUI 转写 / 活动流 / 权限 UI
 | MCP 服务器配置 | 存活的 MCP 连接 |
 
 Resume 通过回放 JSONL 尽量重建。跨重启不能丢的东西必须是事实或显式 grant——不能只活在 Python 对象里。
+
+Todo 工具成功结果也会发出运行时事件，让 TUI 立即刷新；恢复时再从同一份完整 `todo_updated` 快照投影。TUI 将其标记为模型上报状态，不会根据命令、文件修改或测试成功自动推断完成。
 
 ### 跨边界关键对象
 
@@ -282,9 +285,8 @@ SessionBootstrap
 | `agent/tool_execution.py` | 执行与记录 tool call |
 | `agent/tool_flow.py` | 工具批次的流程控制 |
 | `agent/tool_settlement.py` | 把工具结果 settle 进本轮 |
-| `agent/todo_policy.py` | 与 todo 相关的 loop 策略 |
+| `agent/todo_policy.py` | 当前任务 Todo 读取与一次性结束对账 |
 | `agent/task_boundary_classifier.py` | 任务边界分类 |
-| `agent/verification.py` | 验证 / 成功停止辅助 |
 | `agent/loop_limits.py` | 预算与停止原因枚举 |
 
 ### 压缩触发 helper

@@ -286,7 +286,7 @@ class RecordingCommandHandler:
 
     def handle(self, text: str) -> CommandResult:
         self.commands.append(text)
-        if text == "/model":
+        if text in {"/model", "/models"}:
             return CommandResult(
                 handled=True,
                 output="Select a model:",
@@ -757,6 +757,22 @@ def test_tui_transcript_updates_persistent_todos_from_tool_data() -> None:
     assert transcript.todos == [
         TuiTodoItem(content="读代码", status="done"),
         TuiTodoItem(content="跑测试", status="in_progress"),
+    ]
+
+
+def test_tui_transcript_accepts_mixed_legacy_and_current_todo_payloads() -> None:
+    transcript = TuiTranscript()
+
+    transcript.update_todos(
+        [
+            {"content": "恢复代码", "status": "completed", "priority": "high"},
+            {"content": "恢复测试", "status": "in_progress"},
+        ]
+    )
+
+    assert transcript.todos == [
+        TuiTodoItem(content="恢复代码", status="completed", priority="high"),
+        TuiTodoItem(content="恢复测试", status="in_progress"),
     ]
 
 
@@ -1349,6 +1365,26 @@ async def test_firstcoder_app_model_picker_switches_selected_model() -> None:
     assert handler.commands == ["/model", "/model fake/new"]
     assert app.config.provider_name == "fake"
     assert app.config.provider_model == "new"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_models_alias_opens_model_picker() -> None:
+    handler = RecordingCommandHandler()
+    app = FirstCoderApp(
+        command_handler=handler,
+        config=FirstCoderTuiConfig(provider_name="fake", provider_model="old"),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/models")
+        await pilot.press("enter")
+        await pilot.pause()
+        output_text = _static_output_text(app)
+
+    assert handler.commands == ["/models"]
+    assert "Select a model:" in output_text
 
 
 @pytest.mark.anyio
@@ -2129,7 +2165,7 @@ def test_firstcoder_app_updates_persistent_todo_panel_for_todo_events(monkeypatc
         TuiTodoItem(content="读代码", status="completed"),
         TuiTodoItem(content="跑测试", status="in_progress"),
     ]
-    assert todo_panel.updates[-1] == "Todo\n[✓] 读代码\n[~] 跑测试"
+    assert todo_panel.updates[-1] == "Todo · model reported\n[✓] 读代码\n[~] 跑测试"
 
 
 def test_firstcoder_app_replays_todos_from_current_session_view(monkeypatch) -> None:
@@ -2158,9 +2194,9 @@ def test_firstcoder_app_replays_todos_from_current_session_view(monkeypatch) -> 
 
     assert app.transcript.todos == [
         TuiTodoItem(content="恢复代码", status="completed", priority="high"),
-        TuiTodoItem(content="恢复测试", status="in_progress", priority="medium"),
+        TuiTodoItem(content="恢复测试", status="in_progress"),
     ]
-    assert todo_panel.updates[-1] == "Todo\n[✓] 恢复代码\n[~] 恢复测试"
+    assert todo_panel.updates[-1] == "Todo · model reported\n[✓] 恢复代码\n[~] 恢复测试"
 
 
 @pytest.mark.anyio
@@ -2179,8 +2215,8 @@ async def test_firstcoder_app_todo_panel_preserves_status_markers_as_plain_text(
         )
         app._render_todo_panel()
 
-        assert panel.content == "Todo\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
-        assert str(panel.render()) == "Todo\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
+        assert panel.content == "Todo · model reported\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
+        assert str(panel.render()) == "Todo · model reported\n[✓] 已完成\n[~] 进行中\n[ ] 未完成"
 
 
 def test_firstcoder_app_updates_topbar_when_activity_changes(monkeypatch) -> None:

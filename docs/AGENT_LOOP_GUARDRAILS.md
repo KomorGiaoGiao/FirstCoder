@@ -40,7 +40,6 @@ conversation.
 | `max_tool_rounds` | 200 | completed model-to-tool rounds exceed the budget |
 | `max_provider_calls` | 400 | provider requests exceed the budget |
 | `max_turn_seconds` | 3600 | monotonic elapsed turn time exceeds the budget |
-| `successful_verification_stop` | `True` | a qualifying verification result asks for finalization |
 
 `swe_lite()` uses 60 rounds, 100 calls, and 1800 seconds. `summary()` uses 1,
 3, and 120 seconds. `None` disables a particular numeric limit; it does not
@@ -62,7 +61,7 @@ failed classification up to three times, then records `uncertain` if none is
 valid. Program code feeds the result through the session-injected
 `task_boundary` tool and records the resulting state transition. The hidden
 request is not forwarded to the TUI, but it consumes provider calls and turn
-time; benchmark expectations must account for it. A confirmed boundary may
+time from the same per-turn budgets; benchmark expectations must account for it. A confirmed boundary may
 trigger context compaction.
 
 The loop also constructs a stable system prefix and projects conversation
@@ -80,9 +79,8 @@ tool definitions. Tool JSON schemas are not duplicated in the system message.
 | `loop_limits.py` | budgets and stop-reason enums |
 | `tool_execution.py` | execute/record tool calls |
 | `tool_flow.py` / `tool_settlement.py` | batch flow and settlement |
-| `todo_policy.py` | todo reminder policy for the loop |
+| `todo_policy.py` | active-task Todo lookup and one-time final reconciliation |
 | `task_boundary_classifier.py` | task-boundary classification helpers |
-| `verification.py` | successful-verification early stop |
 | `ports.py` | minimal `ContextManagerLike` for the loop |
 
 Compact call sites should prefer named helpers on the loop
@@ -98,12 +96,12 @@ Readonly calls such as `view`, `grep`, and `git_diff` may run in parallel when
 the response permits it. In bypass mode, a wider explicit set can run in
 parallel. Mutation ordering is not casually parallelized.
 
-The loop also observes todo behavior. After enough non-todo tool results it can
-ask for a plan; after several results since the last update it can ask for todo
-progress. `todo` submits the complete current list, and every successful update
-also appends a session-scoped `todo_updated` event. `SessionView.todos`, resume,
-fork, and the TUI consume that durable snapshot. The reminders are not a second
-planner or a permission mechanism.
+`todo` submits the complete current list, and every successful update appends a
+session-scoped `todo_updated` event. `SessionView.todos`, resume, fork, and the
+TUI consume that durable snapshot. The loop does not inject periodic synthetic
+user reminders. Before natural completion it may send one ephemeral system
+instruction to reconcile unfinished active-task items; that instruction is not
+written to the session log.
 
 ## Recovery Paths
 
@@ -121,7 +119,7 @@ planner or a permission mechanism.
 ```sh
 .venv/bin/python -m pytest \
   tests/test_agent_loop_limits.py tests/test_agent_context_loop.py \
-  tests/test_agent_tool_flow.py tests/test_agent_verification.py \
+  tests/test_agent_tool_flow.py tests/test_context_system_prompt.py \
   tests/test_multimodal_input.py tests/test_prewrite_review.py -q
 ```
 
@@ -136,17 +134,17 @@ rg -n "TOOL_ROUND_LIMIT|max_provider_calls|prompt too long|PendingPermission" te
 **“200 is the maximum number of tool calls.”** It is the configured tool-round
 limit; a round can contain more than one eligible parallel read.
 
-**“A successful test always ends immediately.”** Only results recognized by
-`agent/verification.py`, with `successful_verification_stop` enabled, prompt
-that early-finalization behavior.
+**“A successful test always ends immediately.”** No. Verification output is
+evidence returned to the model; it does not remove tool access or force an
+early final answer.
 
 **“Bypass removes the wrapper.”** No. It changes policy decisions. The session
 registry, event logging, normalized result handling, and loop limits remain.
 
 **“The model invokes `task_boundary` before every visible response.”** No. The
 loop initializes the first task itself; later turns use an invisible classifier
-request, then program code records the decision through the existing control
-tool.
+request, then program code records the decision through the internal control
+tool. The main model neither sees nor may execute that tool.
 
 ## Safe Changes
 

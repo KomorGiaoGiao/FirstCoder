@@ -91,6 +91,19 @@ def test_writer_appends_session_metadata_update_event(tmp_path) -> None:
     assert event.payload == {"title": "renamed"}
 
 
+def test_writer_applies_a_consistent_event_envelope(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    writer = SessionEventWriter(store=store, session_id="sess_event")
+
+    writer.append_session_metadata_updated(title="Demo")
+
+    event = store.list_events("sess_event")[0]
+    assert event.id
+    assert event.session_id == "sess_event"
+    assert event.type == "session_metadata_updated"
+    assert event.payload == {"title": "Demo"}
+
+
 def test_writer_appends_task_boundary_observation_event(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     writer = SessionEventWriter(store=store, session_id="sess_test")

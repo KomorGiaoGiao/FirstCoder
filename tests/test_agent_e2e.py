@@ -432,32 +432,7 @@ def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None
     session.runtime_state.active_task_hash = "task_previous"
     provider = FakeProvider(
         [
-            ChatResponse(
-                provider="fake",
-                model="fake-model",
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="call_boundary_1",
-                        name="task_boundary",
-                        arguments={"decision": "new", "basis_message_id": ""},
-                    )
-                ],
-                finish_reason="tool_calls",
-            ),
-            ChatResponse(
-                provider="fake",
-                model="fake-model",
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="call_boundary_2",
-                        name="task_boundary",
-                        arguments={"decision": "new", "basis_message_id": ""},
-                    )
-                ],
-                finish_reason="tool_calls",
-            ),
+            ChatResponse(provider="fake", model="fake-model", content="记录任务切换候选"),
             ChatResponse(provider="fake", model="fake-model", content="任务切换完成"),
         ]
     )
@@ -465,20 +440,26 @@ def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None
     original_complete = provider.complete
 
     def complete_with_basis(request: ChatRequest) -> ChatResponse:
-        response = original_complete(request)
-        user_message_id = session.rebuild_view().messages[0].id
-        for tool_call in response.tool_calls:
-            if tool_call.name == "task_boundary":
-                tool_call.arguments["basis_message_id"] = user_message_id
-        return response
+        user_messages = [message for message in session.rebuild_view().messages if message.role == "user"]
+        user_message_id = user_messages[-1].id
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            decision = "new" if len(user_messages) == 1 else "same"
+            return ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content=f'{{"decision":"{decision}","basis_message_id":"{user_message_id}"}}',
+            )
+        return original_complete(request)
 
     provider.complete = complete_with_basis
 
-    response = AgentLoop(
+    loop = AgentLoop(
         session=session,
         provider=provider,
         context_manager=ContextWindowManager(store=store),
-    ).run_user_turn("换一个任务")
+    )
+    loop.run_user_turn("换一个任务")
+    response = loop.run_user_turn("继续新任务")
 
     assert response.content == "任务切换完成"
     task_boundary_events = _events(store, "sess_task_boundary", "task_boundary_observed")
@@ -493,32 +474,7 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
     provider = FakeProvider(
         [
             ChatResponse(provider="fake", model="fake-model", content="旧任务记录"),
-            ChatResponse(
-                provider="fake",
-                model="fake-model",
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="call_boundary_1",
-                        name="task_boundary",
-                        arguments={"decision": "new", "basis_message_id": ""},
-                    )
-                ],
-                finish_reason="tool_calls",
-            ),
-            ChatResponse(
-                provider="fake",
-                model="fake-model",
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="call_boundary_2",
-                        name="task_boundary",
-                        arguments={"decision": "new", "basis_message_id": ""},
-                    )
-                ],
-                finish_reason="tool_calls",
-            ),
+            ChatResponse(provider="fake", model="fake-model", content="新任务第一轮"),
             ChatResponse(provider="fake", model="fake-model", content="新任务继续"),
         ]
     )
@@ -540,17 +496,14 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
                 model="fake-model",
                 content=f'{{"decision":"{decision}","basis_message_id":"{user_message_id}"}}',
             )
-        response = original_complete(request)
-        for tool_call in response.tool_calls:
-            if tool_call.name == "task_boundary":
-                tool_call.arguments["basis_message_id"] = user_message_id
-        return response
+        return original_complete(request)
 
     provider.complete = complete_with_latest_user_basis
 
     loop.run_user_turn("旧任务内容 " + ("alpha " * 80))
     first_task_hash = session.runtime_state.active_task_hash
     loop.run_user_turn("换一个任务 " + ("beta " * 20))
+    loop.run_user_turn("继续新任务")
 
     compact_events = [
         event.payload["event"]

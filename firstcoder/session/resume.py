@@ -12,8 +12,7 @@ from pathlib import Path
 
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.session.bootstrap import SessionBootstrap
-from firstcoder.session.catalog import SessionCatalog
-from firstcoder.session.errors import SessionCorruptError, SessionEmptyError
+from firstcoder.session.catalog import SessionCatalog, require_usable_record
 from firstcoder.session.models import ResumeResult
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -33,11 +32,7 @@ class ResumeService:
 
     def resume(self, session_id: str) -> ResumeResult:
         catalog = self.catalog or SessionCatalog(self.store.root)
-        record = catalog.get_session(session_id)
-        if record.status == "corrupt":
-            raise SessionCorruptError(record.error or f"session is corrupt: {session_id}")
-        if record.status == "empty":
-            raise SessionEmptyError(f"session is empty: {session_id}")
+        record = require_usable_record(catalog.get_session(session_id))
 
         bootstrap = SessionBootstrap(
             store=self.store,

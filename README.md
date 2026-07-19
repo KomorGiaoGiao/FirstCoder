@@ -128,6 +128,32 @@ project: ./firstcoder.toml
 
 Provider support is centered on the OpenAI Chat Completions-compatible path and a native Anthropic Messages API adapter. Both paths implement the same internal complete/streaming contracts (text deltas, tool-call accumulation, forced `tool_choice`, usage, and `PROMPT_TOO_LONG`-style error classification). The TUI's native multimodal input can stage pasted file paths and clipboard images; images and small text files then travel through the session/context pipeline to providers that support vision. Model and provider vision capability still matters. Anthropic-only extras such as prompt caching remain optional future work. FirstCoder does not use the OpenAI Responses API yet.
 
+### Multiple models and request options
+
+You can keep several provider/model profiles in one global or project TOML file. Project values are merged over global values, so a project can override only the fields it needs:
+
+```toml
+default_model = "yuren/gpt-5.6-terra"
+
+[providers.yuren]
+type = "openai-compatible"
+base_url = "https://yurenapi.cn/v1"
+api_key_env = "YURENAPI_API_KEY"
+
+[models."yuren/gpt-5.6-terra"]
+label = "Yuren Terra"
+
+[models."yuren/gpt-5.6-terra".request]
+temperature = 0.2
+max_tokens = 8192
+reasoning_effort = "high"
+extra_body = { reasoning_summary = "auto" }
+```
+
+Use `firstcoder --model provider/model` to choose the initial profile for a run. In the TUI, `/models` opens the configured model picker and `/model provider/model` switches immediately. `firstcoder config show` prints the configured model references and labels, but never prints API keys, environment-variable values, request bodies, or model-state contents.
+
+`temperature`, `max_tokens`, and `extra_body` are sent with the main model request. `reasoning_effort` is represented as a request extension and passed through when the selected provider supports it; providers that do not recognize it may reject or ignore it. Internal classifiers and compact summarization keep their own bounded token budgets.
+
 > A small detail for observant users: some provider/model combinations give the
 > TUI topbar a little more character.
 

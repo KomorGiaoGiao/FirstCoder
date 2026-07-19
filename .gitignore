@@ -1,5 +1,7 @@
 .venv/
 __pycache__/
+*.DS_Store
+.playwright-cli/
 *.py[cod]
 *.pyo
 .pytest_cache/
@@ -17,12 +19,15 @@ text/
 dist/
 build/
 *.egg-info/
+.release-dist/
+.release-dist-*/
 .codex_tmp/
 .firstcoder/
 logs/
 runs/
 data/
 .tools/
+docs/promo/
 benchmark/runs/
 benchmark/topic_selfplay/runs/
 *.doc

@@ -7,7 +7,10 @@ import json
 import uuid
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from firstcoder.context.models import SessionView
 
 
 def _new_id(prefix: str) -> str:
@@ -61,6 +64,18 @@ def content_fingerprint(text: str, *, length: int = 16) -> str:
     """计算文本内容指纹，默认短 hash 便于写入 metadata 和日志。"""
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+
+
+def session_view_fingerprint(view: SessionView) -> str:
+    """计算会话消息视图的稳定指纹。"""
+
+    return stable_json_hash(
+        {
+            "session_id": view.session_id,
+            "messages": [message.to_dict() for message in view.messages],
+        },
+        length=24,
+    )
 
 
 def _json_default(value: Any) -> str:

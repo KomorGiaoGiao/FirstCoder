@@ -15,6 +15,7 @@ from firstcoder.providers.types import (
     ChatMessage,
     ChatRequest,
     ProviderCapabilities,
+    TokenUsage,
     ToolCall,
     ToolChoiceFunction,
     ToolDefinition,
@@ -725,6 +726,29 @@ class _NoStreamProvider(ChatProvider):
         raise AssertionError("not used")
 
 
+@pytest.mark.parametrize("provider_kind", ["openai", "anthropic"])
+def test_provider_usage_normalizes_to_shared_token_usage(provider_kind) -> None:
+    if provider_kind == "openai":
+        provider = OpenAICompatibleProvider(
+            name="test-openai",
+            model="test-model",
+            api_key="test-key",
+            client=_FakeOpenAIClient(),
+        )
+        expected = TokenUsage(input_tokens=11, output_tokens=7, total_tokens=18)
+    else:
+        provider = AnthropicProvider(
+            model="claude-test",
+            api_key="test-key",
+            client=_FakeAnthropicLengthClient(),
+        )
+        expected = TokenUsage(input_tokens=5, output_tokens=9, total_tokens=14)
+
+    response = provider.complete(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
+
+    assert response.usage == expected
+
+
 def test_openai_compatible_provider_parses_tool_calls():
     client = _FakeOpenAIClient()
     provider = OpenAICompatibleProvider(
@@ -801,13 +825,17 @@ def test_openai_compatible_provider_uses_capability_token_param_and_extra_body()
         ChatRequest(
             messages=[ChatMessage(role="user", content="hi")],
             max_tokens=123,
-            extra_body={"request": True},
+            extra_body={"request": True, "reasoning_effort": "high"},
         )
     )
 
     assert "max_tokens" not in client.completions.last_params
     assert client.completions.last_params["max_completion_tokens"] == 123
-    assert client.completions.last_params["extra_body"] == {"preset": True, "request": True}
+    assert client.completions.last_params["extra_body"] == {
+        "preset": True,
+        "request": True,
+        "reasoning_effort": "high",
+    }
 
 
 def test_openai_compatible_provider_sends_parallel_tool_calls_when_supported():
@@ -1269,6 +1297,8 @@ def test_openai_compatible_provider_rejects_streaming_when_capability_disabled()
 def test_anthropic_provider_parses_text_and_tool_calls():
     client = _FakeAnthropicClient()
     provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
+
+    assert provider.name == "anthropic"
 
     response = provider.complete(
         ChatRequest(

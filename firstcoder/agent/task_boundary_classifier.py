@@ -62,6 +62,7 @@ class TaskBoundaryClassifier:
         context_builder: ContextBuilder,
         compact_if_needed: Callable[..., object],
         check_cancelled: Callable[[], None],
+        reserve_provider_call: Callable[[], None],
         check_turn_timeout: Callable[[], None],
         tag_task_boundary_messages: Callable[[dict[str, object]], None],
     ) -> None:
@@ -70,6 +71,7 @@ class TaskBoundaryClassifier:
         self.context_builder = context_builder
         self._compact_if_needed = compact_if_needed
         self._check_cancelled = check_cancelled
+        self._reserve_provider_call = reserve_provider_call
         self._check_turn_timeout = check_turn_timeout
         self._tag_task_boundary_messages = tag_task_boundary_messages
 
@@ -93,6 +95,7 @@ class TaskBoundaryClassifier:
         for attempt in range(CLASSIFICATION_ATTEMPTS):
             try:
                 request = self.build_request(attempt=attempt)
+                self._reserve_provider_call()
                 self._check_turn_timeout()
                 self._check_cancelled()
                 response = await self.provider.acomplete(request)
@@ -106,6 +109,7 @@ class TaskBoundaryClassifier:
 
     def _complete(self, *, attempt: int) -> ChatResponse:
         request = self.build_request(attempt=attempt)
+        self._reserve_provider_call()
         self._check_turn_timeout()
         self._check_cancelled()
         return self.provider.complete(request)

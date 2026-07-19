@@ -13,7 +13,12 @@ from typing import Any
 
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.metadata import merge_metadata_patch
-from firstcoder.session.errors import SessionInvalidIdError, SessionNotFoundError
+from firstcoder.session.errors import (
+    SessionCorruptError,
+    SessionEmptyError,
+    SessionInvalidIdError,
+    SessionNotFoundError,
+)
 from firstcoder.session.models import SessionRecord
 from firstcoder.utils.text import optional_str
 
@@ -21,6 +26,14 @@ from firstcoder.utils.text import optional_str
 MESSAGE_EVENT_TYPES = {"user_message", "assistant_message", "tool_result"}
 PREVIEW_CHARS = 80
 SAFE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def require_usable_record(record: SessionRecord) -> SessionRecord:
+    if record.status == "corrupt":
+        raise SessionCorruptError(record.error or f"session is corrupt: {record.session_id}")
+    if record.status == "empty":
+        raise SessionEmptyError(f"session is empty: {record.session_id}")
+    return record
 
 
 class SessionCatalog:

@@ -45,7 +45,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "diagnostics": (
         "Run a project verification command such as tests, lint, or typecheck. Use "
-        "for validation; successful test commands may signal that the task is done."
+        "for validation; results are evidence returned to the model for deciding the next step."
     ),
     "think": (
         "Record brief private scratch reasoning without touching the filesystem. Use "
@@ -60,11 +60,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "answer cannot be safely discovered from the workspace or commands."
     ),
     "todo": (
-        "Track and plan multi-step work with a complete 3-7 item plan before implementation. "
-        "On every update, resend "
-        "the complete current list, changing statuses only and keeping contents/order "
-        "stable unless the plan itself must change. "
-        "Keep exactly one item in_progress."
+        "Replace the current Todo list for multi-step work. Each item has content and status; "
+        "at most one item may be in_progress. An empty list clears Todo state."
     ),
     "write": (
         "Write a UTF-8 text file in the workspace. Use for new files or full-file "

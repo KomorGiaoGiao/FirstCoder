@@ -63,9 +63,10 @@ surface for the loop—not a second agent.
 ### Hidden control-plane tools
 
 `firstcoder.tools.hidden.HIDDEN_TOOL_STATUS_NAMES` is the single list of tools
-that should stay out of noisy human activity streams (currently
-`task_boundary`). They remain callable; only UI/status presentation filters them.
-Do not special-case tool names inside `tui.py` for this purpose.
+that stay out of both the main model surface and noisy human activity streams
+(currently `task_boundary`). The session registry retains them for dedicated
+runtime controllers, while `AgentLoop` filters their schemas and rejects any
+hallucinated main-model call. Do not scatter tool-name checks through the UI.
 
 ## Execution Rules
 
@@ -97,8 +98,8 @@ invent a tool result in UI code or remove one during context compaction.
   `todo_updated` snapshot, so `SessionView.todos`, resume/fork, and the TUI
   share one durable fact model.
 - `think` records internal structured reasoning without mutating the workspace.
-- `task_boundary` reports whether a user message begins a task; hashes are
-  generated program-side, not accepted from the model.
+- `task_boundary` is an internal runtime control tool used only by the hidden
+  classifier; hashes are generated program-side. The main model cannot call it.
 - `retrieve_archive` reads bounded archived output only from the current
   session.
 - `web_search` uses a hosted Parallel MCP endpoint and may fall back to Exa

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 from firstcoder.utils.json_utils import dumps_json, loads_json_object
@@ -18,8 +17,11 @@ from firstcoder.providers.errors import (
 from firstcoder.providers.streaming import (
     STREAM_ENDED,
     StreamFailure,
+    StreamToolCallAccumulator,
+    complete_stream_tool_calls,
     read_field as _read_field,
     start_sync_stream_worker,
+    token_usage,
 )
 from firstcoder.providers.tool_adapters import to_openai_tool
 from firstcoder.providers.types import (
@@ -30,7 +32,6 @@ from firstcoder.providers.types import (
     FinishReason,
     ProviderCapabilities,
     ProviderDiagnostics,
-    TokenUsage,
     ToolChoice,
     ToolChoiceFunction,
     ToolCall,
@@ -167,7 +168,7 @@ class OpenAICompatibleProvider(ChatProvider):
         diagnostics = ProviderDiagnostics()
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        tool_accumulators: dict[int, _StreamToolCallAccumulator] = {}
+        tool_accumulators: dict[int, StreamToolCallAccumulator] = {}
         raw_finish_reason: Any = None
         response_model = self._model
 
@@ -246,7 +247,11 @@ class OpenAICompatibleProvider(ChatProvider):
                 f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。"
             )
         elif tool_accumulators:
-            tool_calls = _complete_stream_tool_calls(tool_accumulators, diagnostics=diagnostics)
+            tool_calls = complete_stream_tool_calls(
+                tool_accumulators,
+                diagnostics,
+                require_identity=True,
+            )
         if diagnostics.warnings and tool_accumulators and not tool_calls:
             yield ChatStreamEvent(kind="error", diagnostics=diagnostics)
 
@@ -387,7 +392,7 @@ def _normalize_finish_reason(reason: Any) -> FinishReason:
     return "unknown"
 
 
-def _parse_usage(usage: Any) -> TokenUsage | None:
+def _parse_usage(usage: Any):
     """解析 OpenAI-compatible usage 字段，缺字段时保留 None。"""
 
     if usage is None:
@@ -395,13 +400,7 @@ def _parse_usage(usage: Any) -> TokenUsage | None:
     input_tokens = _read_field(usage, "prompt_tokens")
     output_tokens = _read_field(usage, "completion_tokens")
     total_tokens = _read_field(usage, "total_tokens")
-    if input_tokens is None and output_tokens is None and total_tokens is None:
-        return None
-    return TokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-    )
+    return token_usage(input_tokens, output_tokens, total_tokens)
 
 
 def _to_openai_tool_choice(tool_choice: ToolChoice | None) -> str | dict[str, Any] | None:
@@ -419,15 +418,6 @@ def _to_openai_tool_choice(tool_choice: ToolChoice | None) -> str | dict[str, An
     raise ProviderError(ProviderErrorKind.CONFIG_ERROR, f"不支持的 tool_choice：{tool_choice!r}")
 
 
-@dataclass(slots=True)
-class _StreamToolCallAccumulator:
-    index: int
-    id: str = ""
-    name: str = ""
-    arguments_text: str = ""
-    saw_arguments: bool = False
-
-
 def _parse_stream_error(chunk: Any) -> ProviderError | None:
     error = _read_field(chunk, "error")
     if error is None:
@@ -441,7 +431,7 @@ def _parse_stream_error(chunk: Any) -> ProviderError | None:
 def _accumulate_stream_tool_call_deltas(
     tool_call_deltas: list[Any],
     *,
-    accumulators: dict[int, _StreamToolCallAccumulator],
+    accumulators: dict[int, StreamToolCallAccumulator],
     diagnostics: ProviderDiagnostics,
 ) -> list[ChatStreamEvent]:
     events: list[ChatStreamEvent] = []
@@ -452,7 +442,7 @@ def _accumulate_stream_tool_call_deltas(
             continue
 
         is_new = index not in accumulators
-        accumulator = accumulators.setdefault(index, _StreamToolCallAccumulator(index=index))
+        accumulator = accumulators.setdefault(index, StreamToolCallAccumulator(index=index))
         # 同一个 tool_call 的 id/name/arguments 可能分散在多个 chunk。按 index 聚合能支持
         # 一个 assistant message 中同时出现多个并行工具调用。
         call_id = _read_field(delta, "id")
@@ -487,37 +477,3 @@ def _accumulate_stream_tool_call_deltas(
             )
         )
     return events
-
-
-def _complete_stream_tool_calls(
-    accumulators: dict[int, _StreamToolCallAccumulator],
-    *,
-    diagnostics: ProviderDiagnostics,
-) -> list[ToolCall]:
-    parsed: list[ToolCall] = []
-    for index in sorted(accumulators):
-        accumulator = accumulators[index]
-        if not accumulator.id or not accumulator.name or not accumulator.saw_arguments:
-            # 缺任一关键字段都不能执行。返回空列表表示整组 streaming tool_calls 作废，
-            # 避免只执行部分工具造成模型上下文和真实副作用不一致。
-            diagnostics.warnings.append(
-                f"streaming tool_call 缺少 id、name 或 arguments，已丢弃整组不可执行调用：index={index}"
-            )
-            return []
-
-        arguments = loads_json_object(accumulator.arguments_text)
-        if not isinstance(arguments, dict):
-            diagnostics.warnings.append(
-                f"streaming tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用："
-                f"index={index}, id={accumulator.id}, name={accumulator.name}"
-            )
-            return []
-
-        parsed.append(
-            ToolCall(
-                id=accumulator.id,
-                name=accumulator.name,
-                arguments=arguments,
-            )
-        )
-    return parsed

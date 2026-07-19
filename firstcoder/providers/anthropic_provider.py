@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 from firstcoder.providers.base import ChatProvider
@@ -22,8 +21,12 @@ from firstcoder.providers.errors import (
 from firstcoder.providers.streaming import (
     STREAM_ENDED,
     StreamFailure,
+    StreamToolCallAccumulator,
+    complete_stream_tool_calls,
+    merge_usage,
     read_field as _read_field,
     start_sync_stream_worker,
+    token_usage,
 )
 from firstcoder.providers.tool_adapters import to_anthropic_tool
 from firstcoder.providers.types import (
@@ -34,7 +37,6 @@ from firstcoder.providers.types import (
     FinishReason,
     ProviderCapabilities,
     ProviderDiagnostics,
-    TokenUsage,
     ToolCall,
     ToolChoice,
     ToolChoiceFunction,
@@ -52,6 +54,7 @@ class AnthropicProvider(ChatProvider):
     def __init__(
         self,
         *,
+        name: str = "anthropic",
         model: str,
         api_key: str,
         base_url: str | None = None,
@@ -60,6 +63,7 @@ class AnthropicProvider(ChatProvider):
         extra_body: dict[str, Any] | None = None,
         client: Any | None = None,
     ) -> None:
+        self._name = name
         self._model = model
         self._base_url = base_url
         self._capabilities = capabilities or ProviderCapabilities(
@@ -84,7 +88,7 @@ class AnthropicProvider(ChatProvider):
 
     @property
     def name(self) -> str:
-        return "anthropic"
+        return self._name
 
     @property
     def model(self) -> str:
@@ -152,7 +156,7 @@ class AnthropicProvider(ChatProvider):
         diagnostics = ProviderDiagnostics()
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
-        tool_accumulators: dict[int, _StreamToolCallAccumulator] = {}
+        tool_accumulators: dict[int, StreamToolCallAccumulator] = {}
         raw_finish_reason: Any = None
         response_model = self._model
         usage: TokenUsage | None = None
@@ -186,7 +190,7 @@ class AnthropicProvider(ChatProvider):
                     message = _read_field(event, "message")
                     if message is not None:
                         response_model = _read_field(message, "model", response_model) or response_model
-                        usage = _merge_usage(usage, _parse_usage(_read_field(message, "usage")))
+                        usage = merge_usage(usage, _parse_usage(_read_field(message, "usage")))
                     continue
 
                 if event_type == "content_block_start":
@@ -194,7 +198,7 @@ class AnthropicProvider(ChatProvider):
                     block = _read_field(event, "content_block", {}) or {}
                     block_type = _read_field(block, "type")
                     if block_type == "tool_use":
-                        accumulator = _StreamToolCallAccumulator(
+                        accumulator = StreamToolCallAccumulator(
                             index=index,
                             id=str(_read_field(block, "id", "") or ""),
                             name=str(_read_field(block, "name", "") or ""),
@@ -238,7 +242,7 @@ class AnthropicProvider(ChatProvider):
                         partial = _read_field(delta, "partial_json") or ""
                         accumulator = tool_accumulators.get(index)
                         if accumulator is None:
-                            accumulator = _StreamToolCallAccumulator(index=index)
+                            accumulator = StreamToolCallAccumulator(index=index)
                             tool_accumulators[index] = accumulator
                             yield ChatStreamEvent(
                                 kind="tool_call_started",
@@ -264,7 +268,7 @@ class AnthropicProvider(ChatProvider):
                     stop_reason = _read_field(delta, "stop_reason")
                     if stop_reason is not None:
                         raw_finish_reason = stop_reason
-                    usage = _merge_usage(usage, _parse_usage(_read_field(event, "usage")))
+                    usage = merge_usage(usage, _parse_usage(_read_field(event, "usage")))
                     continue
 
                 if event_type == "error":
@@ -287,7 +291,11 @@ class AnthropicProvider(ChatProvider):
                 f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。"
             )
         elif tool_accumulators:
-            tool_calls = _complete_stream_tool_calls(tool_accumulators, diagnostics=diagnostics)
+            tool_calls = complete_stream_tool_calls(
+                tool_accumulators,
+                diagnostics,
+                require_identity=False,
+            )
 
         for tool_call in tool_calls:
             yield ChatStreamEvent(
@@ -533,7 +541,7 @@ def _normalize_stop_reason(reason: Any) -> FinishReason:
     return "unknown"
 
 
-def _parse_usage(usage: Any) -> TokenUsage | None:
+def _parse_usage(usage: Any):
     """解析 Anthropic usage；同时兼容 OpenAI 字段名以便测试/代理。"""
 
     if usage is None:
@@ -544,62 +552,4 @@ def _parse_usage(usage: Any) -> TokenUsage | None:
     output_tokens = _read_field(usage, "output_tokens")
     if output_tokens is None:
         output_tokens = _read_field(usage, "completion_tokens")
-    total_tokens = _read_field(usage, "total_tokens")
-    if total_tokens is None and input_tokens is not None and output_tokens is not None:
-        total_tokens = int(input_tokens) + int(output_tokens)
-    if input_tokens is None and output_tokens is None and total_tokens is None:
-        return None
-    return TokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-    )
-
-
-def _merge_usage(left: TokenUsage | None, right: TokenUsage | None) -> TokenUsage | None:
-    if left is None:
-        return right
-    if right is None:
-        return left
-    input_tokens = right.input_tokens if right.input_tokens is not None else left.input_tokens
-    output_tokens = right.output_tokens if right.output_tokens is not None else left.output_tokens
-    total_tokens = right.total_tokens if right.total_tokens is not None else left.total_tokens
-    if total_tokens is None and input_tokens is not None and output_tokens is not None:
-        total_tokens = int(input_tokens) + int(output_tokens)
-    return TokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=total_tokens,
-    )
-
-
-@dataclass(slots=True)
-class _StreamToolCallAccumulator:
-    index: int
-    id: str = ""
-    name: str = ""
-    arguments_text: str = ""
-    saw_arguments: bool = False
-
-
-def _complete_stream_tool_calls(
-    accumulators: dict[int, _StreamToolCallAccumulator],
-    *,
-    diagnostics: ProviderDiagnostics,
-) -> list[ToolCall]:
-    parsed: list[ToolCall] = []
-    for index in sorted(accumulators):
-        item = accumulators[index]
-        if not item.saw_arguments:
-            diagnostics.warnings.append(
-                f"streaming tool_call 缺少 arguments，已丢弃：id={item.id}, name={item.name}"
-            )
-            return []
-        arguments = loads_json_object(item.arguments_text)
-        if not isinstance(arguments, dict):
-            diagnostics.warnings.append(
-                f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={item.id}, name={item.name}"
-            )
-            return []
-        parsed.append(ToolCall(id=item.id, name=item.name, arguments=arguments))
-    return parsed
+    return token_usage(input_tokens, output_tokens, _read_field(usage, "total_tokens"))

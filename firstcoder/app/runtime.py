@@ -30,7 +30,7 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatResponse, ChatStreamEvent
+from firstcoder.providers.types import ChatResponse, ChatStreamEvent, MainRequestOptions
 from firstcoder.tools.types import Tool
 
 
@@ -87,6 +87,7 @@ class AgentChatRunner:
     limits: AgentLoopLimits | None = None
     max_tool_rounds: int | None | object = _DEFAULT_MAX_TOOL_ROUNDS
     use_streaming: bool = False
+    request_options: MainRequestOptions = field(default_factory=MainRequestOptions)
     loops: list[AgentLoop] = field(default_factory=list)
     last_display_lines: list[str] = field(default_factory=list)
     last_stream_events: list[ChatStreamEvent] = field(default_factory=list)
@@ -97,9 +98,20 @@ class AgentChatRunner:
     _guidance_lock: threading.Lock = field(default_factory=threading.Lock)
     _cancellation_lock: threading.Lock = field(default_factory=threading.Lock)
     _active_cancellation_token: CancellationToken | None = None
+    _pending_permission_loop: AgentLoop | None = None
 
     def set_provider(self, provider: ChatProvider, *, use_streaming: bool) -> None:
+        self.set_model(provider, request_options=MainRequestOptions(), use_streaming=use_streaming)
+
+    def set_model(
+        self,
+        provider: ChatProvider,
+        *,
+        request_options: MainRequestOptions,
+        use_streaming: bool,
+    ) -> None:
         self.provider = provider
+        self.request_options = request_options
         self.use_streaming = use_streaming
         self.last_stream_events = []
 
@@ -136,24 +148,54 @@ class AgentChatRunner:
             if self._active_cancellation_token is token:
                 self._active_cancellation_token = None
 
+    def _start_turn(self, *, streaming: bool = False) -> tuple[int, CancellationToken, AgentLoop]:
+        before_count = len(self.current_session.rebuild_view().messages)
+        self.last_pending_input = None
+        token = self._begin_cancellable_turn()
+        if streaming:
+            self.last_display_lines = []
+            self.last_stream_events = []
+        return before_count, token, self._create_loop(token, streaming=streaming)
+
+    def _resume_turn(self, *, streaming: bool = False) -> tuple[int, CancellationToken, AgentLoop]:
+        before_count = len(self.current_session.rebuild_view().messages)
+        self.last_pending_input = None
+        token = self._begin_cancellable_turn()
+        loop = self._pending_permission_loop
+        if loop is None or loop.session is not self.current_session.session:
+            loop = self._create_loop(token, streaming=streaming)
+        else:
+            loop.replace_cancellation_token(token)
+            if streaming:
+                self.last_display_lines = []
+                self.last_stream_events = []
+                loop.clear_stream_events()
+        return before_count, token, loop
+
+    def _remember_pending_permission_loop(self, loop: AgentLoop) -> None:
+        self._pending_permission_loop = (
+            loop if self.current_session.session.pending_permission_execution is not None else None
+        )
+
+    def _refresh_turn_output(self, before_count: int, loop: AgentLoop) -> None:
+        self.last_stream_events = list(loop.last_stream_events)
+        messages = self.current_session.rebuild_view().messages[before_count:]
+        self.last_display_lines = _display_lines_from_messages(messages)
+
     def run_user_turn(
         self,
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> ChatResponse:
-        before_count = len(self.current_session.rebuild_view().messages)
-        self.last_pending_input = None
-        cancellation_token = self._begin_cancellable_turn()
-        loop = self._create_loop(cancellation_token)
+        before_count, cancellation_token, loop = self._start_turn()
         try:
             result = loop.run_user_turn_interactive(content, attachments=attachments)
         finally:
             self._finish_cancellable_turn(cancellation_token)
-        self.last_stream_events = []
         self.last_pending_input = result.pending_input
-        after_view = self.current_session.rebuild_view()
-        self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+        self._remember_pending_permission_loop(loop)
+        self._refresh_turn_output(before_count, loop)
         if result.response is not None:
             return result.response
         return self._waiting_for_input_response(result.pending_input)
@@ -165,18 +207,14 @@ class AgentChatRunner:
         tool_result，所以 UI 通过这个入口把用户选择交回 agent loop。
         """
 
-        before_count = len(self.current_session.rebuild_view().messages)
-        self.last_pending_input = None
-        cancellation_token = self._begin_cancellable_turn()
-        loop = self._create_loop(cancellation_token)
+        before_count, cancellation_token, loop = self._resume_turn()
         try:
             result = loop.resume_with_user_input(request_id, answer)
         finally:
             self._finish_cancellable_turn(cancellation_token)
-        self.last_stream_events = []
         self.last_pending_input = result.pending_input
-        after_view = self.current_session.rebuild_view()
-        self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+        self._remember_pending_permission_loop(loop)
+        self._refresh_turn_output(before_count, loop)
         if result.response is not None:
             if result.response.content and not self.last_display_lines:
                 self.last_display_lines.append(result.response.content)
@@ -196,12 +234,7 @@ class AgentChatRunner:
         """
 
         if self.use_streaming:
-            before_count = len(self.current_session.rebuild_view().messages)
-            self.last_pending_input = None
-            cancellation_token = self._begin_cancellable_turn()
-            loop = self._create_loop(cancellation_token, streaming=True)
-            self.last_display_lines = []
-            self.last_stream_events = []
+            before_count, cancellation_token, loop = self._start_turn(streaming=True)
             try:
                 response = await anyio.to_thread.run_sync(
                     _run_coroutine_in_thread,
@@ -209,11 +242,10 @@ class AgentChatRunner:
                 )
             finally:
                 self._finish_cancellable_turn(cancellation_token)
-            self.last_stream_events = list(loop.last_stream_events)
             raw_pending = response.raw.get("pending_input") if isinstance(response.raw, dict) else None
             self.last_pending_input = raw_pending if isinstance(raw_pending, UserInputRequest) else None
-            after_view = self.current_session.rebuild_view()
-            self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+            self._remember_pending_permission_loop(loop)
+            self._refresh_turn_output(before_count, loop)
             if self.last_pending_input is not None and response.content:
                 self.last_display_lines.append(response.content)
             return response
@@ -222,12 +254,7 @@ class AgentChatRunner:
 
     async def aresume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
         if self.use_streaming:
-            before_count = len(self.current_session.rebuild_view().messages)
-            self.last_pending_input = None
-            cancellation_token = self._begin_cancellable_turn()
-            loop = self._create_loop(cancellation_token, streaming=True)
-            self.last_display_lines = []
-            self.last_stream_events = []
+            before_count, cancellation_token, loop = self._resume_turn(streaming=True)
             try:
                 result = await anyio.to_thread.run_sync(
                     _run_coroutine_in_thread,
@@ -235,10 +262,9 @@ class AgentChatRunner:
                 )
             finally:
                 self._finish_cancellable_turn(cancellation_token)
-            self.last_stream_events = list(loop.last_stream_events)
             self.last_pending_input = result.pending_input
-            after_view = self.current_session.rebuild_view()
-            self.last_display_lines = _display_lines_from_messages(after_view.messages[before_count:])
+            self._remember_pending_permission_loop(loop)
+            self._refresh_turn_output(before_count, loop)
             if result.response is not None:
                 return result.response
             return self._waiting_for_input_response(result.pending_input)
@@ -254,6 +280,7 @@ class AgentChatRunner:
         kwargs = {
             "session": self.current_session.session,
             "provider": self.provider,
+            "request_options": self.request_options,
             "tools": self._current_tools(),
             "context_builder": self.context_builder,
             "context_manager": self.context_manager,

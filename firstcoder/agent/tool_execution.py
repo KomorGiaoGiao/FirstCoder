@@ -18,12 +18,12 @@ from firstcoder.runtime.cancellation import CancellationToken, cancellation_cont
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
 from firstcoder.agent.tool_settlement import ToolCallSettlement
 from firstcoder.runtime.user_input import UserInputRequest, user_input_request_from_tool_result
-from firstcoder.agent.verification import is_successful_verification_result
 from firstcoder.permissions.types import PermissionDecisionKind, PermissionMode, PermissionRequest
 from firstcoder.providers.types import ToolCall
 from firstcoder.tools.permission_results import make_permission_denied_result, make_prewrite_review_failed_result
 from firstcoder.tools.review import build_prewrite_review, supports_prewrite_review
-from firstcoder.tools.types import ToolResult
+from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
+from firstcoder.tools.types import ToolResult, make_error_result
 
 PARALLEL_READONLY_TOOL_NAMES = frozenset(
     {
@@ -80,7 +80,6 @@ class ToolExecutionEvent:
 class ToolExecutionState:
     task_hash_changed: bool = False
     pending_input: UserInputRequest | None = None
-    successful_verification: bool = False
 
 
 @dataclass(slots=True)
@@ -124,6 +123,15 @@ class ToolExecutor:
         while index < len(tool_calls):
             self._check_cancelled()
             tool_call = tool_calls[index]
+            if tool_call.name in HIDDEN_TOOL_STATUS_NAMES:
+                result = make_error_result(
+                    tool_call.name,
+                    f"内部控制面工具不可由主模型调用：{tool_call.name}",
+                )
+                self._emit_event("denied", tool_call, result=result)
+                self._record_result(tool_call, result, state=state)
+                index += 1
+                continue
             permission = self._prepare_permission(tool_call, tool_calls[index + 1 :])
             if permission.result is not None:
                 self._emit_event(
@@ -217,8 +225,6 @@ class ToolExecutor:
         skipped_tool_calls: list[ToolCall] | None = None,
     ) -> UserInputRequest | None:
         self.session.append_tool_result(tool_call=tool_call, result=result)
-        if is_successful_verification_result(tool_call.name, result):
-            state.successful_verification = True
         pending_input = user_input_request_from_tool_result(
             result,
             tool_call_id=tool_call.id,

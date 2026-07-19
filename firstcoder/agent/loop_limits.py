@@ -19,7 +19,6 @@ class AgentLoopLimits:
     max_tool_rounds: int | None = 200
     max_provider_calls: int | None = 400
     max_turn_seconds: float | None = 3600
-    successful_verification_stop: bool = True
 
     @classmethod
     def default(cls) -> "AgentLoopLimits":
@@ -31,7 +30,6 @@ class AgentLoopLimits:
             max_tool_rounds=60,
             max_provider_calls=100,
             max_turn_seconds=1800,
-            successful_verification_stop=True,
         )
 
     @classmethod
@@ -40,7 +38,6 @@ class AgentLoopLimits:
             max_tool_rounds=1,
             max_provider_calls=3,
             max_turn_seconds=120,
-            successful_verification_stop=False,
         )
 
     def with_max_tool_rounds(self, value: int | None) -> "AgentLoopLimits":

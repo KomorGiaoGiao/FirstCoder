@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
@@ -11,12 +12,14 @@ from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.app.help_commands import HelpCommandHandler
 from firstcoder.app.mcp_commands import McpCommandHandler
 from firstcoder.app.model_commands import ModelCommandHandler, ModelState
+from firstcoder.app.model_state import ModelSelectionState, ModelStateStore
 from firstcoder.app.permission_commands import PermissionCommandHandler
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.app.skill_commands import SkillCommandHandler
 from firstcoder.app.tui import FirstCoderApp, FirstCoderTuiConfig
+from firstcoder.config.models import ModelCatalog, ModelProfile
 from firstcoder.config.settings import AppConfig, load_config
 from firstcoder.context.llm_compact import LlmCompactService
 from firstcoder.context.manager import ContextWindowManager
@@ -27,7 +30,13 @@ from firstcoder.mcp.config import load_mcp_configs
 from firstcoder.mcp.manager import McpManager
 from firstcoder.mcp.models import McpServerStatus, McpToolDescription
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.factory import ProviderConfigError, create_provider, create_provider_from_config
+from firstcoder.providers.factory import (
+    ProviderConfigError,
+    create_provider,
+    create_provider_for_model,
+    create_provider_from_config,
+)
+from firstcoder.providers.types import MainRequestOptions
 from firstcoder.providers.presets import PROVIDER_PRESETS
 from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
@@ -96,6 +105,7 @@ def create_firstcoder_app(
     config: FirstCoderTuiConfig | None = None,
     app_config: AppConfig | None = None,
     mcp_manager_factory: Callable[[tuple], McpManagerLike] | None = None,
+    model_spec: str | None = None,
 ) -> FirstCoderApp:
     """组装可运行的 FirstCoder TUI。
 
@@ -106,6 +116,20 @@ def create_firstcoder_app(
     project_path = Path(project_root)
     resolved_data_root = Path(data_root) if data_root is not None else project_path / ".firstcoder"
     resolved_app_config = app_config or load_config(project_root=project_path)
+    model_state_store = ModelStateStore(resolved_data_root / "model_state.json")
+    model_catalog = resolved_app_config.model_catalog()
+    has_explicit_model_catalog = _has_explicit_model_catalog(resolved_app_config)
+    selected_profile: ModelProfile | None = None
+    if provider is None and has_explicit_model_catalog and model_catalog.profiles:
+        selected_profile = _initial_model_profile(
+            model_catalog,
+            model_spec=model_spec,
+            state=model_state_store.load(),
+        )
+        try:
+            provider = create_provider_for_model(resolved_app_config, selected_profile)
+        except ProviderConfigError as error:
+            raise ValueError(str(error)) from error
     store = JsonlSessionStore(resolved_data_root)
     sandbox_access = SandboxAccess()
     resolved_tools = tools if tools is not None else create_builtin_registry(
@@ -185,11 +209,15 @@ def create_firstcoder_app(
         context_manager=context_manager,
         limits=AgentLoopLimits.default(),
         use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
+        request_options=_main_request_options(selected_profile),
     )
     model_switcher = RuntimeModelSwitcher(
         app_config=resolved_app_config,
         chat_runner=chat_runner,
         compact_summarizer=compact_summarizer,
+        catalog=model_catalog if has_explicit_model_catalog else ModelCatalog(default_ref=None, profiles=()),
+        state_store=model_state_store,
+        current_profile=selected_profile,
     )
     command_handler = CompositeCommandHandler(
         [
@@ -232,10 +260,16 @@ class RuntimeModelSwitcher:
         app_config: AppConfig,
         chat_runner: AgentChatRunner,
         compact_summarizer: ProviderLlmCompactSummarizer,
+        catalog: ModelCatalog | None = None,
+        state_store: ModelStateStore | None = None,
+        current_profile: ModelProfile | None = None,
     ) -> None:
         self._app_config = app_config
         self._chat_runner = chat_runner
         self._compact_summarizer = compact_summarizer
+        self._catalog = catalog or app_config.model_catalog()
+        self._state_store = state_store
+        self._current_profile = current_profile
 
     def current_model(self) -> ModelState:
         provider = self._chat_runner.provider
@@ -243,6 +277,13 @@ class RuntimeModelSwitcher:
 
     def model_choices(self) -> list[ModelState]:
         current = self.current_model()
+        if self._catalog.profiles:
+            return _unique_model_states(
+                [
+                    ModelState(provider=profile.provider_id, model=profile.model_id)
+                    for profile in self._catalog.list()
+                ]
+            )
         choices = [current]
         configured = self._app_config.get_config_value("model")
         if configured:
@@ -253,10 +294,28 @@ class RuntimeModelSwitcher:
 
     def switch_model(self, spec: str) -> ModelState:
         selected_provider, model = _parse_model_spec(spec)
+        if selected_provider is not None and self._catalog.profiles:
+            ref = f"{selected_provider}/{model}"
+            profile = self._catalog.get(ref)
+            if profile is None:
+                raise ValueError(f"未配置模型：{ref}。请在 [models] 中添加它。")
+            return self._apply_profile(profile, persist=True)
+
+        if selected_provider is None and self._current_profile is not None:
+            # 保留 `/model <model>` 兼容快捷方式：沿用当前 Profile 的
+            # provider/请求参数，但不把临时模型写进 Catalog 或状态文件。
+            profile = replace(
+                self._current_profile,
+                ref=f"{self._current_profile.provider_id}/{model}",
+                model_id=model,
+                label=model,
+            )
+            return self._apply_profile(profile, persist=False)
+
         config = _config_for_model_switch(
             self._app_config,
             current_provider=self._chat_runner.provider,
-            selected_provider=selected_provider,
+            selected_provider=selected_provider.lower() if selected_provider else None,
             model=model,
         )
         try:
@@ -269,6 +328,57 @@ class RuntimeModelSwitcher:
         self._compact_summarizer.provider = provider
         return ModelState(provider=provider.name, model=provider.model)
 
+    def _apply_profile(self, profile: ModelProfile, *, persist: bool) -> ModelState:
+        try:
+            provider = create_provider_for_model(self._app_config, profile)
+        except ProviderConfigError as error:
+            raise ValueError(str(error)) from error
+        self._current_profile = profile
+        self._chat_runner.set_model(
+            provider,
+            request_options=_main_request_options(profile),
+            use_streaming=_should_use_streaming(provider, self._app_config),
+        )
+        self._compact_summarizer.provider = provider
+        if persist and self._state_store is not None:
+            self._state_store.record_selection(profile.ref)
+        return ModelState(provider=provider.name, model=provider.model)
+
+
+def _main_request_options(profile: ModelProfile | None) -> MainRequestOptions:
+    if profile is None:
+        return MainRequestOptions()
+    request = profile.request
+    return MainRequestOptions(
+        temperature=request.temperature,
+        max_tokens=request.max_tokens,
+        extra_body=request.extra_body,
+    )
+
+
+def _initial_model_profile(
+    catalog: ModelCatalog,
+    *,
+    model_spec: str | None,
+    state: ModelSelectionState,
+) -> ModelProfile:
+    for ref in (model_spec, catalog.default_ref, state.last_selected):
+        if ref and catalog.get(ref):
+            return catalog.require(ref)
+    profiles = catalog.list()
+    if not profiles:
+        raise ValueError("模型目录为空，且没有旧 Provider 配置可用")
+    return profiles[0]
+
+
+def _has_explicit_model_catalog(config: AppConfig) -> bool:
+    """判断配置是否使用新格式的非空 `[models]`，而非 legacy 适配 profile。"""
+
+    return any(
+        isinstance(source, dict) and isinstance(source.get("models"), dict) and bool(source["models"])
+        for source in (config.global_config, config.project_config)
+    )
+
 
 def _parse_model_spec(spec: str) -> tuple[str | None, str]:
     parts = spec.strip().split()
@@ -279,7 +389,7 @@ def _parse_model_spec(spec: str) -> tuple[str | None, str]:
     else:
         value = parts[0] if parts else ""
         provider, model = value.split("/", 1) if "/" in value else (None, value)
-    provider = provider.strip().lower() if provider else None
+    provider = provider.strip() if provider else None
     model = model.strip()
     if not model:
         raise ValueError("model name is required")

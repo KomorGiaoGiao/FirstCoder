@@ -7,7 +7,6 @@ def test_default_limits_match_tui_goal_profile() -> None:
     assert limits.max_tool_rounds == 200
     assert limits.max_provider_calls == 400
     assert limits.max_turn_seconds == 3600
-    assert limits.successful_verification_stop is True
 
 
 def test_swe_lite_limits_match_goal_profile() -> None:
@@ -16,7 +15,6 @@ def test_swe_lite_limits_match_goal_profile() -> None:
     assert limits.max_tool_rounds == 60
     assert limits.max_provider_calls == 100
     assert limits.max_turn_seconds == 1800
-    assert limits.successful_verification_stop is True
 
 
 def test_summary_limits_disable_tool_loops() -> None:

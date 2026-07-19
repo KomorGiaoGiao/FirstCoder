@@ -35,7 +35,7 @@ class ModelCommandHandler:
         command = " ".join(text.strip().split())
         if not command.startswith("/"):
             return CommandResult(handled=False)
-        if command == "/model":
+        if command in {"/model", "/models"}:
             current = self.switcher.current_model()
             choices = self.switcher.model_choices()
             return CommandResult(
@@ -74,7 +74,7 @@ def _render_model_picker(current: ModelState, choices: list[ModelState]) -> str:
     for index, choice in enumerate(choices):
         marker = ">" if choice == current else " "
         lines.append(f"{marker} {index + 1}. {choice.provider}/{choice.model}")
-    lines.append("Use up/down and enter to switch, or type /model <model>.")
+    lines.append("Use up/down and enter to switch, or type /model <provider>/<model>.")
     return "\n".join(lines)
 
 

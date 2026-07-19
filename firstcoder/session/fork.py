@@ -12,8 +12,8 @@ from firstcoder.context.identity import new_event_id, new_session_id
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.session.bootstrap import SessionBootstrap
-from firstcoder.session.catalog import SessionCatalog
-from firstcoder.session.errors import SessionCorruptError, SessionEmptyError, SessionNotFoundError
+from firstcoder.session.catalog import SessionCatalog, require_usable_record
+from firstcoder.session.errors import SessionNotFoundError
 from firstcoder.session.models import ResumeResult
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -33,11 +33,7 @@ class ForkSessionService:
 
     def fork(self, source_session_id: str, *, title: str | None = None) -> ResumeResult:
         catalog = self.catalog or SessionCatalog(self.store.root)
-        record = catalog.get_session(source_session_id)
-        if record.status == "corrupt":
-            raise SessionCorruptError(record.error or f"session is corrupt: {source_session_id}")
-        if record.status == "empty":
-            raise SessionEmptyError(f"session is empty: {source_session_id}")
+        record = require_usable_record(catalog.get_session(source_session_id))
 
         events = self.store.list_events(source_session_id)
         if not events:

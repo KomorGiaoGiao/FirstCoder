@@ -99,7 +99,7 @@ def post_tool_reasoning_text(name: str) -> str:
 
 
 def todo_panel_text(todos: list[TuiTodoItem]) -> str:
-    lines = ["Todo"]
+    lines = ["Todo · model reported"]
     for item in todos:
         marker = "[ ]"
         if item.status in {"completed", "done"}:

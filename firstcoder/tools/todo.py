@@ -10,7 +10,6 @@ from firstcoder.utils.schema import object_schema
 
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "cancelled")
-VALID_PRIORITIES = ("high", "medium", "low")
 LEGACY_STATUS_ALIASES = {"done": "completed"}
 
 
@@ -27,12 +26,8 @@ def create_todo_tool() -> Tool:
         definition=ToolDefinition(
             name="todo",
             description=(
-                "Track multi-step work by submitting the complete current list on every call. "
-                "For substantial coding tasks, use a concise 3-7 item plan with exactly one "
-                "in_progress item while work is active. Preserve item content and order during "
-                "routine status updates; only add, remove, rewrite, or reorder items when the plan "
-                "itself changes. Before a final answer, complete or cancel every remaining item, "
-                "or clearly explain the blocker. An empty list clears the session Todo state."
+                "Replace the current Todo list for multi-step work. Each item has content and status; "
+                "at most one item may be in_progress. An empty list clears Todo state."
             ),
             parameters=object_schema(
                 {
@@ -44,9 +39,8 @@ def create_todo_tool() -> Tool:
                             "properties": {
                                 "content": {"type": "string", "description": "Short, concrete, verifiable task."},
                                 "status": {"type": "string", "enum": list(VALID_STATUSES)},
-                                "priority": {"type": "string", "enum": list(VALID_PRIORITIES)},
                             },
-                            "required": ["content", "status", "priority"],
+                            "required": ["content", "status"],
                             "additionalProperties": False,
                         },
                     }
@@ -73,20 +67,11 @@ def _normalize_todos(todos: object) -> tuple[list[dict[str, str]], str | None]:
         status = LEGACY_STATUS_ALIASES.get(status, status)
         if status not in VALID_STATUSES:
             return [], f"todos[{index}] 未知状态：{status}"
-        priority = str(item.get("priority") or "medium")
-        if priority not in VALID_PRIORITIES:
-            return [], f"todos[{index}] 未知优先级：{priority}"
-        normalized.append({"content": content, "status": status, "priority": priority})
+        normalized.append({"content": content, "status": status})
+    if sum(item["status"] == "in_progress" for item in normalized) > 1:
+        return [], "Todo 列表最多只能有一个 in_progress 项"
     return normalized, None
 
 
 def _format_result(todos: list[dict[str, str]]) -> ToolResult:
-    markers = {
-        "pending": "[ ]",
-        "in_progress": "[~]",
-        "completed": "[✓]",
-        "cancelled": "[-]",
-    }
-    lines = ["已更新任务清单"]
-    lines.extend(f"{markers[item['status']]} {item['content']}" for item in todos)
-    return make_text_result("todo", "\n".join(lines), todos=todos, count=len(todos))
+    return make_text_result("todo", "Todo updated", todos=todos, count=len(todos))
