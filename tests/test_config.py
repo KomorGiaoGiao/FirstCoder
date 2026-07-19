@@ -364,6 +364,7 @@ def test_create_provider_for_model_supports_anthropic_profile() -> None:
     provider = create_provider_for_model(config, config.model_catalog().require("claude/claude-test"))
 
     assert isinstance(provider, AnthropicProvider)
+    assert provider.name == "claude"
     assert provider.model == "claude-test"
 
 

@@ -1274,6 +1274,8 @@ def test_anthropic_provider_parses_text_and_tool_calls():
     client = _FakeAnthropicClient()
     provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
 
+    assert provider.name == "anthropic"
+
     response = provider.complete(
         ChatRequest(
             messages=[

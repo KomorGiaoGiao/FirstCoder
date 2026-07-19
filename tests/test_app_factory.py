@@ -407,6 +407,43 @@ def test_catalog_picker_can_switch_mixed_case_provider_ref(tmp_path: Path) -> No
     assert ModelStateStore(tmp_path / ".firstcoder" / "model_state.json").load().last_selected == "Yuren/pro"
 
 
+def test_catalog_anthropic_alias_is_current_model_and_picker_selection(tmp_path: Path) -> None:
+    config = AppConfig(
+        provider_name="anthropic",
+        env={"ANTHROPIC_API_KEY": "test-key"},
+        project_config={
+            "default_model": "claude/sonnet",
+            "providers": {
+                "claude": {
+                    "type": "anthropic",
+                    "api_key_env": "ANTHROPIC_API_KEY",
+                }
+            },
+            "models": {
+                "claude/sonnet": {},
+                "claude/opus": {},
+            },
+        },
+    )
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        app_config=config,
+        session_id="sess_test",
+        tools=[],
+    )
+
+    picker = app.command_handler.handle("/models")
+
+    assert app.chat_runner.provider.name == "claude"
+    assert "Current model: claude/sonnet" in picker.output
+    assert picker.action["models"] == [
+        {"provider": "claude", "model": "opus"},
+        {"provider": "claude", "model": "sonnet"},
+    ]
+    assert picker.action["selected_index"] == 1
+
+
 def test_app_factory_configures_default_loop_limits(tmp_path: Path) -> None:
     app = create_firstcoder_app(project_root=tmp_path, provider=FakeProvider([]), tools=[])
 

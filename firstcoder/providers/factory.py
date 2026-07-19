@@ -149,6 +149,7 @@ def _create_catalog_anthropic(config: AppConfig, profile: ModelProfile) -> ChatP
         base_url = config.get_env(preset.base_url_env)
     base_url = base_url or preset.default_base_url
     return AnthropicProvider(
+        name=profile.provider.id,
         model=profile.model_id,
         api_key=api_key,
         base_url=base_url,
@@ -182,6 +183,7 @@ def _create_catalog_preset(config: AppConfig, profile: ModelProfile) -> ChatProv
         )
     if preset.kind == "anthropic":
         return AnthropicProvider(
+            name=profile.provider.id,
             model=profile.model_id,
             api_key=api_key,
             base_url=base_url,

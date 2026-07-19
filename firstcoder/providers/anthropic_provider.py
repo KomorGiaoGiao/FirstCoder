@@ -52,6 +52,7 @@ class AnthropicProvider(ChatProvider):
     def __init__(
         self,
         *,
+        name: str = "anthropic",
         model: str,
         api_key: str,
         base_url: str | None = None,
@@ -60,6 +61,7 @@ class AnthropicProvider(ChatProvider):
         extra_body: dict[str, Any] | None = None,
         client: Any | None = None,
     ) -> None:
+        self._name = name
         self._model = model
         self._base_url = base_url
         self._capabilities = capabilities or ProviderCapabilities(
@@ -84,7 +86,7 @@ class AnthropicProvider(ChatProvider):
 
     @property
     def name(self) -> str:
-        return "anthropic"
+        return self._name
 
     @property
     def model(self) -> str:
