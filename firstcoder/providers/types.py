@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -131,6 +132,25 @@ class ToolChoiceFunction:
 
 
 ToolChoice = ToolChoiceMode | ToolChoiceFunction
+
+
+@dataclass(frozen=True, slots=True)
+class MainRequestOptions:
+    """Options applied only to the main agent model requests."""
+
+    temperature: float | None = None
+    max_tokens: int | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extra_body", deepcopy(dict(self.extra_body)))
+
+    def as_chat_request_kwargs(self) -> dict[str, Any]:
+        return {
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "extra_body": deepcopy(self.extra_body),
+        }
 
 
 @dataclass(slots=True)

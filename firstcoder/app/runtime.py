@@ -30,7 +30,7 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.permissions.types import PermissionMode
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.types import ChatResponse, ChatStreamEvent
+from firstcoder.providers.types import ChatResponse, ChatStreamEvent, MainRequestOptions
 from firstcoder.tools.types import Tool
 
 
@@ -87,6 +87,7 @@ class AgentChatRunner:
     limits: AgentLoopLimits | None = None
     max_tool_rounds: int | None | object = _DEFAULT_MAX_TOOL_ROUNDS
     use_streaming: bool = False
+    request_options: MainRequestOptions = field(default_factory=MainRequestOptions)
     loops: list[AgentLoop] = field(default_factory=list)
     last_display_lines: list[str] = field(default_factory=list)
     last_stream_events: list[ChatStreamEvent] = field(default_factory=list)
@@ -99,7 +100,17 @@ class AgentChatRunner:
     _active_cancellation_token: CancellationToken | None = None
 
     def set_provider(self, provider: ChatProvider, *, use_streaming: bool) -> None:
+        self.set_model(provider, request_options=MainRequestOptions(), use_streaming=use_streaming)
+
+    def set_model(
+        self,
+        provider: ChatProvider,
+        *,
+        request_options: MainRequestOptions,
+        use_streaming: bool,
+    ) -> None:
         self.provider = provider
+        self.request_options = request_options
         self.use_streaming = use_streaming
         self.last_stream_events = []
 
@@ -254,6 +265,7 @@ class AgentChatRunner:
         kwargs = {
             "session": self.current_session.session,
             "provider": self.provider,
+            "request_options": self.request_options,
             "tools": self._current_tools(),
             "context_builder": self.context_builder,
             "context_manager": self.context_manager,

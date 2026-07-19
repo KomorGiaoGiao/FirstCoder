@@ -801,13 +801,17 @@ def test_openai_compatible_provider_uses_capability_token_param_and_extra_body()
         ChatRequest(
             messages=[ChatMessage(role="user", content="hi")],
             max_tokens=123,
-            extra_body={"request": True},
+            extra_body={"request": True, "reasoning_effort": "high"},
         )
     )
 
     assert "max_tokens" not in client.completions.last_params
     assert client.completions.last_params["max_completion_tokens"] == 123
-    assert client.completions.last_params["extra_body"] == {"preset": True, "request": True}
+    assert client.completions.last_params["extra_body"] == {
+        "preset": True,
+        "request": True,
+        "reasoning_effort": "high",
+    }
 
 
 def test_openai_compatible_provider_sends_parallel_tool_calls_when_supported():

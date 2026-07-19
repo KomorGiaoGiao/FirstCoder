@@ -35,7 +35,7 @@ from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
-from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, ToolCall
+from firstcoder.providers.types import ChatRequest, ChatResponse, ChatStreamEvent, MainRequestOptions, ToolCall
 from firstcoder.skills.loader import SkillLoadError, SkillLoader
 from firstcoder.skills.router import SkillRouter
 from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
@@ -80,11 +80,13 @@ class AgentLoop:
         tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None,
         guidance_provider: Callable[[], list[str]] | None = None,
         cancellation_token: CancellationToken | None = None,
+        request_options: MainRequestOptions | None = None,
     ) -> None:
         self.session = session
         self.tool_settlement = ToolCallSettlement(session)
         self.todo_policy = TodoPolicy(session)
         self.provider = provider
+        self.request_options = request_options or MainRequestOptions()
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
         resolved_limits = limits or AgentLoopLimits.default()
@@ -477,7 +479,15 @@ class AgentLoop:
         self._check_turn_timeout()
         self._check_cancelled()
         self.provider_call_count += 1
-        return self.provider.complete(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice))
+        return self.provider.complete(self._main_chat_request(messages, definitions, tool_choice))
+
+    def _main_chat_request(self, messages, definitions, tool_choice) -> ChatRequest:
+        return ChatRequest(
+            messages=messages,
+            tools=definitions,
+            tool_choice=tool_choice,
+            **self.request_options.as_chat_request_kwargs(),
+        )
 
     def _complete_once_with_recovery(self, *, tool_choice="auto") -> ChatResponse:
         """同步模式下一次 provider 调用，并处理 prompt-too-long 的单次恢复。
@@ -569,7 +579,7 @@ class AgentLoop:
         self._check_turn_timeout()
         self._check_cancelled()
         self.provider_call_count += 1
-        async for event in self.provider.astream(ChatRequest(messages=messages, tools=definitions, tool_choice=tool_choice)):
+        async for event in self.provider.astream(self._main_chat_request(messages, definitions, tool_choice)):
             self._check_cancelled()
             self.last_stream_events.append(event)
             if self.stream_event_handler is not None:
