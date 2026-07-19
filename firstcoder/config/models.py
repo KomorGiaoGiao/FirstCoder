@@ -137,9 +137,7 @@ def _request_options(raw: Any, *, ref: str) -> ModelRequestOptions:
     max_tokens = raw.get("max_tokens")
     if max_tokens is not None and (isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0):
         raise ModelCatalogError(f"模型 {ref}.max_tokens 必须是大于 0 的整数")
-    reasoning_effort = raw.get("reasoning_effort")
-    if reasoning_effort is not None and reasoning_effort not in {"low", "medium", "high"}:
-        raise ModelCatalogError(f"模型 {ref}.reasoning_effort 值无效")
+    reasoning_effort = _optional_str(raw.get("reasoning_effort"), f"模型 {ref}.reasoning_effort")
     extra = raw.get("extra_body", {})
     if not isinstance(extra, dict):
         raise ModelCatalogError(f"模型 {ref}.extra_body 必须是表")

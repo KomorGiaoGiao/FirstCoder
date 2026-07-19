@@ -433,3 +433,56 @@ def test_model_catalog_validates_request_options_and_reserved_extra_body() -> No
     )
     with pytest.raises(ModelCatalogError, match="extra_body"):
         config.model_catalog()
+
+
+@pytest.mark.parametrize("reasoning_effort", ["xhigh", "minimal"])
+def test_model_catalog_passes_provider_specific_reasoning_effort_through(reasoning_effort: str) -> None:
+    config = AppConfig(
+        provider_name="p",
+        env={},
+        project_config={
+            "providers": {"p": {"type": "openai-compatible"}},
+            "models": {"p/m": {"request": {"reasoning_effort": reasoning_effort}}},
+        },
+    )
+
+    request = config.model_catalog().require("p/m").request
+
+    assert request.reasoning_effort == reasoning_effort
+    assert request.extra_body == {"reasoning_effort": reasoning_effort}
+
+
+@pytest.mark.parametrize("reasoning_effort", [123, "", "   "])
+def test_model_catalog_rejects_non_string_or_blank_reasoning_effort(reasoning_effort: object) -> None:
+    config = AppConfig(
+        provider_name="p",
+        env={},
+        project_config={
+            "providers": {"p": {"type": "openai-compatible"}},
+            "models": {"p/m": {"request": {"reasoning_effort": reasoning_effort}}},
+        },
+    )
+
+    with pytest.raises(ModelCatalogError, match="reasoning_effort.*非空字符串"):
+        config.model_catalog()
+
+
+def test_model_catalog_rejects_duplicate_reasoning_effort_in_extra_body() -> None:
+    config = AppConfig(
+        provider_name="p",
+        env={},
+        project_config={
+            "providers": {"p": {"type": "openai-compatible"}},
+            "models": {
+                "p/m": {
+                    "request": {
+                        "reasoning_effort": "xhigh",
+                        "extra_body": {"reasoning_effort": "minimal"},
+                    }
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ModelCatalogError, match="reasoning_effort.*冲突"):
+        config.model_catalog()
