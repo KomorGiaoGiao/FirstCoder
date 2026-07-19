@@ -101,6 +101,28 @@ def test_main_runs_single_message_with_injected_runner(tmp_path: Path, capsys):
     ]
 
 
+def test_main_parses_model_reference_for_single_message(tmp_path: Path):
+    seen: list[CliConfig] = []
+
+    def fake_runner(config: CliConfig) -> str:
+        seen.append(config)
+        return "done"
+
+    assert main(
+        [
+            "--project",
+            str(tmp_path),
+            "--model",
+            "yuren/gpt-5.6-terra",
+            "--message",
+            "hello",
+        ],
+        runner=fake_runner,
+    ) == 0
+
+    assert seen[0].model_spec == "yuren/gpt-5.6-terra"
+
+
 def test_main_returns_error_for_empty_message(tmp_path: Path, capsys):
     exit_code = main(["--project", str(tmp_path)], stdin_text="")
 
@@ -192,6 +214,48 @@ def test_main_config_show_uses_project_config_without_leaking_key(tmp_path: Path
     assert "base_url: https://yurenapi.cn/v1" in output
     assert "parallel_tool_calls: true" in output
     assert "secret-key" not in output
+
+
+def test_main_config_show_lists_catalog_refs_without_secrets_or_state(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.delenv("FIRSTCODER_PROVIDER", raising=False)
+    monkeypatch.setenv("YURENAPI_API_KEY", "secret-key")
+    (tmp_path / "firstcoder.toml").write_text(
+        "\n".join(
+            [
+                'default_model = "yuren/gpt-5.6-terra"',
+                "[providers.yuren]",
+                'type = "openai-compatible"',
+                'base_url = "https://yurenapi.cn/v1"',
+                'api_key_env = "YURENAPI_API_KEY"',
+                "[models.\"yuren/gpt-5.6-terra\"]",
+                'label = "Yuren Terra"',
+                "[models.\"yuren/gpt-5.6-terra\".request]",
+                'extra_body = { secret = "do-not-print" }',
+                "[models.\"openai/gpt-5.5\"]",
+                'label = "OpenAI"',
+                "[providers.openai]",
+                'type = "openai-compatible"',
+                'api_key_env = "OPENAI_API_KEY"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / ".firstcoder" / "model_state.json").parent.mkdir(parents=True)
+    (tmp_path / ".firstcoder" / "model_state.json").write_text(
+        '{"last_selected":"yuren/gpt-5.6-terra","recent":["openai/gpt-5.5"]}',
+        encoding="utf-8",
+    )
+
+    assert main(["--project", str(tmp_path), "config", "show"]) == 0
+    output = capsys.readouterr().out
+    assert "default_model: yuren/gpt-5.6-terra" in output
+    assert "  - yuren/gpt-5.6-terra (Yuren Terra)" in output
+    assert "  - openai/gpt-5.5 (OpenAI)" in output
+    assert "YURENAPI_API_KEY" not in output
+    assert "OPENAI_API_KEY" not in output
+    assert "secret-key" not in output
+    assert "do-not-print" not in output
+    assert "model_state.json" not in output
 
 
 def test_main_tui_runs_textual_app(monkeypatch, tmp_path: Path):

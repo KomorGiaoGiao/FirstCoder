@@ -25,6 +25,7 @@ class CliConfig:
     session_id: str | None
     provider_name: str | None
     message: str
+    model_spec: str | None = None
     max_tool_rounds: int | None = None
     benchmark: bool = False
 
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", default=None, help="Directory for FirstCoder session data.")
     parser.add_argument("--session-id", default=None, help="Session id to create or reuse.")
     parser.add_argument("--provider", default=None, help="Provider name override.")
+    parser.add_argument("--model", default=None, help="Model reference, for example provider/model.")
     parser.add_argument("--message", default=None, help="Single user message. Reads stdin when omitted.")
     parser.add_argument("--interactive", action="store_true", help="Run a line-oriented interactive session.")
     parser.add_argument("--tui", action="store_true", help="Run the Textual TUI.")
@@ -106,6 +108,7 @@ def main(
             session_id=args.session_id,
             provider_name=args.provider,
             message="",
+            model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
             benchmark=args.benchmark,
         )
@@ -124,6 +127,7 @@ def main(
             session_id=args.session_id,
             provider_name=args.provider,
             message="",
+            model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
             benchmark=args.benchmark,
         )
@@ -147,6 +151,7 @@ def main(
         session_id=args.session_id,
         provider_name=args.provider,
         message=message,
+        model_spec=args.model,
         max_tool_rounds=args.max_tool_rounds,
         benchmark=args.benchmark,
     )
@@ -191,7 +196,9 @@ def run_benchmark_turn(config: CliConfig) -> str:
 
 def create_cli_app(config: CliConfig):
     provider = None
-    if config.provider_name is not None:
+    # A fully qualified --model selects the catalog profile in the app factory;
+    # do not pre-create the legacy provider override in that case.
+    if config.provider_name is not None and config.model_spec is None:
         from firstcoder.providers.factory import create_provider
 
         provider = create_provider(config.provider_name, project_root=config.project_root)
@@ -200,6 +207,7 @@ def create_cli_app(config: CliConfig):
         data_root=config.data_root,
         provider=provider,
         session_id=config.session_id,
+        model_spec=config.model_spec,
     )
     if config.max_tool_rounds is not None:
         app.chat_runner.limits = AgentLoopLimits.default().with_max_tool_rounds(config.max_tool_rounds)
@@ -225,8 +233,14 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
     if command == "show":
         config = load_config(args.provider, project_root=project_root)
+        catalog = config.model_catalog()
         print(f"provider: {config.provider_name}")
         print(f"model: {_effective_model(config)}")
+        if catalog.profiles:
+            print(f"default_model: {catalog.default_ref or '<first configured model>'}")
+            print("models:")
+            for profile in catalog.list():
+                print(f"  - {profile.ref} ({profile.label})")
         print(f"base_url: {_effective_base_url(config)}")
         print(f"parallel_tool_calls: {_effective_parallel_tool_calls(config)}")
         print("config_files:")
