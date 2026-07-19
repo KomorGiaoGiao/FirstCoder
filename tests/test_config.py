@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from firstcoder.config import AppConfig, load_config
+from firstcoder.config.models import ModelCatalogError
 from firstcoder.config.settings import default_global_config_path, render_default_config
 from firstcoder.providers.factory import ProviderConfigError, create_provider_from_config
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
@@ -240,3 +241,96 @@ def test_create_provider_from_config_passes_openrouter_headers():
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.base_url == "https://openrouter.ai/api/v1"
     assert provider.extra_headers["X-Title"] == "FirstCoder"
+
+
+def test_model_catalog_deep_merges_global_and_project_entries() -> None:
+    config = AppConfig(
+        provider_name="openai-compatible",
+        env={},
+        global_config={
+            "providers": {
+                "yuren": {
+                    "type": "openai-compatible",
+                    "base_url": "https://global.example/v1",
+                    "api_key_env": "YUREN_API_KEY",
+                }
+            },
+            "models": {
+                "yuren/gpt-main": {
+                    "label": "Global label",
+                    "request": {
+                        "temperature": 0.2,
+                        "extra_body": {"reasoning_effort": "medium", "reasoning_summary": "auto"},
+                    },
+                },
+                "yuren/gpt-cheap": {},
+            },
+        },
+        project_config={
+            "default_model": "yuren/gpt-main",
+            "providers": {"yuren": {"base_url": "https://project.example/v1"}},
+            "models": {
+                "yuren/gpt-main": {
+                    "label": "Project label",
+                    "request": {"max_tokens": 8192, "extra_body": {"reasoning_effort": "high"}},
+                }
+            },
+        },
+    )
+
+    catalog = config.model_catalog()
+
+    assert catalog.default_ref == "yuren/gpt-main"
+    assert [item.ref for item in catalog.list()] == ["yuren/gpt-cheap", "yuren/gpt-main"]
+    main = catalog.require("yuren/gpt-main")
+    assert main.label == "Project label"
+    assert main.provider.base_url == "https://project.example/v1"
+    assert main.request.temperature == 0.2
+    assert main.request.max_tokens == 8192
+    assert main.request.extra_body == {"reasoning_effort": "high", "reasoning_summary": "auto"}
+
+
+def test_model_catalog_rejects_model_without_declared_provider() -> None:
+    config = AppConfig(provider_name="openai-compatible", env={}, project_config={"models": {"missing/model": {}}})
+
+    with pytest.raises(ModelCatalogError, match="missing/model.*missing"):
+        config.model_catalog()
+
+
+def test_model_catalog_adapts_legacy_single_provider_config() -> None:
+    config = AppConfig(
+        provider_name="openai-compatible",
+        env={"YUREN_API_KEY": "test-key"},
+        project_config={
+            "model": "yurenapi/gpt-legacy",
+            "provider": {
+                "type": "openai-compatible",
+                "name": "yurenapi",
+                "base_url": "https://example.test/v1",
+                "api_key_env": "YUREN_API_KEY",
+            },
+        },
+    )
+
+    profile = config.model_catalog().require("yurenapi/gpt-legacy")
+
+    assert profile.provider.type == "openai-compatible"
+    assert profile.provider.base_url == "https://example.test/v1"
+
+
+def test_model_catalog_validates_request_options_and_reserved_extra_body() -> None:
+    base = {"providers": {"p": {"type": "openai-compatible"}}, "models": {"p/m": {}}}
+    config = AppConfig(provider_name="p", env={}, project_config={**base, "models": {"p/m": {"request": {"max_tokens": 0}}}})
+    with pytest.raises(ModelCatalogError, match="max_tokens"):
+        config.model_catalog()
+
+    config = AppConfig(
+        provider_name="p",
+        env={},
+        project_config={
+            **base,
+            "models": {"p/m": {"request": {"extra_body": {"messages": []}}}},
+        },
+    )
+    with pytest.raises(ModelCatalogError, match="extra_body"):
+        config.model_catalog()

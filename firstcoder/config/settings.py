@@ -15,6 +15,8 @@ import tomllib
 
 from dotenv import load_dotenv
 
+from firstcoder.config.models import ModelCatalog, build_model_catalog
+
 
 PROJECT_CONFIG_NAME = "firstcoder.toml"
 
@@ -104,6 +106,16 @@ class AppConfig:
             for name, server_config in raw_mcp.items():
                 merged[name] = deepcopy(server_config)
         return merged
+
+    def model_catalog(self) -> ModelCatalog:
+        """返回合并后的多模型目录；旧配置自动适配为单模型目录。"""
+
+        return build_model_catalog(
+            global_config=self.global_config,
+            project_config=self.project_config,
+            legacy_provider_name=self.provider_name,
+            env=self.env,
+        )
 
     @property
     def loaded_config_paths(self) -> list[Path]:
