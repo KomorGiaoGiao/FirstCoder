@@ -149,6 +149,22 @@ def test_resume_rejects_unsupported_schema_before_bootstrap_side_effects(
     assert calls == []
 
 
+def test_resume_rejects_future_schema_before_parsing_later_events(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    path = store.sessions_dir / "sess_future.jsonl"
+    path.write_text(
+        '{"id":"evt_created","session_id":"sess_future","type":"session_created",'
+        '"payload":{"context_event_schema_version":"v3"}}\n'
+        '{"future_event_shape":true}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SessionUnsupportedSchemaError) as caught:
+        ResumeService(store=store, project_root=tmp_path).resume("sess_future")
+
+    assert caught.value.actual_version == "v3"
+
+
 def test_resume_service_rediscovers_current_project_skill_catalog(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     (tmp_path / "AGENTS.md").write_text("项目规则", encoding="utf-8")

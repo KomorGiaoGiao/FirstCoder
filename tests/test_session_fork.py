@@ -103,3 +103,22 @@ def test_fork_accepts_v2_session_and_copies_events_and_archives(tmp_path: Path) 
     assert result.session.rebuild_view().messages[0].parts[0].content == "历史消息"
     copied_archive = store.root / "archives" / result.session.session_id / "archive.json"
     assert copied_archive.read_text(encoding="utf-8") == "source archive"
+
+
+def test_fork_rejects_future_schema_before_parsing_later_events(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    path = store.sessions_dir / "sess_future.jsonl"
+    path.write_text(
+        '{"id":"evt_created","session_id":"sess_future","type":"session_created",'
+        '"payload":{"context_event_schema_version":"v3"}}\n'
+        '{"future_event_shape":true}\n',
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    with pytest.raises(SessionUnsupportedSchemaError) as caught:
+        ForkSessionService(store=store, project_root=tmp_path).fork("sess_future")
+
+    assert caught.value.actual_version == "v3"
+    assert path.read_bytes() == before
+    assert list(store.sessions_dir.glob("*.jsonl")) == [path]

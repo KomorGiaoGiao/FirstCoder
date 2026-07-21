@@ -33,9 +33,9 @@ class ForkSessionService:
     catalog: SessionCatalog | None = None
 
     def fork(self, source_session_id: str, *, title: str | None = None) -> ResumeResult:
+        validate_session_schema(self.store, source_session_id)
         catalog = self.catalog or SessionCatalog(self.store.root)
         record = require_usable_record(catalog.get_session(source_session_id))
-        validate_session_schema(self.store, source_session_id)
 
         events = self.store.list_events(source_session_id)
         if not events:
