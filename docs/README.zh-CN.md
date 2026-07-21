@@ -37,13 +37,11 @@
 | 本地 Skill 怎样发现、路由和安全加载？ | [Skill 系统设计](SKILL_SYSTEM_DESIGN.zh-CN.md) / [English](SKILL_SYSTEM_DESIGN.md) |
 | 外部 MCP 工具怎样配置并经过权限控制？ | [MCP 客户端](MCP.zh-CN.md) / [English](MCP.md) |
 
-## 评测与运行手册
+## 评测
 
-这几篇是可操作流程，不是架构承诺。请从仓库根目录执行，并在相信分数前检查生成的运行产物。
-
-- [本地 Pytest 基准](LOCAL_PYTEST_BENCHMARK.zh-CN.md) / [English](LOCAL_PYTEST_BENCHMARK.md)
-- [SWE-bench 快速手册](SWE_BENCH_FAST_RUNBOOK.zh-CN.md) / [English](SWE_BENCH_FAST_RUNBOOK.md)
-- [SWE-bench Lite 手册](SWE_LITE_RUNBOOK.zh-CN.md) / [English](SWE_LITE_RUNBOOK.md)
+[Harbor 评测指南](../benchmark/harbor/README.md) 是 FirstCoder 唯一的 benchmark
+集成。Harbor 负责任务集、隔离环境、验证器和运行产物；FirstCoder 作为 agent
+进入每道题的任务环境执行。
 
 ## 维护约定
 

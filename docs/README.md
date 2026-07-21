@@ -51,15 +51,12 @@ mental model, not memorize a directory tree.
 | How are local skills found and safely loaded? | [Skill System Design](SKILL_SYSTEM_DESIGN.md) / [中文](SKILL_SYSTEM_DESIGN.zh-CN.md) |
 | How are external MCP tools configured and permissioned? | [MCP Client](MCP.md) / [中文](MCP.zh-CN.md) |
 
-## Evaluation And Operations
+## Evaluation
 
-These are procedures, rather than architecture specifications. Run them from
-the repository root and inspect their generated artifacts before trusting a
-score.
-
-- [Local Pytest Benchmark](LOCAL_PYTEST_BENCHMARK.md) / [中文](LOCAL_PYTEST_BENCHMARK.zh-CN.md)
-- [SWE-bench Fast Runbook](SWE_BENCH_FAST_RUNBOOK.md) / [中文](SWE_BENCH_FAST_RUNBOOK.zh-CN.md)
-- [SWE-bench Lite Runbook](SWE_LITE_RUNBOOK.md) / [中文](SWE_LITE_RUNBOOK.zh-CN.md)
+[Harbor Evaluation](../benchmark/harbor/README.md) is FirstCoder's only
+benchmark integration. Harbor owns task datasets, isolated environments,
+verification, and result artifacts; FirstCoder runs inside each task as the
+agent.
 
 ## Documentation Maintenance
 

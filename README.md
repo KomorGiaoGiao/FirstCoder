@@ -56,10 +56,10 @@ Compared with more tutorial-first or lightweight learning repos, FirstCoder also
 | --- | --- | --- |
 | Learning value | Readable subsystem boundaries and explicit docs | Often optimized for a single tutorial path or demo flow |
 | Practical surface | Real TUI, tools, permissions, sessions, provider adapters | Often focused on a narrower loop or a simpler proof of concept |
-| Verification | 108 test modules and multiple benchmark entry points | Often lighter on testing and benchmark integration |
+| Verification | Broad pytest coverage plus one Harbor evaluation integration | Often lighter on testing and benchmark integration |
 | Extension path | Easier to adapt into a portfolio or resume project | Often better for following along than for long-term extension |
 
-In this repo, the learning goal is important, but it is paired with enough runtime structure, tests, and benchmark hooks to make the project useful after the first read-through.
+In this repo, the learning goal is important, but it is paired with enough runtime structure, tests, and a Harbor evaluation path to make the project useful after the first read-through.
 
 It is built for people who want to:
 
@@ -161,7 +161,7 @@ Use `firstcoder --model provider/model` to choose the initial profile for a run.
 
 FirstCoder's TUI is designed to expose the agent loop instead of hiding it. You can see session state, streamed assistant output, tool calls, tool results, and permission prompts in one place.
 
-Before `write`, `edit`, `apply_patch`, or `delete` changes local files, FirstCoder builds a trusted unified diff with red removals, green additions, per-file statistics, and bounded expansion controls. In standard mode it accompanies the normal permission confirmation; an existing grant or aggressive mode still requires a review-only Apply confirmation. Approve the reviewed operation, deny it, or reply with `reject: <feedback>` so the model can revise the proposed change. FirstCoder rechecks reviewed file snapshots immediately before dispatch and blocks stale operations, reducing accidental overwrites from concurrent changes; this is a guard, not a filesystem-level atomic transaction. In bypass mode the review is shown as a non-blocking event and the operation proceeds immediately; non-interactive benchmark adapters explicitly disable that event. Shell commands follow the permission policy for the active mode because arbitrary command effects cannot be precomputed safely.
+Before `write`, `edit`, `apply_patch`, or `delete` changes local files, FirstCoder builds a trusted unified diff with red removals, green additions, per-file statistics, and bounded expansion controls. In standard mode it accompanies the normal permission confirmation; an existing grant or aggressive mode still requires a review-only Apply confirmation. Approve the reviewed operation, deny it, or reply with `reject: <feedback>` so the model can revise the proposed change. FirstCoder rechecks reviewed file snapshots immediately before dispatch and blocks stale operations, reducing accidental overwrites from concurrent changes; this is a guard, not a filesystem-level atomic transaction. In bypass mode the review is shown as a non-blocking event and the operation proceeds immediately; the Harbor adapter disables that event for its non-interactive task turn. Shell commands follow the permission policy for the active mode because arbitrary command effects cannot be precomputed safely.
 
 Ready state:
 
@@ -179,6 +179,7 @@ Conversation flow:
 - [Codebase Reading Guide](docs/CODEBASE_READING_GUIDE.md)
 - [Multimodal Input Design](docs/MULTIMODAL_INPUT_DESIGN.md)
 - [MCP Client Configuration](docs/MCP.md)
+- [Harbor Evaluation](benchmark/harbor/README.md)
 
 ## Development
 
