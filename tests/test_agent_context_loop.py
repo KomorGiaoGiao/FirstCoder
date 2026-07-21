@@ -33,7 +33,6 @@ from firstcoder.providers.types import (
 )
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
-from firstcoder.tools.todo import create_todo_tool
 from firstcoder.tools.write import create_write_tool
 from firstcoder.tools.edit import create_edit_tool
 from firstcoder.tools.shell import create_shell_tool
@@ -441,6 +440,31 @@ def _echo_tool() -> Tool:
                 "type": "object",
                 "properties": {"text": {"type": "string"}},
                 "required": ["text"],
+            },
+        ),
+        executor=execute,
+    )
+
+
+def _legacy_plan_fixture_tool() -> Tool:
+    """Temporary old-protocol fixture until Task 10 migrates these loop tests."""
+
+    def execute(todos):
+        return ToolResult(
+            name="todo",
+            ok=True,
+            content="Todo updated",
+            data={"todos": todos, "count": len(todos)},
+        )
+
+    return Tool(
+        definition=ToolDefinition(
+            name="todo",
+            description="Temporary legacy planning fixture.",
+            parameters={
+                "type": "object",
+                "properties": {"todos": {"type": "array", "items": {"type": "object"}}},
+                "required": ["todos"],
             },
         ),
         executor=execute,
@@ -1421,7 +1445,7 @@ def test_task_boundary_tool_result_append_preserves_stable_window_metadata(tmp_p
 
 def test_agent_session_persists_successful_todo_result_as_native_state_event(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
-    session = AgentSession.create(store=store, session_id="sess_todo_state", tools=[create_todo_tool()])
+    session = AgentSession.create(store=store, session_id="sess_todo_state", tools=[_legacy_plan_fixture_tool()])
     session.runtime_state.active_task_hash = "task_current"
     tool_call = ToolCall(
         id="call_todo",
@@ -1614,7 +1638,7 @@ def test_agent_loop_runs_todo_self_check_before_final_answer(tmp_path) -> None:
         store=store,
         session_id="sess_todo_self_check",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -1720,7 +1744,7 @@ def test_agent_loop_skips_todo_self_check_when_all_todos_done(tmp_path) -> None:
         store=store,
         session_id="sess_todo_self_check_done",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -1762,7 +1786,7 @@ def test_agent_loop_skips_todo_self_check_when_all_todos_completed(tmp_path) -> 
         store=store,
         session_id="sess_todo_self_check_completed",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -1804,7 +1828,7 @@ def test_agent_loop_executes_tool_calls_after_todo_self_check(tmp_path) -> None:
         store=store,
         session_id="sess_todo_self_check_tools",
         agents_md="",
-        tools=[create_todo_tool(), _echo_tool()],
+        tools=[_legacy_plan_fixture_tool(), _echo_tool()],
     )
     provider = FakeProvider(
         [
@@ -1873,7 +1897,7 @@ def test_agent_loop_runs_todo_reconciliation_at_most_once_per_user_turn(tmp_path
         store=store,
         session_id="sess_todo_reconciliation_once",
         agents_md="",
-        tools=[create_todo_tool(), _echo_tool()],
+        tools=[_legacy_plan_fixture_tool(), _echo_tool()],
     )
     provider = FakeProvider(
         [
@@ -1919,7 +1943,7 @@ def test_agent_loop_does_not_reconcile_todo_after_tool_round_limit(tmp_path) -> 
         store=store,
         session_id="sess_todo_tool_limit",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -1955,7 +1979,7 @@ def test_agent_loop_converts_provider_limit_during_todo_reconciliation_to_stop_r
         store=store,
         session_id="sess_todo_provider_limit",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -1992,7 +2016,7 @@ def test_agent_loop_converts_timeout_during_todo_reconciliation_to_stop_response
         store=store,
         session_id="sess_todo_timeout",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     provider = FakeProvider(
         [
@@ -2030,7 +2054,7 @@ def test_agent_loop_converts_cancellation_during_todo_reconciliation_to_interrup
         store=store,
         session_id="sess_todo_cancelled",
         agents_md="",
-        tools=[create_todo_tool()],
+        tools=[_legacy_plan_fixture_tool()],
     )
     token = CancellationToken()
     provider = CancellingProvider(
@@ -2069,7 +2093,7 @@ def test_agent_loop_propagates_prewrite_review_from_todo_self_check_without_dupl
         store=store,
         session_id="sess_todo_review_pause",
         project_root=tmp_path,
-        tools=[create_todo_tool(), create_write_tool(tmp_path)],
+        tools=[_legacy_plan_fixture_tool(), create_write_tool(tmp_path)],
     )
     provider = FakeProvider(
         [
@@ -2154,7 +2178,7 @@ def test_permission_resume_does_not_repeat_todo_reconciliation_for_same_user_tur
         store=store,
         session_id="sess_todo_review_once",
         project_root=tmp_path,
-        tools=[create_todo_tool(), create_write_tool(tmp_path)],
+        tools=[_legacy_plan_fixture_tool(), create_write_tool(tmp_path)],
     )
     provider = FakeProvider(
         [
@@ -2211,7 +2235,7 @@ def test_agent_loop_streaming_propagates_prewrite_review_from_todo_self_check_wi
         store=store,
         session_id="sess_stream_todo_review_pause",
         project_root=tmp_path,
-        tools=[create_todo_tool(), create_write_tool(tmp_path)],
+        tools=[_legacy_plan_fixture_tool(), create_write_tool(tmp_path)],
     )
     provider = StreamingProvider(
         [
