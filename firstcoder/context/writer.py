@@ -21,6 +21,7 @@ from firstcoder.context.task_boundary import TaskBoundaryObservation, TaskBounda
 from firstcoder.context.versions import CONTEXT_EVENT_SCHEMA_VERSION
 from firstcoder.input.attachments import PreparedAttachment
 from firstcoder.planning.models import TaskPlan
+from firstcoder.planning.validation import validate_plan
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -275,12 +276,17 @@ class SessionEventWriter:
     ) -> None:
         """追加一次规划操作及其完整、已验证快照。"""
 
-        if isinstance(previous_revision, bool) or previous_revision < 0:
+        if (
+            isinstance(previous_revision, bool)
+            or not isinstance(previous_revision, int)
+            or previous_revision < 0
+        ):
             raise ValueError("previous_revision must be a non-negative integer")
         if not isinstance(operation, str) or not operation.strip():
             raise ValueError("operation must be a non-blank string")
 
         plan = TaskPlan.from_dict(snapshot.to_dict() if isinstance(snapshot, TaskPlan) else snapshot)
+        validate_plan(plan)
         if plan.revision != previous_revision + 1:
             raise ValueError(
                 "task plan revision must be exactly one greater than previous_revision"

@@ -327,3 +327,74 @@ def test_store_raises_clear_corruption_error_for_invalid_task_plan_snapshot(tmp_
 
     with pytest.raises(SessionStoreCorruptError, match="invalid task_plan_updated snapshot"):
         store.rebuild_session_view("sess_plan")
+
+
+def test_store_rejects_semantically_invalid_task_plan_snapshot(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    store.append_event(
+        SessionEvent(
+            id="evt_invalid_semantics",
+            session_id="sess_plan",
+            type="task_plan_updated",
+            payload={
+                "previous_revision": 0,
+                "revision": 1,
+                "operation": "create",
+                "changes": [],
+                "snapshot": {
+                    "mode": "dag",
+                    "revision": 1,
+                    "tasks": [
+                        {
+                            "id": "work",
+                            "content": "Work",
+                            "status": "pending",
+                            "depends_on": ["missing"],
+                            "owner": None,
+                            "order": 0,
+                        }
+                    ],
+                },
+            },
+        )
+    )
+
+    with pytest.raises(SessionStoreCorruptError, match="invalid task_plan_updated snapshot"):
+        store.rebuild_session_view("sess_plan")
+
+
+@pytest.mark.parametrize(
+    ("second_previous", "second_revision"),
+    [
+        (0, 1),  # duplicate/stale event
+        (2, 3),  # gap after revision 1
+        (1, 1),  # non-increasing revision
+    ],
+)
+def test_store_rejects_non_contiguous_task_plan_event_chain(
+    tmp_path: Path,
+    second_previous: int,
+    second_revision: int,
+) -> None:
+    store = JsonlSessionStore(tmp_path)
+    for event_id, previous_revision, revision in (
+        ("evt_first", 0, 1),
+        ("evt_second", second_previous, second_revision),
+    ):
+        store.append_event(
+            SessionEvent(
+                id=event_id,
+                session_id="sess_plan",
+                type="task_plan_updated",
+                payload={
+                    "previous_revision": previous_revision,
+                    "revision": revision,
+                    "operation": "create" if revision == 1 else "update",
+                    "changes": [],
+                    "snapshot": {"mode": "linear", "revision": revision, "tasks": []},
+                },
+            )
+        )
+
+    with pytest.raises(SessionStoreCorruptError, match="revision chain"):
+        store.rebuild_session_view("sess_plan")

@@ -1,8 +1,10 @@
+import pytest
+
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.task_boundary import TaskBoundaryDecision, TaskBoundaryService
 from firstcoder.context.writer import SessionEventWriter
-from firstcoder.planning.models import Task, TaskPlan
+from firstcoder.planning.models import Task, TaskPlan, TaskPlanError
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -180,3 +182,25 @@ def test_task_plan_state_is_isolated_by_session(tmp_path) -> None:
 
     assert store.rebuild_session_view("sess_a").task_plan == plan_a
     assert store.rebuild_session_view("sess_b").task_plan == plan_b
+
+
+def test_writer_rejects_semantically_invalid_task_plan_snapshot(tmp_path) -> None:
+    writer = SessionEventWriter(
+        store=JsonlSessionStore(tmp_path),
+        session_id="sess_invalid",
+    )
+    invalid = TaskPlan(
+        mode="dag",
+        revision=1,
+        tasks=(Task(id="work", content="Work", depends_on=("missing",)),),
+    )
+
+    with pytest.raises(TaskPlanError, match="missing"):
+        writer.append_task_plan_updated(
+            previous_revision=0,
+            operation="create",
+            changes=[invalid.tasks[0].to_dict()],
+            snapshot=invalid,
+        )
+
+    assert writer.store.list_events("sess_invalid") == []
