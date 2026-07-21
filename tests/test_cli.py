@@ -485,6 +485,57 @@ def test_main_parses_benchmark_mode_for_single_message(tmp_path: Path):
     ]
 
 
+def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: Path, monkeypatch):
+    class FakeSession:
+        require_prewrite_review = True
+
+        def __init__(self) -> None:
+            self.permission_mode = None
+
+        def set_permission_mode(self, mode):
+            self.permission_mode = mode
+
+    class FakeCurrentSession:
+        def __init__(self) -> None:
+            self.session = FakeSession()
+
+        def set_permission_mode(self, mode):
+            self.session.set_permission_mode(mode)
+
+    class FakeRunner:
+        def __init__(self) -> None:
+            self.limits = None
+
+        def run_user_turn(self, message: str) -> FakeResponse:
+            assert message == "solve it"
+            return FakeResponse("done")
+
+    class FakeApp:
+        def __init__(self) -> None:
+            self.current_session = FakeCurrentSession()
+            self.chat_runner = FakeRunner()
+
+    app = FakeApp()
+    monkeypatch.setattr(cli, "create_cli_app", lambda config: app)
+
+    output = cli.run_benchmark_turn(
+        CliConfig(
+            project_root=tmp_path,
+            data_root=tmp_path / ".fc-bench",
+            session_id="harbor-task",
+            provider_name=None,
+            message="solve it",
+            max_tool_rounds=120,
+            benchmark=True,
+        )
+    )
+
+    assert output == "done"
+    assert str(app.current_session.session.permission_mode) == "bypass"
+    assert app.current_session.session.require_prewrite_review is False
+    assert app.chat_runner.limits.max_tool_rounds == 120
+
+
 def test_mcp_add_list_and_remove_manage_global_configuration(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 

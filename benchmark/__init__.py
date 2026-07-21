@@ -1,1 +1,1 @@
-"""Benchmark helpers and standalone runners."""
+"""Harbor integration for evaluating FirstCoder on external task datasets."""

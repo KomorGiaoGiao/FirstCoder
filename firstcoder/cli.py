@@ -13,9 +13,8 @@ from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.config import load_config
 from firstcoder.config.settings import default_global_config_path, project_config_path, render_default_config
-from firstcoder.eval.adapter import FirstCoderCodingAgentAdapter
-from firstcoder.eval.tasks import CodingTask
 from firstcoder.mcp.config_store import McpConfigStore, McpConfigStoreError
+from firstcoder.permissions.types import PermissionMode
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,23 +174,14 @@ def run_single_turn(config: CliConfig) -> str:
 
 
 def run_benchmark_turn(config: CliConfig) -> str:
-    """Run a single benchmark task with bypass permissions and repo-local tools."""
+    """Run Harbor's non-interactive turn with benchmark-safe session settings."""
 
-    adapter = FirstCoderCodingAgentAdapter(
-        model_name_or_path="firstcoder-benchmark",
-        provider_name=config.provider_name,
-        session_root=config.data_root or (config.project_root.resolve().parent / ".firstcoder-benchmark"),
-        limits=_benchmark_limits(config.max_tool_rounds),
-    )
-    result = adapter.run_task(
-        CodingTask(
-            instance_id=config.session_id or config.project_root.resolve().name,
-            repo_path=config.project_root,
-            problem_statement=config.message,
-            metadata={"benchmark": "firstcoder-cli"},
-        )
-    )
-    return result.raw_response
+    app = create_cli_app(config)
+    app.current_session.set_permission_mode(PermissionMode.BYPASS)
+    app.current_session.session.require_prewrite_review = False
+    app.chat_runner.limits = _benchmark_limits(config.max_tool_rounds)
+    response = app.chat_runner.run_user_turn(config.message)
+    return response.content
 
 
 def create_cli_app(config: CliConfig):

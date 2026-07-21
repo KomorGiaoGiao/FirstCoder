@@ -1,2 +1,0 @@
-"""EvalPlus benchmark helpers."""
-

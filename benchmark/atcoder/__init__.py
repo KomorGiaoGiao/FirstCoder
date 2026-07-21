@@ -1,1 +1,0 @@
-"""AtCoder benchmark runner package."""
