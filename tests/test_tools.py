@@ -156,9 +156,16 @@ def test_registry_returns_error_for_unknown_tool():
 
 
 def test_session_registry_adds_four_authoritative_task_plan_tools(tmp_path):
+    from firstcoder.context.store import JsonlSessionStore
+    from firstcoder.context.writer import SessionEventWriter
+
+    store = JsonlSessionStore(tmp_path)
+    writer = SessionEventWriter(store=store, session_id="sess_plan")
     registry = create_session_tool_registry(
         session_id="sess_plan",
         archive_root=tmp_path,
+        store=store,
+        writer=writer,
     )
 
     for name in ("task_create", "task_update", "task_revise", "task_list"):
@@ -172,7 +179,7 @@ def test_session_registry_adds_four_authoritative_task_plan_tools(tmp_path):
 
 @pytest.mark.parametrize(
     "reserved_name",
-    ["task_create", "task_update", "task_revise", "task_list"],
+    ["task_create", "task_update", "task_revise", "task_list", "retrieve_archive"],
 )
 def test_session_registry_rejects_supplied_task_plan_tool_override(
     tmp_path,

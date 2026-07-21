@@ -128,6 +128,8 @@ class AgentSession:
             permission_manager=permission_manager,
             archive_root=store.root,
             current_turn=lambda: writer.current_turn,
+            store=store,
+            writer=writer,
         )
         session = cls(
             session_id=session_id,
@@ -213,6 +215,8 @@ class AgentSession:
             permission_manager=permission_manager,
             archive_root=store.root,
             current_turn=lambda: writer.current_turn,
+            store=store,
+            writer=writer,
         )
         session = cls(
             session_id=session_id,
@@ -508,6 +512,7 @@ class AgentSession:
         self.known_message_ids.add(tool_message_id)
         self._append_task_boundary_observation_if_present(tool_call=tool_call, result=result)
         self._append_todo_updated_if_present(tool_call=tool_call, result=result)
+        self._append_task_graph_updated_if_present(tool_call=tool_call, result=result)
         return tool_message_id
 
     def append_interrupted_tool_results(self) -> list[ToolCall]:
@@ -530,6 +535,29 @@ class AgentSession:
                 ),
             )
         return tool_calls
+
+    def append_background_notification(
+        self,
+        *,
+        content: str,
+        job_id: str,
+        tool_name: str,
+        status: str,
+        graph_id: str | None = None,
+        node_id: str | None = None,
+    ) -> str:
+        """把一条后台完成通知写成可 resume 的独立事件。"""
+
+        message_id = self.writer.append_background_notification(
+            content=content,
+            job_id=job_id,
+            tool_name=tool_name,
+            status=status,
+            graph_id=graph_id,
+            node_id=node_id,
+        )
+        self.known_message_ids.add(message_id)
+        return message_id
 
     @property
     def current_turn(self) -> int:
@@ -555,6 +583,20 @@ class AgentSession:
             return
         self.writer.append_todo_updated(
             [dict(item) for item in todos],
+            task_hash=self.runtime_state.active_task_hash,
+        )
+
+    def _append_task_graph_updated_if_present(self, *, tool_call: ToolCall, result: ToolResult) -> None:
+        if tool_call.name != "task_graph" or not result.ok:
+            return
+        graph = result.data.get("graph")
+        if not isinstance(graph, dict):
+            return
+        ready = result.data.get("ready_nodes")
+        ready_nodes = [str(item) for item in ready] if isinstance(ready, list) else None
+        self.writer.append_task_graph_updated(
+            dict(graph),
+            ready_nodes=ready_nodes,
             task_hash=self.runtime_state.active_task_hash,
         )
 

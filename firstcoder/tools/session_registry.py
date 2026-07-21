@@ -53,6 +53,8 @@ def create_session_tool_registry(
     permission_manager: PermissionManager | None = None,
     archive_root: str | Path | None = None,
     current_turn: Callable[[], int] | None = None,
+    store: JsonlSessionStore | None = None,
+    writer: SessionEventWriter | None = None,
 ) -> ToolRegistryLike:
     """创建单个会话专用的工具注册表。
 
@@ -80,11 +82,14 @@ def create_session_tool_registry(
     registry = ToolRegistry(supplied_tools)
     if "task_boundary" not in registry.names():
         registry.register(create_task_boundary_tool(state, service=boundary_service))
-    if archive_root is not None:
-        store = JsonlSessionStore(archive_root)
+    if (store is None) != (writer is None):
+        raise ValueError("store and writer must be provided together")
+    if store is not None and writer is not None:
+        if writer.store is not store or writer.session_id != session_id:
+            raise ValueError("task-plan service requires the live session store and writer")
         service = TaskPlanService(
             store=store,
-            writer=SessionEventWriter(store=store, session_id=session_id),
+            writer=writer,
         )
         for tool in (
             create_task_create_tool(service),
@@ -93,6 +98,7 @@ def create_session_tool_registry(
             create_task_list_tool(service),
         ):
             registry.register(tool)
+    if archive_root is not None:
         registry.register(
             create_retrieve_archive_tool(
                 session_id=session_id,
