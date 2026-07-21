@@ -2,6 +2,7 @@ from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.task_boundary import TaskBoundaryDecision, TaskBoundaryService
 from firstcoder.context.writer import SessionEventWriter
+from firstcoder.planning.models import Task, TaskPlan
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -119,37 +120,63 @@ def test_writer_appends_task_boundary_observation_event(tmp_path) -> None:
     assert event.payload["triggered_compaction"] is True
 
 
-def test_writer_appends_todo_updated_event_and_store_replays_latest_state(tmp_path) -> None:
+def test_writer_appends_task_plan_event_and_store_replays_latest_snapshot(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     writer = SessionEventWriter(store=store, session_id="sess_test")
-    initial = [
-        {"content": "读代码", "status": "in_progress", "priority": "high"},
-        {"content": "跑测试", "status": "pending", "priority": "medium"},
-    ]
-    latest = [
-        {"content": "读代码", "status": "completed", "priority": "high"},
-        {"content": "跑测试", "status": "in_progress", "priority": "medium"},
-    ]
+    initial = TaskPlan(
+        mode="linear",
+        revision=1,
+        tasks=(Task(id="read", content="读代码", status="in_progress"),),
+    )
+    latest = TaskPlan(
+        mode="linear",
+        revision=2,
+        tasks=(Task(id="read", content="读代码", status="completed"),),
+    )
 
-    writer.append_todo_updated(initial, task_hash="task_a")
-    writer.append_todo_updated(latest, task_hash="task_a")
+    writer.append_task_plan_updated(
+        previous_revision=0,
+        operation="create",
+        changes=[initial.tasks[0].to_dict()],
+        snapshot=initial,
+    )
+    writer.append_task_plan_updated(
+        previous_revision=1,
+        operation="update",
+        changes=({"id": "read", "status": "completed"},),
+        snapshot=latest,
+    )
 
     events = store.list_events("sess_test")
     view = store.rebuild_session_view("sess_test")
-    assert [event.type for event in events] == ["todo_updated", "todo_updated"]
-    assert events[-1].payload == {"todos": latest, "task_hash": "task_a"}
-    assert view.todos == latest
-    assert view.todo_initialized is True
-    assert view.todo_task_hash == "task_a"
+    assert [event.type for event in events] == ["task_plan_updated", "task_plan_updated"]
+    assert events[-1].payload == {
+        "previous_revision": 1,
+        "revision": 2,
+        "operation": "update",
+        "changes": [{"id": "read", "status": "completed"}],
+        "snapshot": latest.to_dict(),
+    }
+    assert view.task_plan == latest
 
 
-def test_todo_updated_state_is_isolated_by_session(tmp_path) -> None:
+def test_task_plan_state_is_isolated_by_session(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
-    todos_a = [{"content": "会话 A", "status": "pending", "priority": "high"}]
-    todos_b = [{"content": "会话 B", "status": "completed", "priority": "low"}]
+    plan_a = TaskPlan(mode="linear", revision=1, tasks=(Task(id="a", content="会话 A"),))
+    plan_b = TaskPlan(mode="dag", revision=1, tasks=(Task(id="b", content="会话 B"),))
 
-    SessionEventWriter(store=store, session_id="sess_a").append_todo_updated(todos_a, task_hash="task_a")
-    SessionEventWriter(store=store, session_id="sess_b").append_todo_updated(todos_b, task_hash="task_b")
+    SessionEventWriter(store=store, session_id="sess_a").append_task_plan_updated(
+        previous_revision=0,
+        operation="create",
+        changes=[plan_a.tasks[0].to_dict()],
+        snapshot=plan_a,
+    )
+    SessionEventWriter(store=store, session_id="sess_b").append_task_plan_updated(
+        previous_revision=0,
+        operation="create",
+        changes=[plan_b.tasks[0].to_dict()],
+        snapshot=plan_b,
+    )
 
-    assert store.rebuild_session_view("sess_a").todos == todos_a
-    assert store.rebuild_session_view("sess_b").todos == todos_b
+    assert store.rebuild_session_view("sess_a").task_plan == plan_a
+    assert store.rebuild_session_view("sess_b").task_plan == plan_b

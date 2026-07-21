@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from firstcoder.context.archive import ToolResultArchive
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
-from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.store import JsonlSessionStore, SessionStoreCorruptError
 from firstcoder.context.writer import SessionEventWriter
 
 
@@ -92,9 +94,25 @@ def test_jsonl_store_lists_events_in_append_order(tmp_path: Path) -> None:
     ]
 
 
-def test_store_replays_legacy_todo_tool_result_as_session_state(tmp_path: Path) -> None:
+def test_store_ignores_legacy_planning_events_and_tool_results(tmp_path: Path) -> None:
     store = JsonlSessionStore(tmp_path)
     todos = [{"content": "旧任务", "status": "in_progress", "priority": "medium"}]
+    store.append_event(
+        SessionEvent(
+            id="evt_todo",
+            session_id="sess_test",
+            type="todo_updated",
+            payload={"todos": todos, "task_hash": "task_old"},
+        )
+    )
+    store.append_event(
+        SessionEvent(
+            id="evt_graph",
+            session_id="sess_test",
+            type="task_graph_updated",
+            payload={"graph": {"graph_id": "old", "nodes": []}, "ready_nodes": []},
+        )
+    )
     store.append_event(
         SessionEvent(
             id="evt_tool",
@@ -123,9 +141,8 @@ def test_store_replays_legacy_todo_tool_result_as_session_state(tmp_path: Path) 
 
     view = store.rebuild_session_view("sess_test")
 
-    assert view.todos == todos
-    assert view.todo_initialized is True
-    assert view.todo_task_hash == "task_old"
+    assert view.task_plan is None
+    assert [message.id for message in view.messages] == ["msg_tool"]
 
 
 def test_programmatic_compaction_rebuilds_replaced_parts(tmp_path: Path) -> None:
@@ -289,3 +306,24 @@ def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
     assert (tmp_path / "archives" / "sess_test" / f"{archive_id}.txt").exists()
     assert ToolResultArchive(store.root).read(session_id, archive_id)[1] == message.parts[0].content
     assert not (tmp_path / ".firstcoder").exists()
+
+
+def test_store_raises_clear_corruption_error_for_invalid_task_plan_snapshot(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    store.append_event(
+        SessionEvent(
+            id="evt_plan",
+            session_id="sess_plan",
+            type="task_plan_updated",
+            payload={
+                "previous_revision": 0,
+                "revision": 1,
+                "operation": "create",
+                "changes": [],
+                "snapshot": {"mode": "linear", "revision": 1, "tasks": "broken"},
+            },
+        )
+    )
+
+    with pytest.raises(SessionStoreCorruptError, match="invalid task_plan_updated snapshot"):
+        store.rebuild_session_view("sess_plan")

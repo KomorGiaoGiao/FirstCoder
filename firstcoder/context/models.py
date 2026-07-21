@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from firstcoder.planning.models import TaskPlan
+
 if TYPE_CHECKING:
     from firstcoder.context.checkpoint import Checkpoint
 
@@ -107,6 +109,4 @@ class SessionView:
     messages: list[AgentMessage] = field(default_factory=list)
     checkpoints: list[Checkpoint] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-    todos: list[dict[str, Any]] = field(default_factory=list)
-    todo_initialized: bool = False
-    todo_task_hash: str | None = None
+    task_plan: TaskPlan | None = None

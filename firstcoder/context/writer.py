@@ -8,7 +8,7 @@ payload，tool_call/tool_result 这类 provider 协议边界很容易漂移；wr
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from firstcoder.context.compaction import CompactionEvent
 from firstcoder.context.events import SessionEvent
@@ -20,6 +20,7 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.task_boundary import TaskBoundaryObservation, TaskBoundaryService
 from firstcoder.context.versions import CONTEXT_EVENT_SCHEMA_VERSION
 from firstcoder.input.attachments import PreparedAttachment
+from firstcoder.planning.models import TaskPlan
 from firstcoder.providers.types import ChatResponse, ToolCall
 from firstcoder.tools.types import ToolResult
 
@@ -264,13 +265,78 @@ class SessionEventWriter:
         event = TaskBoundaryService().to_event(session_id=self.session_id, observation=observation)
         self.store.append_event(event)
 
-    def append_todo_updated(self, todos: list[dict[str, Any]], *, task_hash: str | None = None) -> None:
-        """追加当前 session 的完整 Todo 列表快照。"""
+    def append_task_plan_updated(
+        self,
+        *,
+        previous_revision: int,
+        operation: str,
+        changes: Sequence[Mapping[str, object]],
+        snapshot: TaskPlan | Mapping[str, object],
+    ) -> None:
+        """追加一次规划操作及其完整、已验证快照。"""
 
-        payload: dict[str, Any] = {"todos": [dict(item) for item in todos]}
-        if task_hash is not None:
-            payload["task_hash"] = task_hash
-        self.append_event("todo_updated", payload)
+        if isinstance(previous_revision, bool) or previous_revision < 0:
+            raise ValueError("previous_revision must be a non-negative integer")
+        if not isinstance(operation, str) or not operation.strip():
+            raise ValueError("operation must be a non-blank string")
+
+        plan = TaskPlan.from_dict(snapshot.to_dict() if isinstance(snapshot, TaskPlan) else snapshot)
+        if plan.revision != previous_revision + 1:
+            raise ValueError(
+                "task plan revision must be exactly one greater than previous_revision"
+            )
+        normalized_changes = [dict(change) for change in changes]
+        self.append_event(
+            "task_plan_updated",
+            {
+                "previous_revision": previous_revision,
+                "revision": plan.revision,
+                "operation": operation,
+                "changes": normalized_changes,
+                "snapshot": plan.to_dict(),
+            },
+        )
+
+    def append_background_notification(
+        self,
+        *,
+        content: str,
+        job_id: str,
+        tool_name: str,
+        status: str,
+        graph_id: str | None = None,
+        node_id: str | None = None,
+    ) -> str:
+        """追加一条后台任务完成通知，投影成普通 user 消息。
+
+        通知不是某个 tool_call 的第二条结果：它以独立 user 文本进入历史，因此不会破坏
+        provider 的 tool_call/tool_result 配对。这里刻意不递增 turn 计数，避免把后台完成
+        误当成一次新的用户输入。
+        """
+
+        message_id = new_message_id()
+        metadata = {
+            "background_job_id": job_id,
+            "background_tool_name": tool_name,
+            "background_status": status,
+        }
+        if graph_id is not None:
+            metadata["background_graph_id"] = graph_id
+        if node_id is not None:
+            metadata["background_node_id"] = node_id
+        part = MessagePart(
+            id=new_part_id(),
+            message_id=message_id,
+            kind="text",
+            content=content,
+            metadata=self._part_metadata(metadata),
+        )
+        self._append_message_event(
+            "background_notification",
+            message_id=message_id,
+            parts=[part],
+        )
+        return message_id
 
     def _append_message_event(
         self,
