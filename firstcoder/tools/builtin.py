@@ -20,7 +20,6 @@ from firstcoder.tools.python_exec import create_python_exec_tool
 from firstcoder.tools.read_multi import create_read_multi_tool
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.think import create_think_tool
-from firstcoder.tools.todo import create_todo_tool
 from firstcoder.tools.shell import create_shell_tool
 from firstcoder.tools.tree import create_tree_tool
 from firstcoder.tools.view import create_view_tool
@@ -55,7 +54,6 @@ def create_builtin_registry(
         create_think_tool(),
         create_read_multi_tool(root, access=access),
         create_ask_user_tool(),
-        create_todo_tool(),
     ]
     if include_mutation_tools:
         tools.extend(

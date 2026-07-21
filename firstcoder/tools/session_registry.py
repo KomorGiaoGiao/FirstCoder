@@ -7,12 +7,19 @@ from pathlib import Path
 from typing import Collection, Protocol
 
 from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.writer import SessionEventWriter
 from firstcoder.context.task_boundary import TaskBoundaryPolicy, TaskBoundaryService
 from firstcoder.permissions.manager import PermissionManager
+from firstcoder.planning.service import TaskPlanService
 from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.retrieve_archive import create_retrieve_archive_tool
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.task_boundary import create_task_boundary_tool
+from firstcoder.tools.task_create import create_task_create_tool
+from firstcoder.tools.task_list import create_task_list_tool
+from firstcoder.tools.task_revise import create_task_revise_tool
+from firstcoder.tools.task_update import create_task_update_tool
 from firstcoder.tools.types import Tool
 
 
@@ -60,12 +67,32 @@ def create_session_tool_registry(
         policy=TaskBoundaryPolicy(single_observation_basis_message_ids=single_observation_basis_message_ids),
     )
     supplied_tools = tools or []
-    if any(tool.name == "retrieve_archive" for tool in supplied_tools):
-        raise ValueError("retrieve_archive is a reserved session-scoped tool name")
+    reserved_names = {
+        "retrieve_archive",
+        "task_create",
+        "task_update",
+        "task_revise",
+        "task_list",
+    }
+    conflicting = next((tool.name for tool in supplied_tools if tool.name in reserved_names), None)
+    if conflicting is not None:
+        raise ValueError(f"{conflicting} is a reserved session-scoped tool name")
     registry = ToolRegistry(supplied_tools)
     if "task_boundary" not in registry.names():
         registry.register(create_task_boundary_tool(state, service=boundary_service))
     if archive_root is not None:
+        store = JsonlSessionStore(archive_root)
+        service = TaskPlanService(
+            store=store,
+            writer=SessionEventWriter(store=store, session_id=session_id),
+        )
+        for tool in (
+            create_task_create_tool(service),
+            create_task_update_tool(service),
+            create_task_revise_tool(service),
+            create_task_list_tool(service),
+        ):
+            registry.register(tool)
         registry.register(
             create_retrieve_archive_tool(
                 session_id=session_id,

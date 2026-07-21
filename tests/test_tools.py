@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from firstcoder.providers.types import ToolDefinition
 from firstcoder.tools import ToolRegistry, create_builtin_registry
 from firstcoder.tools.edit import create_edit_tool
 from firstcoder.tools.fetch import create_fetch_tool
@@ -20,7 +23,12 @@ from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.think import create_think_tool
 from firstcoder.tools.read_multi import create_read_multi_tool
 from firstcoder.tools.ask_user import create_ask_user_tool
-from firstcoder.tools.todo import create_todo_tool
+from firstcoder.tools.session_registry import create_session_tool_registry
+from firstcoder.tools.task_create import create_task_create_tool
+from firstcoder.tools.task_list import create_task_list_tool
+from firstcoder.tools.task_revise import create_task_revise_tool
+from firstcoder.tools.task_update import create_task_update_tool
+from firstcoder.tools.types import Tool, make_text_result
 from firstcoder.tools.git_log import create_git_log_tool
 from firstcoder.tools.git_diff import create_git_diff_tool
 from firstcoder.tools.git_status import create_git_status_tool
@@ -44,9 +52,7 @@ def test_builtin_tool_descriptions_are_agent_facing_english(tmp_path):
     assert "Prefer this for multi-file edits" in descriptions["apply_patch"]
     assert descriptions["shell"].startswith("Run a shell command")
     assert "Prefer dedicated tools" in descriptions["shell"]
-    assert descriptions["todo"].startswith("Replace the current Todo list")
-    assert "at most one item may be in_progress" in descriptions["todo"]
-    assert descriptions["todo"] == create_todo_tool().definition.description
+    assert "todo" not in descriptions
     assert "evidence returned to the model" in descriptions["diagnostics"]
 
 
@@ -56,7 +62,7 @@ def test_builtin_registry_contains_read_only_tools(tmp_path):
     assert registry.names() == [
         "ls", "view", "grep", "glob", "tree",
         "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user", "todo",
+        "diagnostics", "think", "read_multi", "ask_user",
     ]
     assert [definition.name for definition in registry.definitions()] == registry.names()
     assert [tool.name for tool in registry.tools()] == registry.names()
@@ -83,7 +89,10 @@ def test_each_tool_has_its_own_module():
     assert create_think_tool.__module__ == "firstcoder.tools.think"
     assert create_read_multi_tool.__module__ == "firstcoder.tools.read_multi"
     assert create_ask_user_tool.__module__ == "firstcoder.tools.ask_user"
-    assert create_todo_tool.__module__ == "firstcoder.tools.todo"
+    assert create_task_create_tool.__module__ == "firstcoder.tools.task_create"
+    assert create_task_update_tool.__module__ == "firstcoder.tools.task_update"
+    assert create_task_revise_tool.__module__ == "firstcoder.tools.task_revise"
+    assert create_task_list_tool.__module__ == "firstcoder.tools.task_list"
     assert create_git_log_tool.__module__ == "firstcoder.tools.git_log"
 
 
@@ -93,7 +102,7 @@ def test_builtin_registry_can_include_mutation_tools_when_explicitly_enabled(tmp
     assert registry.names() == [
         "ls", "view", "grep", "glob", "tree",
         "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user", "todo",
+        "diagnostics", "think", "read_multi", "ask_user",
         "write", "edit", "delete", "apply_patch",
     ]
 
@@ -104,7 +113,7 @@ def test_builtin_registry_can_include_network_tools_when_explicitly_enabled(tmp_
     assert registry.names() == [
         "ls", "view", "grep", "glob", "tree",
         "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user", "todo",
+        "diagnostics", "think", "read_multi", "ask_user",
         "fetch", "web_search",
     ]
 
@@ -115,7 +124,7 @@ def test_builtin_registry_can_include_execution_tools_when_explicitly_enabled(tm
     assert registry.names() == [
         "ls", "view", "grep", "glob", "tree",
         "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user", "todo",
+        "diagnostics", "think", "read_multi", "ask_user",
         "shell", "python_exec",
     ]
 
@@ -144,3 +153,43 @@ def test_registry_returns_error_for_unknown_tool():
 
     assert result.ok is False
     assert result.error == "未知工具：missing_tool"
+
+
+def test_session_registry_adds_four_authoritative_task_plan_tools(tmp_path):
+    registry = create_session_tool_registry(
+        session_id="sess_plan",
+        archive_root=tmp_path,
+    )
+
+    for name in ("task_create", "task_update", "task_revise", "task_list"):
+        assert name in registry.names()
+    assert "todo" not in registry.names()
+    assert "task_graph" not in registry.names()
+    descriptions = {definition.name: definition.description for definition in registry.definitions()}
+    assert "stable task ID" in descriptions["task_update"]
+    assert "wording" in descriptions["task_revise"]
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    ["task_create", "task_update", "task_revise", "task_list"],
+)
+def test_session_registry_rejects_supplied_task_plan_tool_override(
+    tmp_path,
+    reserved_name: str,
+) -> None:
+    supplied = Tool(
+        definition=ToolDefinition(
+            name=reserved_name,
+            description="fake",
+            parameters={"type": "object", "properties": {}},
+        ),
+        executor=lambda: make_text_result(reserved_name, "fake"),
+    )
+
+    with pytest.raises(ValueError, match="reserved"):
+        create_session_tool_registry(
+            session_id="sess_plan",
+            tools=[supplied],
+            archive_root=tmp_path,
+        )

@@ -59,10 +59,6 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Ask the user for required information and pause the turn. Use only when the "
         "answer cannot be safely discovered from the workspace or commands."
     ),
-    "todo": (
-        "Replace the current Todo list for multi-step work. Each item has content and status; "
-        "at most one item may be in_progress. An empty list clears Todo state."
-    ),
     "write": (
         "Write a UTF-8 text file in the workspace. Use for new files or full-file "
         "replacement; prefer edit or apply_patch for targeted changes."
@@ -99,11 +95,20 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "Search the web for current external information. Use only when local files "
         "are insufficient or the user asks for up-to-date information."
     ),
+    "delegate": (
+        "Run a restricted child FirstCoder subagent with a fresh context. Use for independent "
+        "research, review, or validation work; do not use for nested delegation. Background "
+        "delegation is allowed only for researcher, reviewer, and tester roles."
+    ),
     "task_boundary": (
         "Report whether the current user message starts a new task. Pass only "
         "decision and basis_message_id. Do not provide task hashes; the system "
         "generates and validates them."
     ),
+    "task_create": "Create or append tasks by stable task ID without replacing existing work.",
+    "task_update": "Atomically update status, owner, or dependencies by stable task ID.",
+    "task_revise": "Revise task wording by stable ID; do not use it for progress updates.",
+    "task_list": "Read the authoritative task-plan revision, snapshot, and derived projection.",
 }
 
 

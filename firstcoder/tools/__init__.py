@@ -19,7 +19,6 @@ from firstcoder.tools.shell import create_shell_tool
 from firstcoder.tools.task_boundary import create_task_boundary_tool
 from firstcoder.tools.registry import ToolRegistry
 from firstcoder.tools.think import create_think_tool
-from firstcoder.tools.todo import create_todo_tool
 from firstcoder.tools.tree import create_tree_tool
 from firstcoder.tools.types import Tool, ToolExecutor, ToolResult
 from firstcoder.tools.view import create_view_tool
@@ -35,6 +34,7 @@ __all__ = [
     "create_ask_user_tool",
     "create_builtin_registry",
     "create_delete_tool",
+    "create_delegate_tool",
     "create_diagnostics_tool",
     "create_edit_tool",
     "create_fetch_tool",
@@ -49,9 +49,38 @@ __all__ = [
     "create_shell_tool",
     "create_task_boundary_tool",
     "create_think_tool",
-    "create_todo_tool",
+    "create_task_create_tool",
+    "create_task_update_tool",
+    "create_task_revise_tool",
+    "create_task_list_tool",
     "create_tree_tool",
     "create_view_tool",
     "create_web_search_tool",
     "create_write_tool",
 ]
+
+
+def __getattr__(name: str):
+    """Lazily expose tools that depend on agent-layer runtime objects.
+
+    Importing ``firstcoder.tools`` is part of low-level context/writer startup.
+    ``delegate`` depends on ``firstcoder.agent.subagent`` and therefore cannot be
+    imported eagerly here without creating a package-level cycle.
+    """
+
+    if name == "create_delegate_tool":
+        from firstcoder.tools.delegate import create_delegate_tool
+
+        return create_delegate_tool
+    task_factories = {
+        "create_task_create_tool": ("firstcoder.tools.task_create", "create_task_create_tool"),
+        "create_task_update_tool": ("firstcoder.tools.task_update", "create_task_update_tool"),
+        "create_task_revise_tool": ("firstcoder.tools.task_revise", "create_task_revise_tool"),
+        "create_task_list_tool": ("firstcoder.tools.task_list", "create_task_list_tool"),
+    }
+    target = task_factories.get(name)
+    if target is not None:
+        from importlib import import_module
+
+        return getattr(import_module(target[0]), target[1])
+    raise AttributeError(name)

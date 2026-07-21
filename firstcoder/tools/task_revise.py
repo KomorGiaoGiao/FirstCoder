@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from firstcoder.planning.service import TaskPlanService
 from firstcoder.providers.types import ToolDefinition
-from firstcoder.tools.task_create import execute_task_plan_mutation
+from firstcoder.tools.task_plan_support import execute_task_plan_mutation
 from firstcoder.tools.types import Tool
 from firstcoder.utils.schema import object_schema
 
