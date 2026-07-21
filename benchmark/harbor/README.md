@@ -16,24 +16,27 @@ Install Harbor only in the development virtual environment:
 .venv/bin/python -m pip install 'harbor==0.18.0'
 ```
 
-Run one local smoke task using the active GPT-5.6-compatible configuration. The
-key remains a Harbor template and is resolved from the login shell at runtime:
+Run one local smoke task using the FirstCoder configuration currently used on
+this machine: the Yuren OpenAI-compatible endpoint and `gpt-5.6-sol`. The key
+remains a Harbor template and is resolved from the login shell at runtime:
 
-> The Yuren/GPT-5.6 values below are one local example, not a universal default.
-> Replace the model, base URL, key variable, and provider name with your own
-> provider configuration.
+> These values mirror this repository's local FirstCoder configuration. Replace
+> the model, base URL, key variable, and provider name when using another
+> provider.
 
 ```sh
-zsh -lic '.venv/bin/harbor run \
+zsh -lic 'export PYTHONPATH="$PWD"; .venv/bin/harbor run \
   -d terminal-bench-sample@2.0 \
   -i regex-log \
   -a benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent \
-  -m yurenapi/gpt-5.6-terra \
+  -m Yuren/gpt-5.6-sol \
   -n 1 -k 1 --ak max_tool_rounds=90 \
+  --agent-setup-timeout-multiplier 3 \
   --ae FIRSTCODER_PROVIDER=openai-compatible \
-  --ae FIRSTCODER_PROVIDER_NAME=yurenapi \
-  --ae FIRSTCODER_MODEL=gpt-5.6-terra \
-  --ae FIRSTCODER_BASE_URL=https://yurenapi.com/v1 \
+  --ae FIRSTCODER_PROVIDER_NAME=Yuren \
+  --ae FIRSTCODER_MODEL=gpt-5.6-sol \
+  --ae FIRSTCODER_BASE_URL=https://yurenapi.cn/v1 \
+  --ae FIRSTCODER_PARALLEL_TOOL_CALLS=true \
   --ae "FIRSTCODER_API_KEY=\${FIRSTCODER_GPT56_API_KEY}" \
   --ae FIRSTCODER_DISABLE_GLOBAL_SKILLS=1 \
   -o benchmark/runs/harbor/regex-log -y'

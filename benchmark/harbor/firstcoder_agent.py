@@ -80,6 +80,10 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
                 f"chown -R {quoted_user}:{quoted_user} {shlex.quote(_AGENT_ROOT)}"
             ),
         )
+        await self.exec_as_root(
+            environment,
+            command=self._python_setup_command(),
+        )
         await self.exec_as_agent(
             environment,
             command=_install_command(install_spec),
@@ -171,6 +175,47 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
             "2>&1 | tee /logs/agent/firstcoder.txt"
         )
 
+    @staticmethod
+    def _python_setup_command() -> str:
+        """Ensure a task image has a Python version that FirstCoder supports."""
+
+        return (
+            "set -euo pipefail; "
+            'PYTHON_BIN="python3"; '
+            "missing_packages=(); "
+            "if ! command -v python3 >/dev/null 2>&1; then "
+            '  missing_packages+=("python3"); '
+            "fi; "
+            "if command -v python3 >/dev/null 2>&1 && ! python3 -c "
+            "'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then "
+            '  missing_packages+=("python3.11" "python3.11-venv"); '
+            "fi; "
+            "if command -v python3.11 >/dev/null 2>&1; then PYTHON_BIN=python3.11; fi; "
+            'venv_probe="$(mktemp -d)"; '
+            'if ! "$PYTHON_BIN" -m venv "$venv_probe/test-venv" >/dev/null 2>&1 || '
+            '! "$venv_probe/test-venv/bin/python" -m pip --version >/dev/null 2>&1; then '
+            '  if [ "$PYTHON_BIN" = "python3.11" ]; then '
+            '    missing_packages+=("python3.11-venv"); '
+            "  else "
+            '    missing_packages+=("python3-venv"); '
+            "  fi; "
+            "fi; "
+            'rm -rf "$venv_probe"; '
+            'if [ "${#missing_packages[@]}" -gt 0 ]; then '
+            "  apt-get update; apt-get install -y --no-install-recommends \"${missing_packages[@]}\"; "
+            "fi; "
+            'PYTHON_BIN=""; '
+            'for candidate in python3.12 python3.11 python3; do '
+            '  if command -v "$candidate" >/dev/null 2>&1 && '
+            '     "$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"; then '
+            '    PYTHON_BIN="$(command -v "$candidate")"; break; '
+            '  fi; '
+            'done; '
+            'if [ -z "$PYTHON_BIN" ]; then '
+            '  echo "FirstCoder Harbor agent requires Python 3.11 or newer in the task image." >&2; exit 64; '
+            "fi"
+        )
+
 
 def _default_source_dir() -> Path | None:
     root = Path(__file__).resolve().parents[2]
@@ -192,14 +237,6 @@ def _install_command(install_spec: str) -> str:
         "set -euo pipefail; "
         f"AGENT_ROOT={quoted_root}; "
         'UV_BIN="$AGENT_ROOT/bin/uv"; '
-        'if [ ! -x "$UV_BIN" ]; then '
-        '  export UV_INSTALL_DIR="$AGENT_ROOT/bin"; '
-        "  if command -v curl >/dev/null 2>&1; then "
-        "    curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --no-modify-path; "
-        "  else "
-        "    wget -qO- https://astral.sh/uv/install.sh | sh -s -- --no-modify-path; "
-        "  fi; "
-        "fi; "
         'PYTHON_BIN=""; '
         'for candidate in python3.12 python3.11 python3; do '
         '  if command -v "$candidate" >/dev/null 2>&1 && '
@@ -207,13 +244,18 @@ def _install_command(install_spec: str) -> str:
         '    PYTHON_BIN="$(command -v "$candidate")"; break; '
         '  fi; '
         'done; '
-        'if [ -n "$PYTHON_BIN" ]; then '
-        '  "$UV_BIN" venv "$AGENT_ROOT/.venv" --python "$PYTHON_BIN" --clear; '
-        'else '
-        '  "$UV_BIN" venv "$AGENT_ROOT/.venv" --python 3.12 --clear; '
+        'if [ -z "$PYTHON_BIN" ]; then '
+        '  echo "FirstCoder Harbor agent requires Python 3.11 or newer in the task image." >&2; exit 64; '
         'fi; '
-        f'"$UV_BIN" pip install --python "$AGENT_ROOT/.venv/bin/python" '
-        f"--no-cache {quoted_spec}"
+        'if [ -x "$UV_BIN" ]; then '
+        '  "$UV_BIN" venv "$AGENT_ROOT/.venv" --python "$PYTHON_BIN" --clear; '
+        '  "$UV_BIN" pip install --python "$AGENT_ROOT/.venv/bin/python" --no-cache '
+        f"{quoted_spec}; "
+        'else '
+        '  "$PYTHON_BIN" -m venv "$AGENT_ROOT/.venv" --clear; '
+        '  "$AGENT_ROOT/.venv/bin/python" -m pip install --no-cache '
+        f"{quoted_spec}; "
+        "fi"
     )
 
 

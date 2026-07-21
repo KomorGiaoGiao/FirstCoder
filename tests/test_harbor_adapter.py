@@ -76,6 +76,16 @@ def test_harbor_install_prefers_a_suitable_existing_python() -> None:
     assert '--python "$PYTHON_BIN" --clear' in command
 
 
+def test_harbor_install_can_use_python_venv_without_curl_or_wget() -> None:
+    command = _install_command("/installed-agent/firstcoder-src")
+
+    assert 'if [ -x "$UV_BIN" ]; then' in command
+    assert '"$PYTHON_BIN" -m venv "$AGENT_ROOT/.venv" --clear' in command
+    assert '"$AGENT_ROOT/.venv/bin/python" -m pip install --no-cache' in command
+    assert "astral.sh/uv/install.sh" not in command
+    assert "wget" not in command
+
+
 def test_harbor_agent_does_not_require_system_package_installation(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "firstcoder").mkdir(parents=True)
@@ -85,3 +95,15 @@ def test_harbor_agent_does_not_require_system_package_installation(tmp_path: Pat
     agent = FirstCoderHarborAgent(logs_dir=tmp_path / "logs", source_dir=source)
 
     assert "apt-get" not in agent.install.__doc__ or True
+
+
+def test_harbor_agent_bootstraps_python_311_before_installing(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path)
+
+    command = agent._python_setup_command()
+
+    assert 'missing_packages+=("python3.11" "python3.11-venv")' in command
+    assert 'apt-get install -y --no-install-recommends' in command
+    assert '"$PYTHON_BIN" -m venv "$venv_probe/test-venv"' in command
+    assert 'for candidate in python3.12 python3.11 python3; do' in command
+    assert '"$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"' in command
