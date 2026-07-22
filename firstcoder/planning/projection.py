@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from firstcoder.planning.models import Task, TaskPlan, TaskPlanError
 
-
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled"})
 
 
@@ -22,34 +21,20 @@ def effective_dependencies(plan: TaskPlan) -> dict[str, tuple[str, ...]]:
         return {task.id: task.depends_on for task in plan.tasks}
 
     ordered = ordered_tasks(plan)
-    return {
-        task.id: tuple(previous.id for previous in ordered[:index])
-        for index, task in enumerate(ordered)
-    }
+    return {task.id: tuple(previous.id for previous in ordered[:index]) for index, task in enumerate(ordered)}
 
 
 def ready_task_ids(plan: TaskPlan) -> tuple[str, ...]:
     tasks = ordered_tasks(plan)
     task_by_id = {task.id: task for task in tasks}
     dependencies = effective_dependencies(plan)
-    return tuple(
-        task.id
-        for task in tasks
-        if task.status == "pending"
-        and all(task_by_id[dependency].status == "completed" for dependency in dependencies[task.id])
-    )
+    return tuple(task.id for task in tasks if task.status == "pending" and all(task_by_id[dependency].status == "completed" for dependency in dependencies[task.id]))
 
 
 def blocked_task_ids(plan: TaskPlan) -> tuple[str, ...]:
     tasks = ordered_tasks(plan)
     ready = set(ready_task_ids(plan))
-    return tuple(
-        task.id
-        for task in tasks
-        if task.status not in _TERMINAL_STATUSES
-        and task.status != "in_progress"
-        and task.id not in ready
-    )
+    return tuple(task.id for task in tasks if task.status not in _TERMINAL_STATUSES and task.status != "in_progress" and task.id not in ready)
 
 
 def topological_levels(plan: TaskPlan) -> tuple[tuple[str, ...], ...]:
@@ -60,11 +45,7 @@ def topological_levels(plan: TaskPlan) -> tuple[tuple[str, ...], ...]:
     levels: list[tuple[str, ...]] = []
 
     while remaining:
-        current = tuple(
-            task_id
-            for task_id in remaining
-            if all(dependency in completed for dependency in dependencies[task_id])
-        )
+        current = tuple(task_id for task_id in remaining if all(dependency in completed for dependency in dependencies[task_id]))
         if not current:
             raise TaskPlanError("task plan has a cycle and cannot be topologically sorted")
         levels.append(current)

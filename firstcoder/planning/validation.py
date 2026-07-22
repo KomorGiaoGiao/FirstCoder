@@ -31,8 +31,5 @@ def validate_plan(plan: TaskPlan) -> None:
 
     dependencies = effective_dependencies(plan)
     for task in in_progress:
-        if not all(
-            task_by_id[dependency].status == "completed"
-            for dependency in dependencies[task.id]
-        ):
+        if not all(task_by_id[dependency].status == "completed" for dependency in dependencies[task.id]):
             raise TaskPlanError(f"task {task.id} is not ready to enter in_progress")

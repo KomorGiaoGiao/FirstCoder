@@ -35,7 +35,7 @@
 
 `swe_lite()` 为 60 轮、100 次调用、1800 秒；`summary()` 为 1、3、120。数值设为 `None` 只代表关闭对应的一个上限，绝不代表关闭权限检查或 tool-result 配对校验。
 
-显式 stop reason 是 `tool_round_limit`、`provider_call_limit`、`turn_timeout`。取消是另一条机制：`CancellationToken`（定义在 `firstcoder.runtime.cancellation`，并由 `agent.cancellation` 再导出）让用户/UI 主动中断，不能假装成某一种 budget 命中。
+显式 stop reason 是 `tool_round_limit`、`provider_call_limit`、`turn_timeout`。取消是另一条机制：`CancellationToken` 定义在 `firstcoder.runtime.cancellation`，让用户/UI 主动中断，不能假装成某一种 budget 命中。
 
 ## 普通工具轮之前发生什么
 

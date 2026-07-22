@@ -10,7 +10,6 @@ from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_er
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.text import truncate
 
-
 DEFAULT_FETCH_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_CHARS = 20000
 
@@ -71,11 +70,4 @@ def _is_private_or_local_url(parsed: parse.ParseResult) -> bool:
         address = ipaddress.ip_address(hostname.strip("[]"))
     except ValueError:
         return False
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_unspecified
-        or address.is_reserved
-    )
+    return address.is_private or address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified or address.is_reserved

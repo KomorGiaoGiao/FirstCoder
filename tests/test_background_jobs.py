@@ -44,7 +44,6 @@ from firstcoder.tools.background import (
 )
 from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -478,11 +477,7 @@ def test_completed_job_projects_as_notification_not_second_tool_result(tmp_path)
         # 仍然只有一条 tool_result（占位），完成结果是独立的 user 通知。
         tool_messages = [m for m in view.messages if m.role == "tool"]
         assert len(tool_messages) == 1
-        notification_messages = [
-            m
-            for m in view.messages
-            if m.role == "user" and "<task_notification>" in m.parts[0].content
-        ]
+        notification_messages = [m for m in view.messages if m.role == "user" and "<task_notification>" in m.parts[0].content]
         assert len(notification_messages) == 1
         assert "bg_0001" in notification_messages[0].parts[0].content
         assert "<task_id>inspect</task_id>" in notification_messages[0].parts[0].content
@@ -499,14 +494,7 @@ def test_completed_job_projects_as_notification_not_second_tool_result(tmp_path)
         # 通知不会重复注入。
         loop._append_background_notifications()
         view_again = session.rebuild_view()
-        assert (
-            sum(
-                1
-                for m in view_again.messages
-                if m.role == "user" and "<task_notification>" in m.parts[0].content
-            )
-            == 1
-        )
+        assert sum(1 for m in view_again.messages if m.role == "user" and "<task_notification>" in m.parts[0].content) == 1
 
         # 投影给 provider 时序列合法。
         messages = ContextBuilder().build_provider_messages(view_again, system_prefix=[])
@@ -608,11 +596,7 @@ def test_task_plan_completion_callback_failure_is_not_reported_as_completed(tmp_
         assert plan is not None
         assert plan.revision == 1
         assert plan.tasks[0].status == "in_progress"
-        notification = [
-            message.parts[0].content
-            for message in session.rebuild_view().messages
-            if message.role == "user" and "<task_notification>" in message.parts[0].content
-        ][0]
+        notification = [message.parts[0].content for message in session.rebuild_view().messages if message.role == "user" and "<task_notification>" in message.parts[0].content][0]
         assert "<status>failed</status>" in notification
         assert "TaskPlan completion failed" in notification
         assert "<task_plan_completion>TaskPlan task 'inspect' completed.</task_plan_completion>" not in notification
@@ -664,10 +648,7 @@ def test_shared_background_manager_isolates_jobs_by_session(tmp_path) -> None:
         loop_b._append_background_notifications()
         view_b = session_b.rebuild_view()
         assert view_b.task_plan is None
-        assert not any(
-            message.role == "user" and "<task_notification>" in message.parts[0].content
-            for message in view_b.messages
-        )
+        assert not any(message.role == "user" and "<task_notification>" in message.parts[0].content for message in view_b.messages)
 
         before_a_collection = session_a.rebuild_view().task_plan
         assert before_a_collection is not None
@@ -679,11 +660,7 @@ def test_shared_background_manager_isolates_jobs_by_session(tmp_path) -> None:
         assert view_a.task_plan is not None
         assert view_a.task_plan.revision == 2
         assert view_a.task_plan.tasks[0].status == "completed"
-        assert sum(
-            1
-            for message in view_a.messages
-            if message.role == "user" and "<task_notification>" in message.parts[0].content
-        ) == 1
+        assert sum(1 for message in view_a.messages if message.role == "user" and "<task_notification>" in message.parts[0].content) == 1
     finally:
         release.set()
         manager.shutdown()
@@ -826,11 +803,7 @@ def test_end_to_end_model_receives_task_notification(tmp_path) -> None:
 
         # 第三次 provider 请求应当包含后台完成通知。
         third_request = provider.requests[2]
-        notification_texts = [
-            str(m.content)
-            for m in third_request.messages
-            if m.role == "user" and "<task_notification>" in str(m.content)
-        ]
+        notification_texts = [str(m.content) for m in third_request.messages if m.role == "user" and "<task_notification>" in str(m.content)]
         assert notification_texts, "model did not receive a task_notification"
         assert "bg_0001" in notification_texts[0]
         assert "result:job" in notification_texts[0]

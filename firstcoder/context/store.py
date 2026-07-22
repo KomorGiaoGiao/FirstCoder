@@ -13,7 +13,6 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.planning.models import TaskPlan, TaskPlanError
 from firstcoder.planning.validation import validate_plan
 
-
 EVENT_ROLE_MAP = {
     "user_message": "user",
     "assistant_message": "assistant",
@@ -180,29 +179,15 @@ def _apply_task_plan_payload(view: SessionView, event: SessionEvent) -> None:
         plan = TaskPlan.from_dict(event.payload.get("snapshot"))  # type: ignore[arg-type]
         validate_plan(plan)
     except (TaskPlanError, TypeError) as error:
-        raise SessionStoreCorruptError(
-            f"invalid task_plan_updated snapshot in event {event.id}: {error}"
-        ) from error
+        raise SessionStoreCorruptError(f"invalid task_plan_updated snapshot in event {event.id}: {error}") from error
 
     previous_revision = event.payload.get("previous_revision")
     revision = event.payload.get("revision")
-    if (
-        isinstance(previous_revision, bool)
-        or not isinstance(previous_revision, int)
-        or isinstance(revision, bool)
-        or not isinstance(revision, int)
-    ):
-        raise SessionStoreCorruptError(
-            f"task_plan_updated revision chain is invalid in event {event.id}"
-        )
+    if isinstance(previous_revision, bool) or not isinstance(previous_revision, int) or isinstance(revision, bool) or not isinstance(revision, int):
+        raise SessionStoreCorruptError(f"task_plan_updated revision chain is invalid in event {event.id}")
     expected_previous = view.task_plan.revision if view.task_plan is not None else 0
     if previous_revision != expected_previous or revision != previous_revision + 1:
-        raise SessionStoreCorruptError(
-            f"task_plan_updated revision chain is invalid in event {event.id}: "
-            f"expected previous {expected_previous}, got {previous_revision} -> {revision}"
-        )
+        raise SessionStoreCorruptError(f"task_plan_updated revision chain is invalid in event {event.id}: " f"expected previous {expected_previous}, got {previous_revision} -> {revision}")
     if revision != plan.revision:
-        raise SessionStoreCorruptError(
-            f"task_plan_updated revision mismatch in event {event.id}"
-        )
+        raise SessionStoreCorruptError(f"task_plan_updated revision mismatch in event {event.id}")
     view.task_plan = plan

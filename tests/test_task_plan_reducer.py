@@ -54,9 +54,7 @@ def test_create_appends_task_objects_without_replacing_existing_tasks() -> None:
     assert result.plan.revision == 5
     assert result.plan.tasks[0] is existing.tasks[0]
     assert [(task.id, task.order) for task in result.plan.tasks] == [("inspect", 7), ("test", 8)]
-    assert result.changes == (
-        {"id": "test", "content": "Test", "status": "pending", "depends_on": [], "owner": None, "order": 8},
-    )
+    assert result.changes == ({"id": "test", "content": "Test", "status": "pending", "depends_on": [], "owner": None, "order": 8},)
 
 
 def test_create_rejects_mode_switch_and_duplicate_ids() -> None:
@@ -150,9 +148,7 @@ def test_update_adds_and_removes_dependencies_incrementally() -> None:
 
     assert result.plan.revision == 7
     assert result.plan.tasks[2].depends_on == ("b",)
-    assert result.changes == (
-        {"id": "work", "add_depends_on": ["b"], "remove_depends_on": ["a"]},
-    )
+    assert result.changes == ({"id": "work", "add_depends_on": ["b"], "remove_depends_on": ["a"]},)
 
 
 def test_revise_tasks_is_the_dedicated_content_operation() -> None:
@@ -166,9 +162,7 @@ def test_revise_tasks_is_the_dedicated_content_operation() -> None:
 
     assert result.plan.revision == 10
     assert result.plan.tasks[0].content == "Update English and Chinese docs"
-    assert result.changes == (
-        {"id": "docs", "content": "Update English and Chinese docs"},
-    )
+    assert result.changes == ({"id": "docs", "content": "Update English and Chinese docs"},)
 
 
 def test_task_patch_protocol_has_no_content_and_rejects_it_clearly() -> None:

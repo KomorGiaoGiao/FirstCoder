@@ -35,9 +35,6 @@ from firstcoder.providers.types import ChatResponse, ChatStreamEvent, MainReques
 from firstcoder.tools.types import Tool
 
 
-_DEFAULT_MAX_TOOL_ROUNDS = object()
-
-
 @dataclass(slots=True)
 class CurrentSessionState:
     """可替换的当前 session 代理。
@@ -86,7 +83,6 @@ class AgentChatRunner:
     context_builder: ContextBuilder | None = None
     context_manager: Any | None = None
     limits: AgentLoopLimits | None = None
-    max_tool_rounds: int | None | object = _DEFAULT_MAX_TOOL_ROUNDS
     use_streaming: bool = False
     request_options: MainRequestOptions = field(default_factory=MainRequestOptions)
     loops: list[AgentLoop] = field(default_factory=list)
@@ -181,9 +177,7 @@ class AgentChatRunner:
         return before_count, token, loop
 
     def _remember_pending_permission_loop(self, loop: AgentLoop) -> None:
-        self._pending_permission_loop = (
-            loop if self.current_session.session.pending_permission_execution is not None else None
-        )
+        self._pending_permission_loop = loop if self.current_session.session.pending_permission_execution is not None else None
 
     def _refresh_turn_output(self, before_count: int, loop: AgentLoop) -> None:
         self.last_stream_events = list(loop.last_stream_events)
@@ -297,7 +291,6 @@ class AgentChatRunner:
             "guidance_provider": self.drain_guidance,
             "cancellation_token": cancellation_token,
             "background_manager": self.background_manager,
-            **self._legacy_max_tool_rounds_kwargs(),
         }
         if streaming:
             kwargs["stream_event_handler"] = self.stream_event_handler
@@ -316,11 +309,6 @@ class AgentChatRunner:
         if response.content:
             self.last_display_lines.append(response.content)
         return response
-
-    def _legacy_max_tool_rounds_kwargs(self) -> dict[str, int | None | object]:
-        if self.max_tool_rounds is _DEFAULT_MAX_TOOL_ROUNDS:
-            return {}
-        return {"max_tool_rounds": self.max_tool_rounds}
 
 
 def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:

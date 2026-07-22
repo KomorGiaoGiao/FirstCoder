@@ -111,10 +111,14 @@ def test_view_then_covering_view_marks_first_read_superseded():
 
 
 def test_reread_after_edit_prioritizes_superseded_over_stale():
-    messages = _view("first", offset=0, limit=20, truncated=True) + [
-        _call("edit", "edit", {"path": "a.py"}),
-        _result("edit", "edit", data={"path": "a.py"}),
-    ] + _view("second", offset=0, limit=20, truncated=True)
+    messages = (
+        _view("first", offset=0, limit=20, truncated=True)
+        + [
+            _call("edit", "edit", {"path": "a.py"}),
+            _result("edit", "edit", data={"path": "a.py"}),
+        ]
+        + _view("second", offset=0, limit=20, truncated=True)
+    )
 
     assert _lifecycle(messages, "first") is ToolResultLifecycle.SUPERSEDED
 
@@ -156,32 +160,41 @@ def test_unknown_shell_output_does_not_make_source_read_stale():
 
 
 def test_write_and_delete_mark_prior_reads_stale():
-    messages = _view("written", offset=0, limit=20, truncated=True) + [
-        _call("write", "write", {"path": "a.py"}),
-        _result("write", "write", data={"path": "a.py"}),
-    ] + _view("deleted", offset=40, limit=20, truncated=True) + [
-        _call("delete", "delete", {"path": "a.py"}),
-        _result("delete", "delete", data={"path": "a.py"}),
-    ]
+    messages = (
+        _view("written", offset=0, limit=20, truncated=True)
+        + [
+            _call("write", "write", {"path": "a.py"}),
+            _result("write", "write", data={"path": "a.py"}),
+        ]
+        + _view("deleted", offset=40, limit=20, truncated=True)
+        + [
+            _call("delete", "delete", {"path": "a.py"}),
+            _result("delete", "delete", data={"path": "a.py"}),
+        ]
+    )
 
     assert _lifecycle(messages, "written") is ToolResultLifecycle.STALE
     assert _lifecycle(messages, "deleted") is ToolResultLifecycle.STALE
 
 
 def test_apply_patch_changed_and_move_paths_mark_reads_stale():
-    messages = _view("changed", offset=0, limit=20, truncated=True) + _view("moved", offset=40, limit=20, truncated=True) + [
-        _call("patch", "apply_patch", {"patch": "..."}),
-        _result(
-            "patch",
-            "apply_patch",
-            data={
-                "changed_files": ["a.py"],
-                "deleted_files": [],
-                "created_files": [],
-                "moved_files": [{"source": "a.py", "destination": "b.py"}],
-            },
-        ),
-    ]
+    messages = (
+        _view("changed", offset=0, limit=20, truncated=True)
+        + _view("moved", offset=40, limit=20, truncated=True)
+        + [
+            _call("patch", "apply_patch", {"patch": "..."}),
+            _result(
+                "patch",
+                "apply_patch",
+                data={
+                    "changed_files": ["a.py"],
+                    "deleted_files": [],
+                    "created_files": [],
+                    "moved_files": [{"source": "a.py", "destination": "b.py"}],
+                },
+            ),
+        ]
+    )
 
     assert _lifecycle(messages, "changed") is ToolResultLifecycle.STALE
     assert _lifecycle(messages, "moved") is ToolResultLifecycle.STALE

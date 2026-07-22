@@ -162,10 +162,7 @@ def test_search_results_compressor_groups_files_and_records_omissions() -> None:
 
 
 def test_search_results_compressor_parses_windows_paths() -> None:
-    content = "\n".join(
-        rf"C:\repo\firstcoder\app.py:{line}: def run_{line}(): pass with repeated context"
-        for line in range(1, 30)
-    )
+    content = "\n".join(rf"C:\repo\firstcoder\app.py:{line}: def run_{line}(): pass with repeated context" for line in range(1, 30))
     router = RouteCompactRouter(
         compressors={RouteContentType.SEARCH_RESULTS: SearchResultsRouteCompressor(max_matches_per_file=2)},
         min_original_tokens=1,
@@ -322,10 +319,7 @@ def test_build_output_compressor_detects_late_errors_in_large_logs() -> None:
 
 
 def test_json_array_compressor_keeps_anchors_and_important_items() -> None:
-    items = [
-        {"id": index, "status": "ok", "message": f"normal item {index}", "payload": "x" * 80}
-        for index in range(40)
-    ]
+    items = [{"id": index, "status": "ok", "message": f"normal item {index}", "payload": "x" * 80} for index in range(40)]
     items[25] = {
         "id": 25,
         "status": "failed",

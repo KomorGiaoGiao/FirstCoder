@@ -3,7 +3,8 @@ from firstcoder.context.system_prompt import (
     SystemPromptInputs,
     SystemPromptBuilder,
 )
-from firstcoder.context.token_budget import estimate_text_tokens
+
+
 def _inputs(**overrides: object) -> SystemPromptInputs:
     values = {
         "base_rules": "你是 FirstCoder。",
@@ -77,15 +78,8 @@ def test_system_prompt_includes_skill_protocol_catalog_and_loaded_skill() -> Non
     entry = SystemPromptBuilder().build(
         _inputs(
             skill_protocol="被路由到 skill 时，必须先加载 skill。",
-            skill_catalog_summary=(
-                "- project:skills/global-family-office-news-brief.md - 全球家办资讯简报\n"
-                "- global:fetch-tweet/SKILL.md - 读取 X/Twitter 帖子"
-            ),
-            loaded_skill_context=(
-                "Loaded skill: skills/global-family-office-news-brief.md\n"
-                "# 全球家族办公室资讯简报\n"
-                "必须读取 docs/evidence-policy.md"
-            ),
+            skill_catalog_summary=("- project:skills/global-family-office-news-brief.md - 全球家办资讯简报\n" "- global:fetch-tweet/SKILL.md - 读取 X/Twitter 帖子"),
+            loaded_skill_context=("Loaded skill: skills/global-family-office-news-brief.md\n" "# 全球家族办公室资讯简报\n" "必须读取 docs/evidence-policy.md"),
         )
     )
     content = entry.messages[0].content
@@ -161,9 +155,3 @@ def test_system_prompt_version_is_v13() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
     assert "prompt_version=v13" in entry.messages[0].content
-
-
-def test_system_prompt_token_estimate_uses_shared_estimator() -> None:
-    entry = SystemPromptBuilder().build(_inputs(base_rules="12345", agents_md=""))
-
-    assert entry.token_estimate == estimate_text_tokens(entry.messages[0].content)

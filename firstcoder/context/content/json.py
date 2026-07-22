@@ -9,7 +9,6 @@ from typing import Any
 from firstcoder.context.content.router import RouteCompactResult, RouteContentType, RouteContext
 from firstcoder.context.models import MessagePart
 
-
 _IMPORTANT_KEYS = {
     "error",
     "errors",

@@ -29,7 +29,6 @@ from firstcoder.providers.types import ToolDefinition
 from firstcoder.runtime.cancellation import CancellationToken, cancellation_context
 from firstcoder.tools.types import ToolResult, make_text_result
 
-
 # ---------------------------------------------------------------------------
 # 控制面字段（control-plane）
 # ---------------------------------------------------------------------------
@@ -37,9 +36,7 @@ from firstcoder.tools.types import ToolResult, make_text_result
 RUN_IN_BACKGROUND_ARG = "run_in_background"
 BACKGROUND_LABEL_ARG = "background_label"
 BACKGROUND_TASK_ID_ARG = "task_id"
-BACKGROUND_CONTROL_ARGS = frozenset(
-    {RUN_IN_BACKGROUND_ARG, BACKGROUND_LABEL_ARG, BACKGROUND_TASK_ID_ARG}
-)
+BACKGROUND_CONTROL_ARGS = frozenset({RUN_IN_BACKGROUND_ARG, BACKGROUND_LABEL_ARG, BACKGROUND_TASK_ID_ARG})
 
 # Phase 1 默认允许后台化的工具：只读探查 + 已做权限预检的执行/网络工具。
 # 刻意排除 TaskPlan 写入、task_boundary / ask_user（控制面）以及全部写入类工具（要等
@@ -101,8 +98,7 @@ def with_background_controls(definition: ToolDefinition) -> ToolDefinition:
     properties[BACKGROUND_TASK_ID_ARG] = {
         "type": "string",
         "description": (
-            "Optional TaskPlan task ID to associate with this background job. The task must already "
-            "exist in the current plan; successful completion advances that same task when it remains active."
+            "Optional TaskPlan task ID to associate with this background job. The task must already " "exist in the current plan; successful completion advances that same task when it remains active."
         ),
     }
     return ToolDefinition(
@@ -168,7 +164,6 @@ class BackgroundJob:
     error: str | None = None
     cancel_requested: bool = False
     created_at: float = 0.0
-    finished_at: float | None = None
     token: CancellationToken = field(default_factory=CancellationToken)
     on_completed: Callable[["BackgroundJob"], str | None] | None = field(default=None, repr=False)
     task_plan_completion: str | None = None
@@ -210,16 +205,6 @@ class BackgroundJobManager:
         self._completed: deque[BackgroundJob] = deque()
         self._counter = 0
         self._clock = clock or time.monotonic
-
-    # -- 生命周期 ---------------------------------------------------------
-
-    def active_count(self, *, session_id: str | None = None) -> int:
-        with self._lock:
-            return sum(
-                1
-                for job in self._jobs.values()
-                if job.status == STATUS_RUNNING and (session_id is None or job.session_id == session_id)
-            )
 
     def start(
         self,
@@ -274,12 +259,10 @@ class BackgroundJobManager:
             if job.status == STATUS_CANCELLED:
                 # 已被显式取消：保留取消状态，但仍记录迟到结果，避免悬空。
                 job.result = result
-                job.finished_at = self._clock()
                 self._futures.pop(job.id, None)
                 return
             job.result = result
             job.error = error
-            job.finished_at = self._clock()
             if job.cancel_requested:
                 job.status = STATUS_CANCELLED
             elif error is not None:
@@ -351,11 +334,7 @@ class BackgroundJobManager:
 
     def list(self, *, session_id: str | None = None) -> list[BackgroundJob]:
         with self._lock:
-            return [
-                job
-                for job in self._jobs.values()
-                if session_id is None or job.session_id == session_id
-            ]
+            return [job for job in self._jobs.values() if session_id is None or job.session_id == session_id]
 
     def cancel(self, job_id: str, *, session_id: str | None = None) -> BackgroundJob | None:
         """尽力取消一个后台任务。
@@ -373,7 +352,6 @@ class BackgroundJobManager:
             future = self._futures.get(job_id)
             if future is not None and future.cancel():
                 job.status = STATUS_CANCELLED
-                job.finished_at = self._clock()
                 self._futures.pop(job_id, None)
                 self._completed.append(job)
             else:
@@ -391,7 +369,7 @@ class BackgroundJobManager:
             futures = list(self._futures.values())
         if not futures:
             return True
-        done, not_done = futures_wait(futures, timeout=timeout)
+        _, not_done = futures_wait(futures, timeout=timeout)
         return not not_done
 
     def shutdown(self) -> None:
@@ -448,11 +426,7 @@ def render_task_notification(notification: BackgroundNotification) -> str:
     if notification.observed_revision is not None:
         lines.append(f"  <observed_revision>{notification.observed_revision}</observed_revision>")
     if notification.task_plan_completion:
-        lines.append(
-            "  <task_plan_completion>"
-            f"{escape(notification.task_plan_completion, quote=False)}"
-            "</task_plan_completion>"
-        )
+        lines.append("  <task_plan_completion>" f"{escape(notification.task_plan_completion, quote=False)}" "</task_plan_completion>")
     lines.append(f"  <status>{escape(notification.status, quote=False)}</status>")
     lines.append(f"  <summary>{escape(notification.summary, quote=False)}</summary>")
     lines.append("</task_notification>")

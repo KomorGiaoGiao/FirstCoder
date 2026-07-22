@@ -10,7 +10,7 @@ from firstcoder.mcp.config_store import McpConfigStore, McpConfigStoreError
 def test_add_local_preserves_existing_configuration_and_comments(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
-        "# Keep this comment\nmodel = \"fake/model\"\n\n[provider]\ntype = \"openai-compatible\"\n",
+        '# Keep this comment\ndefault_model = "fake/model"\n\n[providers.fake]\ntype = "openai-compatible"\n\n[models."fake/model"]\n',
         encoding="utf-8",
     )
 
@@ -18,7 +18,7 @@ def test_add_local_preserves_existing_configuration_and_comments(tmp_path: Path)
 
     content = path.read_text(encoding="utf-8")
     assert "# Keep this comment" in content
-    assert 'model = "fake/model"' in content
+    assert 'default_model = "fake/model"' in content
     assert "[mcp.everything]" in content
     assert 'command = ["npx", "-y", "server"]' in content
     assert 'TOKEN = "{env:TOKEN}"' in content

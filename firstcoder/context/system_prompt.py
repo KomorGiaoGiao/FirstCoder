@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from firstcoder.context.identity import content_fingerprint, stable_json_hash
-from firstcoder.context.token_budget import estimate_text_tokens
 from firstcoder.context.versions import SYSTEM_PROMPT_VERSION
 from firstcoder.providers.types import ChatMessage
 
@@ -42,7 +41,6 @@ class SystemPromptInputs:
 class PromptPrefixCacheEntry:
     fingerprint: str
     messages: list[ChatMessage]
-    token_estimate: int
 
 
 class SystemPromptBuilder:
@@ -83,7 +81,6 @@ class SystemPromptBuilder:
         return PromptPrefixCacheEntry(
             fingerprint=fingerprint,
             messages=[message],
-            token_estimate=_estimate_message_tokens(message),
         )
 
 
@@ -122,6 +119,7 @@ def _agent_instructions() -> str:
     path = Path(__file__).with_name("prompts") / "agent_instructions.md"
     return path.read_text(encoding="utf-8").strip()
 
+
 def _format_provider(inputs: SystemPromptInputs) -> str:
     return "\n".join(
         [
@@ -131,10 +129,6 @@ def _format_provider(inputs: SystemPromptInputs) -> str:
             f"prompt_version={inputs.prompt_version}",
         ]
     )
-
-
-def _estimate_message_tokens(message: ChatMessage) -> int:
-    return estimate_text_tokens(message.content)
 
 
 def _format_json(value: Any) -> str:

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from firstcoder.context.content.router import RouteCompactResult, RouteContentType, RouteContext
 from firstcoder.context.models import MessagePart
 
-
 _IMPORT_RE = re.compile(
     r"^\s*(import|from|package|use|#include)\b|^\s*(const|let|var)\s+\w+\s*=\s*require\(",
 )

@@ -21,27 +21,6 @@ class _Session:
         return _View(task_plan=self.plan)
 
 
-def test_complex_work_without_a_plan_gets_a_creation_instruction() -> None:
-    policy = TaskPlanPolicy(_Session(None))
-
-    instruction = policy.creation_instruction(needs_plan=True)
-
-    assert isinstance(instruction, str)
-    assert "task_create" in instruction
-    assert "complex" in instruction.lower()
-
-
-def test_creation_instruction_is_skipped_without_planning_work_or_with_a_plan() -> None:
-    existing = TaskPlan(
-        mode="linear",
-        revision=1,
-        tasks=(Task(id="inspect", content="Inspect code"),),
-    )
-
-    assert TaskPlanPolicy(_Session(None)).creation_instruction(needs_plan=False) is None
-    assert TaskPlanPolicy(_Session(existing)).creation_instruction(needs_plan=True) is None
-
-
 def test_linear_plan_reconciliation_lists_unfinished_tasks_in_stable_order() -> None:
     plan = TaskPlan(
         mode="linear",

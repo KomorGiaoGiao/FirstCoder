@@ -330,11 +330,7 @@ class FirstCoderViewMixin:
         size = getattr(self, "size", None)
         width = getattr(size, "width", None)
         height = getattr(size, "height", None)
-        return bool(
-            isinstance(width, int)
-            and isinstance(height, int)
-            and (width <= self.COMPACT_WELCOME_MAX_WIDTH or height <= self.COMPACT_WELCOME_MAX_HEIGHT)
-        )
+        return bool(isinstance(width, int) and isinstance(height, int) and (width <= self.COMPACT_WELCOME_MAX_WIDTH or height <= self.COMPACT_WELCOME_MAX_HEIGHT))
 
     def _refresh_welcome_layout(self) -> None:
         widget = self._welcome_widget

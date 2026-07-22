@@ -25,7 +25,7 @@ def test_summary_limits_disable_tool_loops() -> None:
     assert limits.max_turn_seconds == 120
 
 
-def test_legacy_max_tool_rounds_override() -> None:
+def test_custom_max_tool_rounds_override() -> None:
     limits = AgentLoopLimits.default().with_max_tool_rounds(4)
 
     assert limits.max_tool_rounds == 4

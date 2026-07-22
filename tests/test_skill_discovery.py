@@ -46,12 +46,7 @@ def test_discovers_frontmatter_triggers(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     (skills_dir / "daily-brief.md").write_text(
-        "---\n"
-        "name: daily-brief\n"
-        "description: Generate daily brief.\n"
-        "triggers: 今日资讯, daily news\n"
-        "---\n\n"
-        "# Daily Brief\n",
+        "---\n" "name: daily-brief\n" "description: Generate daily brief.\n" "triggers: 今日资讯, daily news\n" "---\n\n" "# Daily Brief\n",
         encoding="utf-8",
     )
 
@@ -92,9 +87,7 @@ def test_discovers_global_agent_skills_from_codex_default_root(tmp_path: Path, m
 
     catalog = discover_all_skills(tmp_path)
 
-    assert [(skill.name, skill.source, skill.root, skill.path) for skill in catalog.skills] == [
-        ("imagegen", SkillSource.GLOBAL_AGENT_SKILL, str(home / ".codex" / "skills"), "imagegen/SKILL.md")
-    ]
+    assert [(skill.name, skill.source, skill.root, skill.path) for skill in catalog.skills] == [("imagegen", SkillSource.GLOBAL_AGENT_SKILL, str(home / ".codex" / "skills"), "imagegen/SKILL.md")]
 
 
 def test_extra_global_skill_roots_and_disable_global_skills(tmp_path: Path, monkeypatch) -> None:
@@ -108,9 +101,7 @@ def test_extra_global_skill_roots_and_disable_global_skills(tmp_path: Path, monk
 
     enabled = discover_all_skills(tmp_path)
 
-    assert [(skill.name, skill.source) for skill in enabled.skills] == [
-        ("brief", SkillSource.GLOBAL_MARKDOWN)
-    ]
+    assert [(skill.name, skill.source) for skill in enabled.skills] == [("brief", SkillSource.GLOBAL_MARKDOWN)]
 
     monkeypatch.setenv("FIRSTCODER_DISABLE_GLOBAL_SKILLS", "1")
     disabled = discover_all_skills(tmp_path)

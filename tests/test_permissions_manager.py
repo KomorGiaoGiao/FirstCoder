@@ -31,9 +31,7 @@ def test_manager_uses_matching_grant_before_default_policy(tmp_path) -> None:
         mode=PermissionMode.STANDARD,
     )
 
-    decision = manager.preflight(
-        PermissionRequest(id="req_1", action=PermissionAction.EXECUTE_SHELL, target="npm test -- --watch=false")
-    )
+    decision = manager.preflight(PermissionRequest(id="req_1", action=PermissionAction.EXECUTE_SHELL, target="npm test -- --watch=false"))
 
     assert decision.kind == PermissionDecisionKind.ALLOW
     assert decision.grant is not None
@@ -46,9 +44,7 @@ def test_manager_falls_back_to_mode_aware_policy(tmp_path) -> None:
         mode=PermissionMode.AGGRESSIVE,
     )
 
-    decision = manager.preflight(
-        PermissionRequest(id="req_1", action=PermissionAction.WRITE_PATH, target="firstcoder/new.py")
-    )
+    decision = manager.preflight(PermissionRequest(id="req_1", action=PermissionAction.WRITE_PATH, target="firstcoder/new.py"))
 
     assert decision.kind == PermissionDecisionKind.ALLOW
 
@@ -90,9 +86,7 @@ def test_manager_bypass_allows_without_default_prompts(tmp_path) -> None:
         mode=PermissionMode.BYPASS,
     )
 
-    decision = manager.preflight(
-        PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md")
-    )
+    decision = manager.preflight(PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md"))
 
     assert decision.kind == PermissionDecisionKind.ALLOW
 
@@ -115,9 +109,7 @@ def test_manager_deny_grant_still_overrides_bypass_mode(tmp_path) -> None:
         mode=PermissionMode.BYPASS,
     )
 
-    decision = manager.preflight(
-        PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md")
-    )
+    decision = manager.preflight(PermissionRequest(id="req_shell", action=PermissionAction.EXECUTE_SHELL, target="rm README.md"))
 
     assert decision.kind == PermissionDecisionKind.DENY
     assert decision.grant is not None
@@ -259,9 +251,7 @@ def test_manager_shell_allow_always_does_not_expand_interpreter_scope(tmp_path) 
 
     assert decision.grant is not None
     assert decision.grant.scope_value == "python -m pytest tests"
-    miss = manager.preflight(
-        PermissionRequest(id="perm_other_python", action=PermissionAction.EXECUTE_SHELL, target="python setup.py build")
-    )
+    miss = manager.preflight(PermissionRequest(id="perm_other_python", action=PermissionAction.EXECUTE_SHELL, target="python setup.py build"))
     assert miss.kind == PermissionDecisionKind.ASK
 
 
@@ -315,10 +305,13 @@ def test_manager_mcp_allow_always_is_exact_server_and_tool_scope(tmp_path) -> No
     assert decision.grant is not None
     assert decision.grant.scope_type == PermissionScopeType.MCP_TOOL
     assert decision.grant.scope_value == "lark/calendar_list"
-    assert manager.preflight(
-        PermissionRequest(
-            id="perm_lark_calendar_create",
-            action=PermissionAction.MCP_TOOL,
-            target="lark/calendar_create",
-        )
-    ).kind == PermissionDecisionKind.ASK
+    assert (
+        manager.preflight(
+            PermissionRequest(
+                id="perm_lark_calendar_create",
+                action=PermissionAction.MCP_TOOL,
+                target="lark/calendar_create",
+            )
+        ).kind
+        == PermissionDecisionKind.ASK
+    )

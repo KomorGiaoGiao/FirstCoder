@@ -146,9 +146,7 @@ def test_programmatic_compaction_rebuilds_replaced_parts(tmp_path: Path) -> None
         )
     )
     view = SessionView(session_id=session_id, messages=[message, latest_message])
-    result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(view=view, active_task_hash="task_current", target_tokens=1, current_turn=10)
-    )
+    result = CompactionPipeline(root=tmp_path).compact(CompactionRequest(view=view, active_task_hash="task_current", target_tokens=1, current_turn=10))
     SessionEventWriter(store=store, session_id=session_id).append_compaction_completed(
         trigger="manual",
         target_tokens=1,
@@ -173,10 +171,7 @@ def test_l2_route_result_with_raw_backing_survives_rebuild_without_l4(tmp_path: 
                 id="part_tool",
                 message_id="msg_tool",
                 kind="tool_result",
-                content="\n".join(
-                    f"firstcoder/context.py:{line}: def function_{line}(): pass"
-                    for line in range(1, 160)
-                ),
+                content="\n".join(f"firstcoder/context.py:{line}: def function_{line}(): pass" for line in range(1, 160)),
                 metadata={"tool_name": "grep", "tool_call_id": "call_1", "ok": True, "data": {}},
             )
         ],
@@ -227,10 +222,7 @@ def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
                 id="part_tool",
                 message_id="msg_tool",
                 kind="tool_result",
-                content="\n".join(
-                    f"firstcoder/context.py:{line}: def function_{line}(): pass"
-                    for line in range(1, 160)
-                ),
+                content="\n".join(f"firstcoder/context.py:{line}: def function_{line}(): pass" for line in range(1, 160)),
                 metadata={"tool_name": "grep", "tool_call_id": "call_1", "ok": True, "data": {}},
             )
         ],

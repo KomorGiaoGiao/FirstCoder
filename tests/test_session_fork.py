@@ -54,11 +54,7 @@ def test_fork_rejects_unsupported_schema_without_writing_or_copying(
     archive = store.root / "archives" / "sess_legacy" / "archive.json"
     archive.parent.mkdir(parents=True)
     archive.write_text("source archive", encoding="utf-8")
-    before_files = {
-        path.relative_to(store.root): path.read_bytes()
-        for path in store.root.rglob("*")
-        if path.is_file()
-    }
+    before_files = {path.relative_to(store.root): path.read_bytes() for path in store.root.rglob("*") if path.is_file()}
     tool_calls: list[str] = []
     monkeypatch.setattr(
         "firstcoder.session.fork.new_session_id",
@@ -73,11 +69,7 @@ def test_fork_rejects_unsupported_schema_without_writing_or_copying(
     with pytest.raises(SessionUnsupportedSchemaError) as caught:
         service.fork("sess_legacy")
 
-    after_files = {
-        path.relative_to(store.root): path.read_bytes()
-        for path in store.root.rglob("*")
-        if path.is_file()
-    }
+    after_files = {path.relative_to(store.root): path.read_bytes() for path in store.root.rglob("*") if path.is_file()}
     assert caught.value.session_id == "sess_legacy"
     assert caught.value.actual_version == actual_version
     assert caught.value.expected_version == "v2"
@@ -94,9 +86,7 @@ def test_fork_accepts_v2_session_and_copies_events_and_archives(tmp_path: Path) 
     archive.parent.mkdir(parents=True)
     archive.write_text("source archive", encoding="utf-8")
 
-    result = ForkSessionService(store=store, project_root=tmp_path).fork(
-        "sess_source", title="Forked"
-    )
+    result = ForkSessionService(store=store, project_root=tmp_path).fork("sess_source", title="Forked")
 
     assert result.session.session_id != "sess_source"
     assert result.record.title == "Forked"
@@ -109,9 +99,7 @@ def test_fork_rejects_future_schema_before_parsing_later_events(tmp_path: Path) 
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     path = store.sessions_dir / "sess_future.jsonl"
     path.write_text(
-        '{"id":"evt_created","session_id":"sess_future","type":"session_created",'
-        '"payload":{"context_event_schema_version":"v3"}}\n'
-        '{"future_event_shape":true}\n',
+        '{"id":"evt_created","session_id":"sess_future","type":"session_created",' '"payload":{"context_event_schema_version":"v3"}}\n' '{"future_event_shape":true}\n',
         encoding="utf-8",
     )
     before = path.read_bytes()

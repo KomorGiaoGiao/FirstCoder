@@ -15,7 +15,6 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
 from firstcoder.context.versions import CHECKPOINT_STRATEGY_VERSION
 
-
 CompactMode = Literal["auto", "manual"]
 
 
@@ -64,8 +63,7 @@ class LlmCompactSummarizer(Protocol):
     Anthropic 等外部消息格式提前泄漏进 checkpoint 写入逻辑。
     """
 
-    def summarize(self, messages: list[AgentMessage], *, summary_mode: str = "default") -> LlmCompactSummary:
-        ...
+    def summarize(self, messages: list[AgentMessage], *, summary_mode: str = "default") -> LlmCompactSummary: ...
 
 
 @dataclass(slots=True)
@@ -328,14 +326,7 @@ def _summarize(
     *,
     summary_mode: str,
 ) -> LlmCompactSummary:
-    """调用 summarizer，并兼容暂未接收 summary_mode 的旧实现。"""
-
-    try:
-        summary = summarizer.summarize(messages, summary_mode=summary_mode)
-    except TypeError as error:
-        if "summary_mode" not in str(error):
-            raise
-        summary = summarizer.summarize(messages)
+    summary = summarizer.summarize(messages, summary_mode=summary_mode)
     return LlmCompactSummary(
         summary=normalize_coding_handoff(summary.summary),
         tail_start_message_id=summary.tail_start_message_id,

@@ -6,7 +6,7 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.providers.types import ChatMessage, ToolDefinition
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
-from firstcoder.context.token_budget import TokenBudgetService, estimate_chat_request_tokens
+from firstcoder.context.token_budget import estimate_chat_request_tokens
 from firstcoder.context.triggers import ContextCompactionConfig, evaluate_context_triggers
 
 
@@ -43,16 +43,6 @@ def test_token_thresholds_trigger_expected_compaction_reason() -> None:
     assert decision.should_compact is True
     assert decision.reason == "token_threshold"
     assert decision.target_tokens == 5
-
-
-def test_compaction_config_can_be_derived_from_token_budget_service() -> None:
-    config = ContextCompactionConfig.from_token_budget(
-        TokenBudgetService(context_window=1000, provider_max_output_tokens=100),
-    )
-
-    assert config.auto_compact_threshold == 738
-    assert config.target_tokens == 630
-    assert config.blocking_target_tokens == 630
 
 
 def test_request_token_estimate_includes_system_messages_tools_and_reserved_output() -> None:

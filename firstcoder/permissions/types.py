@@ -45,7 +45,6 @@ class PermissionPersistence(StrEnum):
     """决策的生效范围。"""
 
     ONCE = "once"
-    SESSION = "session"
     ALWAYS = "always"
 
 

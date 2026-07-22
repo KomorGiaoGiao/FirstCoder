@@ -23,7 +23,6 @@ from firstcoder.session.new import NewSessionService
 from firstcoder.session.resume import ResumeService
 from firstcoder.session.share import SessionShareService
 
-
 SESSION_LIST_VISIBLE_LIMIT = 20
 
 
@@ -81,14 +80,7 @@ class SessionCommandHandler:
         visible = records[:SESSION_LIST_VISIBLE_LIMIT]
         lines = [_session_list_header(len(visible), len(records))]
         for record in visible:
-            lines.append(
-                "- "
-                f"{record.session_id} "
-                f"{record.title} "
-                f"updated={display_value(record.updated_at)} "
-                f"messages={record.message_count} "
-                f"status={record.status}"
-            )
+            lines.append("- " f"{record.session_id} " f"{record.title} " f"updated={display_value(record.updated_at)} " f"messages={record.message_count} " f"status={record.status}")
         return "\n".join(lines)
 
     def _new(self, args: list[str]) -> str:
@@ -227,9 +219,7 @@ def _render_resume_picker(records: list[SessionRecord], *, selected_index: int) 
     return "\n".join(lines)
 
 
-def _visible_record_window(
-    records: list[SessionRecord], *, selected_index: int, limit: int = SESSION_LIST_VISIBLE_LIMIT
-) -> tuple[int, list[SessionRecord]]:
+def _visible_record_window(records: list[SessionRecord], *, selected_index: int, limit: int = SESSION_LIST_VISIBLE_LIMIT) -> tuple[int, list[SessionRecord]]:
     if not records:
         return 0, []
     selected_index = max(0, min(selected_index, len(records) - 1))
@@ -251,6 +241,3 @@ def _session_picker_header(window_start: int, visible_count: int, total_count: i
         return "Select a session:"
     window_end = window_start + visible_count
     return f"Select a session: Showing {window_start + 1}-{window_end} of {total_count} sessions"
-
-
-

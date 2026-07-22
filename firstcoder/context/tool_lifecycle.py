@@ -176,12 +176,7 @@ def _view_target(data: object, arguments: dict[str, Any]) -> SourceReadTarget | 
             return None
 
     total_lines = data.get("total_lines")
-    is_complete_view = (
-        data.get("truncated") is False
-        and isinstance(total_lines, int)
-        and not isinstance(total_lines, bool)
-        and total_lines >= end_line
-    )
+    is_complete_view = data.get("truncated") is False and isinstance(total_lines, int) and not isinstance(total_lines, bool) and total_lines >= end_line
     if is_complete_view:
         end_line = total_lines
     return SourceReadTarget(
@@ -206,10 +201,7 @@ def _read_multi_targets(data: object) -> tuple[SourceReadTarget, ...]:
         if path is None:
             return ()
         paths.append(path)
-    return tuple(
-        SourceReadTarget(path=path, start_line=None, end_line=None, is_full_file=True)
-        for path in paths
-    )
+    return tuple(SourceReadTarget(path=path, start_line=None, end_line=None, is_full_file=True) for path in paths)
 
 
 def _mutation_paths(tool_name: str, data: object) -> tuple[str, ...]:
@@ -328,14 +320,7 @@ def _normalize_path(value: object) -> str | None:
 
 
 def _is_line_range(start_line: object, end_line: object) -> bool:
-    return (
-        isinstance(start_line, int)
-        and not isinstance(start_line, bool)
-        and isinstance(end_line, int)
-        and not isinstance(end_line, bool)
-        and start_line >= 1
-        and end_line >= start_line
-    )
+    return isinstance(start_line, int) and not isinstance(start_line, bool) and isinstance(end_line, int) and not isinstance(end_line, bool) and start_line >= 1 and end_line >= start_line
 
 
 def _content_sha256(content: str) -> str:

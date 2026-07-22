@@ -23,7 +23,6 @@ from pathlib import Path
 
 from firstcoder.utils.execution_sandbox import ExecutionSandbox
 
-
 WORKTREE_DIRNAME = "fc-worktrees"
 _DIFF_STAT_LIMIT = 8000
 
@@ -193,9 +192,7 @@ class WorktreeManager:
         """
 
         if not force and self.is_dirty(worktree):
-            raise WorktreeError(
-                "worktree 有未提交改动；请先审查/保存，或用 force=True 显式丢弃。"
-            )
+            raise WorktreeError("worktree 有未提交改动；请先审查/保存，或用 force=True 显式丢弃。")
         args = ["worktree", "remove"]
         if force:
             args.append("--force")

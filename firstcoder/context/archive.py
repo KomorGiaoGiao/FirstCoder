@@ -18,8 +18,7 @@ from typing import Any
 
 from firstcoder.context.models import MessagePart, utc_now_iso
 from firstcoder.context.token_budget import estimate_text_tokens
-from firstcoder.context.versions import ARCHIVE_SCHEMA_VERSION, COMPACTION_STRATEGY_VERSION
-
+from firstcoder.context.versions import ARCHIVE_SCHEMA_VERSION
 
 _SAFE_COMPONENT = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -46,7 +45,6 @@ class ToolResultArchive:
     """Persist full tool output and construct compact context projections."""
 
     root: str | Path
-    preview_chars: int = 500
 
     def store_original(
         self,
@@ -83,36 +81,18 @@ class ToolResultArchive:
         metadata = _read_metadata(metadata_path)
         actual_digest = _sha256(raw)
 
-        if metadata.get("schema_version") == ARCHIVE_SCHEMA_VERSION:
-            expected_id = metadata.get("archive_id")
-            expected_digest = metadata.get("content_sha256")
-            if expected_id != archive_id or not isinstance(expected_digest, str):
-                raise ArchiveIntegrityError(f"{ARCHIVE_SCHEMA_VERSION} archive metadata is invalid")
-            if expected_digest != actual_digest:
-                raise ArchiveIntegrityError("archive content does not match its SHA-256")
-            if archive_id != _content_addressed_id(actual_digest):
-                raise ArchiveIntegrityError(
-                    f"{ARCHIVE_SCHEMA_VERSION} archive id does not match its content SHA-256"
-                )
-            if metadata.get("original_chars") != len(raw):
-                raise ArchiveIntegrityError("archive character count does not match content")
-            return (
-                ArchiveRecord(
-                    archive_id=archive_id,
-                    session_id=session_id,
-                    content_sha256=actual_digest,
-                    original_chars=len(raw),
-                    original_tokens=_metadata_tokens(metadata, raw),
-                    created_at=_metadata_created_at(metadata),
-                    schema_version=ARCHIVE_SCHEMA_VERSION,
-                ),
-                raw,
-            )
-
-        # v1 archives used random IDs plus a non-authoritative fingerprint.
-        # They remain readable, but their true digest is always recomputed.
-        if "content_fingerprint" not in metadata:
-            raise ArchiveIntegrityError("archive metadata has no recognized schema")
+        expected_id = metadata.get("archive_id")
+        expected_digest = metadata.get("content_sha256")
+        if metadata.get("schema_version") != ARCHIVE_SCHEMA_VERSION:
+            raise ArchiveIntegrityError("archive metadata uses an unsupported schema")
+        if expected_id != archive_id or not isinstance(expected_digest, str):
+            raise ArchiveIntegrityError(f"{ARCHIVE_SCHEMA_VERSION} archive metadata is invalid")
+        if expected_digest != actual_digest:
+            raise ArchiveIntegrityError("archive content does not match its SHA-256")
+        if archive_id != _content_addressed_id(actual_digest):
+            raise ArchiveIntegrityError(f"{ARCHIVE_SCHEMA_VERSION} archive id does not match its content SHA-256")
+        if metadata.get("original_chars") != len(raw):
+            raise ArchiveIntegrityError("archive character count does not match content")
         return (
             ArchiveRecord(
                 archive_id=archive_id,
@@ -121,7 +101,6 @@ class ToolResultArchive:
                 original_chars=len(raw),
                 original_tokens=_metadata_tokens(metadata, raw),
                 created_at=_metadata_created_at(metadata),
-                schema_version="v1",
             ),
             raw,
         )
@@ -140,9 +119,7 @@ class ToolResultArchive:
         tool_name = _short(part.metadata.get("tool_name") or "tool", 64)
         status = _short(_tool_status(part), 32)
         safe_lifecycle = _short(lifecycle, 32)
-        resolved_summary = _short(
-            summary or _default_summary(part, original_tokens=record.original_tokens), 240
-        )
+        resolved_summary = _short(summary or _default_summary(part, original_tokens=record.original_tokens), 240)
         errors = tuple(_short(error, 72) for error in key_errors[:3] if str(error).strip())
         lines = [
             "[Tool result archived]",
@@ -176,64 +153,6 @@ class ToolResultArchive:
             message_id=part.message_id,
             kind=part.kind,
             content=content,
-            metadata=metadata,
-        )
-
-    def archive_part(
-        self,
-        *,
-        session_id: str,
-        part: MessagePart,
-        summary: str | None = None,
-        archive_id: str | None = None,
-    ) -> MessagePart:
-        """Compatibility API retaining the legacy preview-bearing projection."""
-
-        if part.metadata.get("compaction_state") == "archived" and part.metadata.get("archive_id"):
-            return part
-        self._validate_part(part)
-
-        # New archives are always content-addressed.  The compatibility
-        # parameter remains only so callers that already compute this id can
-        # assert it; arbitrary legacy/random IDs are never written as v2.
-        resolved_id = archive_id or part.metadata.get("archive_id")
-        expected_id = _content_addressed_id(_sha256(part.content))
-        if resolved_id is not None and resolved_id != expected_id:
-            raise ValueError("new archive_id must equal the content-addressed ID")
-        record = self.store_original(session_id, part)
-
-        text_path, metadata_path = self._archive_paths(session_id, record.archive_id)
-        preview = part.content[: self.preview_chars]
-        preview_tokens = estimate_text_tokens(preview)
-        resolved_summary = summary or _default_summary(part, original_tokens=record.original_tokens)
-        metadata: dict[str, Any] = dict(part.metadata)
-        metadata.update(
-            {
-                "archive_id": record.archive_id,
-                "archive_path": str(text_path),
-                "archive_metadata_path": str(metadata_path),
-                "summary": resolved_summary,
-                "preview": preview,
-                "original_tokens": record.original_tokens,
-                "preview_tokens": preview_tokens,
-                "content_fingerprint": record.content_sha256,
-                "compaction_state": "archived",
-                "compacted_by": "archive",
-                "compacted_at": record.created_at,
-                "compaction_strategy_version": COMPACTION_STRATEGY_VERSION,
-            }
-        )
-        return MessagePart(
-            id=part.id,
-            message_id=part.message_id,
-            kind=part.kind,
-            content=_legacy_placeholder_text(
-                archive_id=record.archive_id,
-                summary=resolved_summary,
-                preview=preview,
-                original_tokens=record.original_tokens,
-                preview_tokens=preview_tokens,
-            ),
             metadata=metadata,
         )
 
@@ -273,11 +192,7 @@ class ToolResultArchive:
         if metadata_path.exists():
             existing = _read_metadata(metadata_path)
             if existing.get("schema_version") == ARCHIVE_SCHEMA_VERSION:
-                if (
-                    existing.get("archive_id") != archive_id
-                    or existing.get("content_sha256") != content_sha256
-                    or existing.get("original_chars") != len(raw)
-                ):
+                if existing.get("archive_id") != archive_id or existing.get("content_sha256") != content_sha256 or existing.get("original_chars") != len(raw):
                     raise ArchiveIntegrityError("existing archive metadata disagrees with content")
                 record = ArchiveRecord(
                     archive_id=archive_id,
@@ -391,23 +306,3 @@ def _fit_placeholder(lines: list[str], *, maximum: int) -> str:
 def _default_summary(part: MessagePart, *, original_tokens: int) -> str:
     tool_name = str(part.metadata.get("tool_name") or "tool")
     return f"{tool_name} 输出过大，已归档。原始估算 {original_tokens} tokens。"
-
-
-def _legacy_placeholder_text(
-    *,
-    archive_id: str,
-    summary: str,
-    preview: str,
-    original_tokens: int,
-    preview_tokens: int,
-) -> str:
-    return "\n".join(
-        [
-            "[Tool result archived]",
-            f"archive_id={archive_id}",
-            f"summary={summary}",
-            f"original_tokens={original_tokens}",
-            f"preview_tokens={preview_tokens}",
-            f"preview={preview}",
-        ]
-    )

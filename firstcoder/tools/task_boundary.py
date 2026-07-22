@@ -81,28 +81,30 @@ def create_task_boundary_tool(
             created_at=observation.created_at,
         )
 
-    return apply_agent_tool_description(Tool(
-        definition=ToolDefinition(
-            name="task_boundary",
-            description="判断当前消息是否开启新任务；只提交 decision 和 basis_message_id。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "decision": {
-                        "type": "string",
-                        "enum": [
-                            TaskBoundaryDecision.SAME.value,
-                            TaskBoundaryDecision.NEW.value,
-                            TaskBoundaryDecision.UNCERTAIN.value,
-                        ],
+    return apply_agent_tool_description(
+        Tool(
+            definition=ToolDefinition(
+                name="task_boundary",
+                description="判断当前消息是否开启新任务；只提交 decision 和 basis_message_id。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "decision": {
+                            "type": "string",
+                            "enum": [
+                                TaskBoundaryDecision.SAME.value,
+                                TaskBoundaryDecision.NEW.value,
+                                TaskBoundaryDecision.UNCERTAIN.value,
+                            ],
+                        },
+                        "basis_message_id": {"type": "string"},
                     },
-                    "basis_message_id": {"type": "string"},
+                    "required": ["decision", "basis_message_id"],
                 },
-                "required": ["decision", "basis_message_id"],
-            },
-        ),
-        executor=task_boundary,
-    ))
+            ),
+            executor=task_boundary,
+        )
+    )
 
 
 def _format_observation(confirmed_change: bool, should_trigger_compaction: bool) -> str:

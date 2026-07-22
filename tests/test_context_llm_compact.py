@@ -66,9 +66,7 @@ def test_l4_writes_checkpoint_on_success(tmp_path: Path) -> None:
         ]
     )
 
-    result = LlmCompactService(store=store, summarizer=summarizer).compact(
-        LlmCompactRequest(view=view, runtime_state=state, mode="auto")
-    )
+    result = LlmCompactService(store=store, summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=state, mode="auto"))
 
     rebuilt = store.rebuild_session_view("sess_test")
     checkpoint = rebuilt.checkpoints[0]
@@ -114,9 +112,7 @@ def test_l4_summary_prompt_scope_excludes_system_prompt_and_tool_schema(tmp_path
         ]
     )
 
-    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-        LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
-    )
+    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
 
     assert summarizer.calls == [["msg_1", "msg_2"]]
 
@@ -152,9 +148,7 @@ def test_l4_input_uses_latest_checkpoint_summary_plus_tail(tmp_path: Path) -> No
         ]
     )
 
-    result = LlmCompactService(store=store, summarizer=summarizer).compact(
-        LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
-    )
+    result = LlmCompactService(store=store, summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
 
     assert summarizer.calls == [["ckpt_1_summary", "msg_2", "msg_3"]]
     assert result.checkpoint is not None
@@ -177,9 +171,7 @@ def test_same_source_fingerprint_is_not_summarized_twice(tmp_path: Path) -> None
             )
         ]
     )
-    first = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=first_summarizer).compact(
-        LlmCompactRequest(view=view, runtime_state=state)
-    )
+    first = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=first_summarizer).compact(LlmCompactRequest(view=view, runtime_state=state))
 
     second_summarizer = FakeSummarizer([])
     service = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=second_summarizer)
@@ -293,9 +285,7 @@ def test_new_checkpoint_tail_must_move_forward(tmp_path: Path) -> None:
     )
 
     try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-            LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
-        )
+        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
     except InvalidLlmCheckpointBoundaryError as exc:
         assert "tail_start_message_id must stay within current L4 input tail" in str(exc)
     else:
@@ -322,9 +312,7 @@ def test_new_checkpoint_covered_until_must_be_before_tail_start(tmp_path: Path) 
     )
 
     try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-            LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
-        )
+        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
     except InvalidLlmCheckpointBoundaryError as exc:
         assert "covered_until_message_id must be before tail_start_message_id" in str(exc)
     else:
@@ -520,9 +508,7 @@ def test_l4_rejects_checkpoint_tail_that_starts_with_tool_result(tmp_path: Path)
     )
 
     try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-            LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test"))
-        )
+        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
     except InvalidLlmCheckpointBoundaryError as exc:
         assert "tool_call/tool_result sequence" in str(exc)
     else:

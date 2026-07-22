@@ -55,5 +55,3 @@ def render_picker_item(picker: TuiPickerState, item: TuiPickerItem, index: int) 
     lines = [item.label]
     lines.append(f"    {scope} · {path}")
     return "\n".join(lines)
-
-

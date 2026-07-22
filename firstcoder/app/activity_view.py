@@ -119,20 +119,14 @@ def task_plan_panel_text(projection: Mapping[str, object]) -> str:
         for task_id in level:
             task = tasks[task_id]
             dependency_text = _dependency_text(task)
-            lines.append(
-                f"  {_task_marker(task_id, task, ready, blocked)} {task['content']} ({task_id}){dependency_text}"
-            )
+            lines.append(f"  {_task_marker(task_id, task, ready, blocked)} {task['content']} ({task_id}){dependency_text}")
     return "\n".join(lines)
 
 
 def _task_lookup(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, list):
         return {}
-    return {
-        str(task["id"]): dict(task)
-        for task in value
-        if isinstance(task, Mapping) and isinstance(task.get("id"), str) and isinstance(task.get("content"), str)
-    }
+    return {str(task["id"]): dict(task) for task in value if isinstance(task, Mapping) and isinstance(task.get("id"), str) and isinstance(task.get("content"), str)}
 
 
 def _task_id_set(value: object) -> set[str]:
@@ -150,11 +144,7 @@ def _task_order_key(item: tuple[str, dict[str, object]]) -> tuple[int, str]:
 def _topological_levels(value: object) -> list[list[str]]:
     if not isinstance(value, list):
         return []
-    return [
-        [task_id for task_id in level if isinstance(task_id, str)]
-        for level in value
-        if isinstance(level, list)
-    ]
+    return [[task_id for task_id in level if isinstance(task_id, str)] for level in value if isinstance(level, list)]
 
 
 def _task_marker(

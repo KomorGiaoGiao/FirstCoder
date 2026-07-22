@@ -423,11 +423,7 @@ class _FakeOpenAIMissingArgumentsToolStreamCompletions:
                     model=params["model"],
                     choices=[
                         _Object(
-                            delta=_Object(
-                                tool_calls=[
-                                    _Object(index=0, id="call_empty", function=_Object(name="read_file"))
-                                ]
-                            ),
+                            delta=_Object(tool_calls=[_Object(index=0, id="call_empty", function=_Object(name="read_file"))]),
                             finish_reason=None,
                         )
                     ],
@@ -1018,10 +1014,7 @@ def test_openai_compatible_provider_streams_text_deltas_and_final_response():
             client=client,
         )
 
-        events = [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
-        ]
+        events = [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))]
         return client, events
 
     client, events = asyncio.run(collect_events())
@@ -1048,10 +1041,7 @@ def test_openai_compatible_provider_streams_reasoning_deltas_into_diagnostics():
             client=_FakeOpenAIReasoningStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1124,10 +1114,7 @@ def test_openai_compatible_provider_does_not_complete_truncated_streaming_tool_c
             client=_FakeOpenAITruncatedToolStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1147,10 +1134,7 @@ def test_openai_compatible_provider_accumulates_multiple_streaming_tool_calls_by
             client=_FakeOpenAIMultiToolStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="查找")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="查找")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1173,10 +1157,7 @@ def test_openai_compatible_provider_emits_error_for_invalid_streaming_tool_argum
             client=_FakeOpenAIInvalidToolStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1196,10 +1177,7 @@ def test_openai_compatible_provider_rejects_streaming_tool_call_without_argument
             client=_FakeOpenAIMissingArgumentsToolStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1219,10 +1197,7 @@ def test_openai_compatible_provider_only_completes_streaming_tools_on_tool_calls
             client=_FakeOpenAIStopToolStreamClient(),
         )
 
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))]
 
     events = asyncio.run(collect_events())
 
@@ -1430,10 +1405,7 @@ def test_anthropic_provider_streams_text_deltas_and_final_response():
     async def collect_events():
         client = _FakeAnthropicTextStreamClient()
         provider = AnthropicProvider(model="claude-test", api_key="test-key", client=client)
-        events = [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
-        ]
+        events = [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))]
         return client, events
 
     client, events = asyncio.run(collect_events())
@@ -1509,10 +1481,7 @@ def test_anthropic_provider_streams_thinking_deltas_into_diagnostics():
             api_key="test-key",
             client=_FakeAnthropicThinkingStreamClient(),
         )
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="hi")]))]
 
     events = asyncio.run(collect_events())
     assert [event.kind for event in events] == [
@@ -1533,10 +1502,7 @@ def test_anthropic_provider_does_not_complete_truncated_streaming_tool_call():
             api_key="test-key",
             client=_FakeAnthropicTruncatedToolStreamClient(),
         )
-        return [
-            event
-            async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))
-        ]
+        return [event async for event in provider.astream(ChatRequest(messages=[ChatMessage(role="user", content="读取 README")]))]
 
     events = asyncio.run(collect_events())
     assert "tool_call_completed" not in [event.kind for event in events]

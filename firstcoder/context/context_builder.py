@@ -97,17 +97,12 @@ class ContextBuilder:
         if message.role == "tool":
             # tool message 可能包含普通工具结果，也可能是 archive placeholder。二者都要用
             # role=tool 回给模型，并带上原始 tool_call_id。
-            return [
-                _project_tool_part(part)
-                for part in message.parts
-                if part.kind in {"tool_result", "archive_placeholder"}
-            ]
+            return [_project_tool_part(part) for part in message.parts if part.kind in {"tool_result", "archive_placeholder"}]
 
         if message.role == "assistant":
             projected = _project_assistant_message(
                 message,
-                preserve_trimmed_text=preserve_trimmed_text
-                or any(part.kind == "tool_call" for part in message.parts),
+                preserve_trimmed_text=preserve_trimmed_text or any(part.kind == "tool_call" for part in message.parts),
             )
             # A fully trimmed ordinary assistant turn must not become a blank
             # provider message.  Assistant messages with tool calls are still
@@ -137,13 +132,7 @@ def _project_assistant_message(
 ) -> ChatMessage:
     """把内部 assistant parts 合并成 provider assistant message。"""
 
-    text_parts = [
-        part.content
-        for part in message.parts
-        if part.kind == "text"
-        and (preserve_trimmed_text or _is_visible_text_part(part))
-        and part.content
-    ]
+    text_parts = [part.content for part in message.parts if part.kind == "text" and (preserve_trimmed_text or _is_visible_text_part(part)) and part.content]
     tool_calls = [
         ToolCall(
             id=str(part.metadata["tool_call_id"]),
@@ -173,27 +162,16 @@ def _validate_tail_boundary(messages: list[AgentMessage]) -> None:
     first = messages[0]
     if first.role == "tool":
         raise InvalidCheckpointBoundaryError(
-            "checkpoint tail starts with orphan tool result; move tail_start_message_id "
-            "to the assistant tool_call before this tool result",
+            "checkpoint tail starts with orphan tool result; move tail_start_message_id " "to the assistant tool_call before this tool result",
         )
 
 
 def _join_visible_text(parts: list[MessagePart], *, preserve_trimmed_text: bool = False) -> str:
-    return "\n".join(
-        part.content
-        for part in parts
-        if part.kind in {"text", "file", "archive_placeholder"}
-        and (preserve_trimmed_text or _is_visible_text_part(part))
-        and part.content
-    )
+    return "\n".join(part.content for part in parts if part.kind in {"text", "file", "archive_placeholder"} and (preserve_trimmed_text or _is_visible_text_part(part)) and part.content)
 
 
 def _has_trimmed_text(messages: list[AgentMessage]) -> bool:
-    return any(
-        part.kind == "text" and part.metadata.get("compaction_state") == "trimmed"
-        for message in messages
-        for part in message.parts
-    )
+    return any(part.kind == "text" and part.metadata.get("compaction_state") == "trimmed" for message in messages for part in message.parts)
 
 
 def _is_visible_text_part(part: MessagePart) -> bool:

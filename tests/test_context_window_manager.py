@@ -172,12 +172,8 @@ def test_manager_skips_repeated_auto_noop_without_persisting_a_second_completion
     )
 
     state = SessionRuntimeState(session_id="sess_test")
-    first = manager.compact_if_needed(
-        ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO)
-    )
-    second = manager.compact_if_needed(
-        ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO)
-    )
+    first = manager.compact_if_needed(ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO))
+    second = manager.compact_if_needed(ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO))
 
     assert first.status == "skipped"
     assert second.status == "skipped"

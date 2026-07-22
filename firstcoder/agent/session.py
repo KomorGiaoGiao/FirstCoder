@@ -41,7 +41,6 @@ from firstcoder.skills.discovery import discover_all_skills
 from firstcoder.skills.models import LoadedSkill, SkillCatalog
 from firstcoder.skills.session import replay_loaded_skills
 
-
 DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
 
 
@@ -266,11 +265,7 @@ class AgentSession:
                 if self.permission_manager is not None and supports_prewrite_review(tool_call.name)
                 else None
             ),
-            review_only=(
-                persisted_review_only
-                if persisted_review_only is not None
-                else preflight.decision.kind == PermissionDecisionKind.ALLOW
-            ),
+            review_only=(persisted_review_only if persisted_review_only is not None else preflight.decision.kind == PermissionDecisionKind.ALLOW),
             skipped_tool_calls=skipped_tool_calls,
         )
         self.pending_permission_execution = restored
@@ -282,11 +277,7 @@ class AgentSession:
             if message.role != "assistant":
                 continue
             part = next(
-                (
-                    item
-                    for item in message.parts
-                    if item.kind == "tool_call" and str(item.metadata.get("tool_call_id") or "") == tool_call_id
-                ),
+                (item for item in message.parts if item.kind == "tool_call" and str(item.metadata.get("tool_call_id") or "") == tool_call_id),
                 None,
             )
             if part is not None:
@@ -305,9 +296,7 @@ class AgentSession:
         if pending is None or self.permission_manager is None:
             return None
         confirmation = (
-            self.permission_manager.build_prewrite_review_confirmation(pending.permission_request)
-            if pending.review_only
-            else self.permission_manager.build_confirmation(pending.permission_request)
+            self.permission_manager.build_prewrite_review_confirmation(pending.permission_request) if pending.review_only else self.permission_manager.build_confirmation(pending.permission_request)
         )
         if pending.prewrite_review is not None:
             confirmation.payload["prewrite_review"] = pending.prewrite_review.to_payload()
@@ -617,11 +606,7 @@ class AgentSession:
         if not pending_calls:
             return []
         first_pending = pending_calls[0]
-        source_part = next(
-            part
-            for part in tool_call_parts
-            if str(part.metadata.get("tool_call_id") or "") == first_pending.id
-        )
+        source_part = next(part for part in tool_call_parts if str(part.metadata.get("tool_call_id") or "") == first_pending.id)
         persisted_review_only = source_part.metadata.get("prewrite_review_only")
         return [
             (

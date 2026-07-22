@@ -24,11 +24,7 @@ class RecordingProvider(ChatProvider):
     def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
-            basis_message_id = next(
-                message.content.split("basis_message_id=", 1)[1].split("]", 1)[0]
-                for message in reversed(request.messages)
-                if "basis_message_id=" in message.content
-            )
+            basis_message_id = next(message.content.split("basis_message_id=", 1)[1].split("]", 1)[0] for message in reversed(request.messages) if "basis_message_id=" in message.content)
             return ChatResponse(provider=self.name, model=self.model, content=f'{{"decision":"uncertain","basis_message_id":"{basis_message_id}"}}')
         return self.responses.pop(0)
 
@@ -127,9 +123,7 @@ def test_resume_reloads_previously_loaded_skill_context(tmp_path: Path, monkeypa
 
 def _write_info_database_like_project(root: Path) -> None:
     (root / "AGENTS.md").write_text(
-        "| 用户意图 | 优先读取 |\n"
-        "|---|---|\n"
-        "| “今天/某天全球家办有什么新闻”“帮我找资讯并总结” | `skills/global-family-office-news-brief.md` |\n",
+        "| 用户意图 | 优先读取 |\n" "|---|---|\n" "| “今天/某天全球家办有什么新闻”“帮我找资讯并总结” | `skills/global-family-office-news-brief.md` |\n",
         encoding="utf-8",
     )
     skills_dir = root / "skills"

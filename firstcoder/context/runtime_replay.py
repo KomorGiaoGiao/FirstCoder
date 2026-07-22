@@ -121,7 +121,6 @@ def _status_from_compaction(compaction_event: dict[str, object]) -> str:
     return "success"
 
 
-
 def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None

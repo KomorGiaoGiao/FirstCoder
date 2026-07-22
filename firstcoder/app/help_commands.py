@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from firstcoder.app.commands import CommandResult
 
-
 HELP_COMMANDS = [
     ("/new [title]", "Start a new session."),
     ("/fork [title]", "Copy the current session into a new branch."),

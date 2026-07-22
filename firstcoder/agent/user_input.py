@@ -1,8 +1,4 @@
-"""Agent-turn results and compatibility re-exports for user-input requests.
-
-Shared request types live in `firstcoder.runtime.user_input` so permissions,
-tools, and utils do not import the agent package.
-"""
+"""Agent-turn result types."""
 
 from __future__ import annotations
 
@@ -10,18 +6,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from firstcoder.providers.types import ChatResponse
-from firstcoder.runtime.user_input import (
-    UserInputOption,
-    UserInputRequest,
-    user_input_request_from_tool_result,
-)
+from firstcoder.runtime.user_input import UserInputRequest
 
 __all__ = [
     "AgentTurnResult",
     "AgentTurnStatus",
-    "UserInputOption",
-    "UserInputRequest",
-    "user_input_request_from_tool_result",
 ]
 
 

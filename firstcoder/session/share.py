@@ -83,6 +83,3 @@ def _fenced(content: str) -> str:
 def _clean_heading(value: str) -> str:
     normalized = " ".join(value.split())
     return normalized or "Untitled"
-
-
-

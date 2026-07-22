@@ -5,7 +5,7 @@ from firstcoder.context.store import JsonlSessionStore
 
 
 class ShouldNotBeCalled:
-    def summarize(self, messages):
+    def summarize(self, messages, *, summary_mode: str = "default"):
         raise AssertionError("summarizer should not be called while auto compact is disabled")
 
 
@@ -24,7 +24,7 @@ def test_auto_compact_skips_when_circuit_breaker_is_open(tmp_path) -> None:
             runtime_state=state,
             mode="auto",
         )
-        )
+    )
 
     assert result.checkpoint is None
     assert result.event.status == "skipped"
@@ -35,7 +35,7 @@ class FakeSummarizer:
     def __init__(self) -> None:
         self.called = False
 
-    def summarize(self, messages):
+    def summarize(self, messages, *, summary_mode: str = "default"):
         self.called = True
         return LlmCompactSummary(
             summary="过期熔断后的摘要",

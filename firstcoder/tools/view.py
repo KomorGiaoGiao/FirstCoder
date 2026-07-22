@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from firstcoder.permissions.types import PermissionAction
-from firstcoder.tools.path_permissions import read_path_target
-from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.path_permissions import with_read_permission
+from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -51,10 +50,4 @@ def create_view_tool(root: str | Path, *, access: SandboxAccess | None = None) -
             total_lines=len(lines),
         )
 
-    tool = tool_from_function(view)
-    tool.permission = ToolPermissionSpec(
-        action=PermissionAction.READ_PATH,
-        target_builder=read_path_target,
-        reason="读取文件需要权限检查。",
-    )
-    return tool
+    return with_read_permission(tool_from_function(view), reason="读取文件需要权限检查。")

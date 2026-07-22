@@ -16,10 +16,7 @@ class FirstCoderMarkdown(Markdown):
     """Markdown output that avoids Textual's fragile selection path."""
 
     ALLOW_SELECT = False
-    BLOCKS = {
-        name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False})
-        for name, block in Markdown.BLOCKS.items()
-    }
+    BLOCKS = {name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False}) for name, block in Markdown.BLOCKS.items()}
 
 
 class ComposerTextArea(TextArea):

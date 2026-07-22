@@ -354,9 +354,7 @@ def test_session_registry_adds_task_plan_tools_for_live_sessions(tmp_path) -> No
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
 
     assert "task_boundary" in session.tool_registry.names()
-    assert {"task_create", "task_update", "task_revise", "task_list"}.issubset(
-        session.tool_registry.names()
-    )
+    assert {"task_create", "task_update", "task_revise", "task_list"}.issubset(session.tool_registry.names())
 
 
 def test_agent_session_task_plan_tool_writes_one_event_before_tool_result(tmp_path) -> None:
@@ -376,15 +374,9 @@ def test_agent_session_task_plan_tool_writes_one_event_before_tool_result(tmp_pa
     )
 
     result = session.tool_registry.execute(tool_call.name, tool_call.arguments)
-    before_tool_result = [
-        event for event in store.list_events("sess_task_plan_capture")
-        if event.type == "task_plan_updated"
-    ]
+    before_tool_result = [event for event in store.list_events("sess_task_plan_capture") if event.type == "task_plan_updated"]
     session.append_tool_result(tool_call=tool_call, result=result)
-    plan_events = [
-        event for event in store.list_events("sess_task_plan_capture")
-        if event.type == "task_plan_updated"
-    ]
+    plan_events = [event for event in store.list_events("sess_task_plan_capture") if event.type == "task_plan_updated"]
     view = store.rebuild_session_view("sess_task_plan_capture")
 
     assert result.ok is True

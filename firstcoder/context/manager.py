@@ -39,13 +39,11 @@ ManagerStatus = Literal["success", "skipped", "failed"]
 
 
 class ProgrammaticCompactor(Protocol):
-    def compact(self, request: CompactionRequest):
-        ...
+    def compact(self, request: CompactionRequest): ...
 
 
 class L4Compactor(Protocol):
-    def compact(self, request: LlmCompactRequest):
-        ...
+    def compact(self, request: LlmCompactRequest): ...
 
 
 @dataclass(slots=True)
@@ -131,11 +129,7 @@ class ContextWindowManager:
                 after_tokens=before_tokens,
             )
 
-        if (
-            trigger == ContextWindowTrigger.AUTO
-            and mode == ContextCompactMode.AUTO
-            and auto_compact_circuit_is_open(request.runtime_state)
-        ):
+        if trigger == ContextWindowTrigger.AUTO and mode == ContextCompactMode.AUTO and auto_compact_circuit_is_open(request.runtime_state):
             # 连续失败后自动压缩会短暂熔断，避免每一轮对话都重复触发昂贵且失败的 L4。
             # 手动 compact 不受这个限制，方便用户主动排查。
             return ContextCompactResult(
@@ -146,10 +140,7 @@ class ContextWindowManager:
                 after_tokens=before_tokens,
             )
 
-        if (
-            trigger == ContextWindowTrigger.AUTO
-            and request.runtime_state.last_no_effect_compaction_fingerprint == input_fingerprint
-        ):
+        if trigger == ContextWindowTrigger.AUTO and request.runtime_state.last_no_effect_compaction_fingerprint == input_fingerprint:
             return ContextCompactResult(
                 status="skipped",
                 reason="skipped_no_effect",
@@ -160,9 +151,7 @@ class ContextWindowManager:
 
         target_tokens = request.target_tokens or self.config.target_for_trigger(trigger.value)
         force_route_current_text = _force_route_current_text_for_trigger(trigger)
-        required_levels: tuple[Literal["l1", "l2", "l3"], ...] = (
-            ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
-        )
+        required_levels: tuple[Literal["l1", "l2", "l3"], ...] = ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
         # 先跑确定性的 L1-L3。它们不依赖模型，成本低、结果可重放；只有仍然超预算时
         # 才进入 L4 LLM 摘要。
         programmatic = self.pipeline.compact(
@@ -180,11 +169,7 @@ class ContextWindowManager:
         after_programmatic = self._trigger_decision(programmatic.view, request)
         after_tokens = after_programmatic.estimated_tokens
 
-        if (
-            trigger == ContextWindowTrigger.AUTO
-            and programmatic.event.noop
-            and after_tokens <= target_tokens
-        ):
+        if trigger == ContextWindowTrigger.AUTO and programmatic.event.noop and after_tokens <= target_tokens:
             request.runtime_state.last_no_effect_compaction_fingerprint = input_fingerprint
             SessionEventWriter(store=self.store, session_id=request.view.session_id).append_compaction_skipped(
                 trigger=trigger.value,
@@ -606,6 +591,8 @@ class ContextWindowManager:
             target_tokens=target_tokens,
             event=event,
         )
+
+
 def _result_reason(*, trigger: ContextWindowTrigger, auto_reason: str) -> str:
     if trigger == ContextWindowTrigger.AUTO:
         return auto_reason

@@ -33,11 +33,7 @@ class FakeProvider(ChatProvider):
     def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
-            basis_message_id = next(
-                message.content.split("basis_message_id=", 1)[1].split("]", 1)[0]
-                for message in request.messages
-                if "basis_message_id=" in message.content
-            )
+            basis_message_id = next(message.content.split("basis_message_id=", 1)[1].split("]", 1)[0] for message in request.messages if "basis_message_id=" in message.content)
             return ChatResponse(
                 provider="fake",
                 model="fake-model",
@@ -505,39 +501,22 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
     loop.run_user_turn("换一个任务 " + ("beta " * 20))
     loop.run_user_turn("继续新任务")
 
-    compact_events = [
-        event.payload["event"]
-        for event in _compact_events(store, "sess_task_boundary_old_task")
-        if event.payload["trigger"] == "task_hash_changed"
-    ]
+    compact_events = [event.payload["event"] for event in _compact_events(store, "sess_task_boundary_old_task") if event.payload["trigger"] == "task_hash_changed"]
     assert compact_events
     assert compact_events[-1]["changed_parts"] >= 1
     assert "l1" in compact_events[-1]["levels_attempted"]
 
     view = store.rebuild_session_view("sess_task_boundary_old_task")
-    old_task_parts = [
-        part
-        for message in view.messages
-        for part in message.parts
-        if part.metadata.get("task_hash") == first_task_hash
-    ]
+    old_task_parts = [part for message in view.messages for part in message.parts if part.metadata.get("task_hash") == first_task_hash]
     assert old_task_parts
-    trimmed_old_parts = [
-        part
-        for part in old_task_parts
-        if part.metadata.get("compacted_by") == "l1_old_task_dialogue"
-    ]
+    trimmed_old_parts = [part for part in old_task_parts if part.metadata.get("compacted_by") == "l1_old_task_dialogue"]
     assert trimmed_old_parts
     assert all(part.metadata.get("compaction_state") == "trimmed" for part in trimmed_old_parts)
     assert all(part.content == "" for part in trimmed_old_parts)
     latest_user = [message for message in view.messages if message.role == "user"][-1]
     assert latest_user.parts[0].metadata.get("task_hash") == session.runtime_state.active_task_hash
     assert latest_user.parts[0].metadata.get("task_hash") != first_task_hash
-    new_task_user_parts = [
-        message.parts[0]
-        for message in view.messages
-        if message.role == "user" and "换一个任务" in message.parts[0].content
-    ]
+    new_task_user_parts = [message.parts[0] for message in view.messages if message.role == "user" and "换一个任务" in message.parts[0].content]
     assert new_task_user_parts
     assert all(part.metadata.get("task_hash") == session.runtime_state.active_task_hash for part in new_task_user_parts)
 
@@ -608,21 +587,13 @@ def test_task_boundary_e2e_confirms_pending_new_when_next_turn_is_same_task(tmp_
     loop.run_user_turn("任务B：HTTP 缓存头解释")
     loop.run_user_turn("任务B：继续 HTTP 缓存头解释")
 
-    compact_events = [
-        event.payload["event"]
-        for event in _compact_events(store, "sess_task_boundary_new_then_same")
-        if event.payload["trigger"] == "task_hash_changed"
-    ]
+    compact_events = [event.payload["event"] for event in _compact_events(store, "sess_task_boundary_new_then_same") if event.payload["trigger"] == "task_hash_changed"]
     assert compact_events
     assert compact_events[-1]["changed_parts"] >= 1
     assert session.runtime_state.active_task_hash != first_task_hash
 
     view = store.rebuild_session_view("sess_task_boundary_new_then_same")
-    new_task_user_parts = [
-        message.parts[0]
-        for message in view.messages
-        if message.role == "user" and message.parts[0].content.startswith("任务B")
-    ]
+    new_task_user_parts = [message.parts[0] for message in view.messages if message.role == "user" and message.parts[0].content.startswith("任务B")]
     assert len(new_task_user_parts) == 2
     assert all(part.metadata.get("task_hash") == session.runtime_state.active_task_hash for part in new_task_user_parts)
 

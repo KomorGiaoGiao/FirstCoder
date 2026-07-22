@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from firstcoder.permissions.types import PermissionAction
-from firstcoder.tools.path_permissions import read_path_target
-from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
+from firstcoder.tools.path_permissions import with_read_permission
+from firstcoder.tools.types import Tool, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
@@ -32,10 +31,4 @@ def create_glob_tool(root: str | Path, *, access: SandboxAccess | None = None) -
         content = "\n".join(matches) if matches else "没有找到匹配路径。"
         return make_text_result("glob", content, matches=matches, truncated=len(all_matches) > max_results)
 
-    tool = tool_from_function(glob)
-    tool.permission = ToolPermissionSpec(
-        action=PermissionAction.READ_PATH,
-        target_builder=read_path_target,
-        reason="匹配路径需要权限检查。",
-    )
-    return tool
+    return with_read_permission(tool_from_function(glob), reason="匹配路径需要权限检查。")

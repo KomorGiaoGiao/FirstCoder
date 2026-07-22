@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import time
 from collections.abc import Callable
 from typing import Literal
@@ -11,6 +10,7 @@ from typing import Literal
 import anyio
 
 from firstcoder.runtime.cancellation import AgentCancelledError, CancellationToken
+from firstcoder.runtime.user_input import UserInputRequest
 from firstcoder.agent.ports import ContextManagerLike
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
@@ -27,7 +27,6 @@ from firstcoder.agent.background import (
 from firstcoder.agent.user_input import (
     AgentTurnResult,
     AgentTurnStatus,
-    UserInputRequest,
 )
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
@@ -54,9 +53,6 @@ from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.tools.types import Tool, ToolResult
 
 
-_DEFAULT_MAX_TOOL_ROUNDS = object()
-
-
 class AgentLoop:
     """把用户输入、上下文投影、provider 调用和工具执行串成一轮会话。
 
@@ -80,7 +76,6 @@ class AgentLoop:
         tools: list[Tool] | None = None,
         context_builder: ContextBuilder | None = None,
         context_manager: ContextManagerLike | None = None,
-        max_tool_rounds: int | None | object = _DEFAULT_MAX_TOOL_ROUNDS,
         limits: AgentLoopLimits | None = None,
         clock=time.monotonic,
         stream_event_handler: Callable[[ChatStreamEvent], None] | None = None,
@@ -99,11 +94,8 @@ class AgentLoop:
         self.request_options = request_options or MainRequestOptions()
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
-        resolved_limits = limits or AgentLoopLimits.default()
-        if max_tool_rounds is not _DEFAULT_MAX_TOOL_ROUNDS:
-            resolved_limits = resolved_limits.with_max_tool_rounds(max_tool_rounds)
-        self.limits = resolved_limits
-        self.max_tool_rounds = resolved_limits.max_tool_rounds
+        self.limits = limits or AgentLoopLimits.default()
+        self.max_tool_rounds = self.limits.max_tool_rounds
         self.clock = clock
         self.provider_call_count = 0
         self.turn_started_at: float | None = None
@@ -113,9 +105,7 @@ class AgentLoop:
         self.guidance_provider = guidance_provider
         self.cancellation_token = cancellation_token
         self.background_manager = background_manager
-        self.background_tool_names = (
-            background_tool_names if background_tool_names is not None else DEFAULT_BACKGROUND_TOOL_NAMES
-        )
+        self.background_tool_names = background_tool_names if background_tool_names is not None else DEFAULT_BACKGROUND_TOOL_NAMES
         self.enable_delegate_tool = enable_delegate_tool
         self._skills_prepared_for_turn: int | None = None
         self._task_plan_reconciliation_attempted = False
@@ -845,9 +835,7 @@ class AgentLoop:
         instruction = self._final_reconciliation_instruction()
         if instruction is None:
             return response, None, tool_rounds
-        response = self._drop_unsupported_tool_calls(
-            complete_once(runtime_instruction=instruction)
-        )
+        response = self._drop_unsupported_tool_calls(complete_once(runtime_instruction=instruction))
         return self._continue_tool_loop_from_response(response, complete_once, tool_rounds)
 
     async def _run_task_plan_reconciliation_if_needed_async(
@@ -859,9 +847,7 @@ class AgentLoop:
         instruction = self._final_reconciliation_instruction()
         if instruction is None:
             return response, None, tool_rounds
-        response = self._drop_unsupported_tool_calls(
-            await complete_once(runtime_instruction=instruction)
-        )
+        response = self._drop_unsupported_tool_calls(await complete_once(runtime_instruction=instruction))
         return await self._continue_tool_loop_from_response_async(response, complete_once, tool_rounds)
 
     def _final_reconciliation_instruction(self) -> str | None:
@@ -969,7 +955,6 @@ class AgentLoop:
         self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
         return self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
 
-
     def _estimate_provider_request_tokens(self, view) -> int:
         definitions = self._provider_tool_definitions()
         system_prefix = self.session.build_system_prefix(
@@ -987,18 +972,11 @@ class AgentLoop:
         )
 
     def _build_provider_messages(self, view, *, system_prefix):
-        """Project context while retaining compatibility with extension builders."""
-
-        build = self.context_builder.build_provider_messages
-        parameters = inspect.signature(build).parameters.values()
-        accepts_store_root = any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "store_root"
-            for parameter in parameters
+        return self.context_builder.build_provider_messages(
+            view,
+            system_prefix=system_prefix,
+            store_root=self.session.store.root,
         )
-        kwargs = {"system_prefix": system_prefix}
-        if accepts_store_root:
-            kwargs["store_root"] = self.session.store.root
-        return build(view, **kwargs)
 
     def _request_messages(self, *, runtime_instruction: str | None = None):
         system_prefix = self.session.build_system_prefix(
@@ -1022,11 +1000,7 @@ class AgentLoop:
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is not None and not capabilities.supports_tools:
             return []
-        return [
-            self._augment_tool_definition(definition)
-            for definition in self.session.tool_registry.definitions()
-            if definition.name not in HIDDEN_TOOL_STATUS_NAMES
-        ]
+        return [self._augment_tool_definition(definition) for definition in self.session.tool_registry.definitions() if definition.name not in HIDDEN_TOOL_STATUS_NAMES]
 
     def _augment_tool_definition(self, definition):
         """给后台可用工具的 schema 附加 run_in_background/background_label 控制字段。
@@ -1048,13 +1022,9 @@ class AgentLoop:
             return
         names = set(self.session.tool_registry.names())
         if "background_status" not in names:
-            self.session.tool_registry.register(
-                create_background_status_tool(self.background_manager, session_id=self.session.session_id)
-            )
+            self.session.tool_registry.register(create_background_status_tool(self.background_manager, session_id=self.session.session_id))
         if "background_cancel" not in names:
-            self.session.tool_registry.register(
-                create_background_cancel_tool(self.background_manager, session_id=self.session.session_id)
-            )
+            self.session.tool_registry.register(create_background_cancel_tool(self.background_manager, session_id=self.session.session_id))
 
     def _ensure_delegate_tool(self) -> None:
         """Register the parent-facing delegate tool with a non-recursive child runner."""
@@ -1155,9 +1125,7 @@ class AgentLoop:
         if capabilities is None or capabilities.supports_tools or not response.tool_calls:
             return response
         self._drop_unsupported_tool_call_stream_events()
-        response.diagnostics.warnings.append(
-            "provider returned tool_calls even though supports_tools is false; tool calls were ignored"
-        )
+        response.diagnostics.warnings.append("provider returned tool_calls even though supports_tools is false; tool calls were ignored")
         return ChatResponse(
             provider=response.provider,
             model=response.model,
@@ -1172,11 +1140,7 @@ class AgentLoop:
     def _drop_unsupported_tool_call_stream_events(self) -> None:
         if not self.last_stream_events:
             return
-        self.last_stream_events = [
-            event
-            for event in self.last_stream_events
-            if event.kind not in {"tool_call_started", "tool_call_delta", "tool_call_completed"}
-        ]
+        self.last_stream_events = [event for event in self.last_stream_events if event.kind not in {"tool_call_started", "tool_call_delta", "tool_call_completed"}]
 
     def _tool_round_limit_response(self, response: ChatResponse) -> ChatResponse:
         """工具轮次上限命中后，只保存纯文本说明，避免写入未执行的 tool_call。"""
@@ -1185,15 +1149,9 @@ class AgentLoop:
 
     def _limit_response(self, reason: AgentLoopStopReason, *, raw: dict | None = None) -> ChatResponse:
         messages = {
-            AgentLoopStopReason.PROVIDER_CALL_LIMIT: (
-                f"provider 调用次数达到上限（max_provider_calls={self.limits.max_provider_calls}），已停止继续执行。"
-            ),
-            AgentLoopStopReason.TURN_TIMEOUT: (
-                f"本轮任务耗时达到上限（max_turn_seconds={self.limits.max_turn_seconds}），已停止继续执行。"
-            ),
-            AgentLoopStopReason.TOOL_ROUND_LIMIT: (
-                f"工具调用轮次达到上限（max_tool_rounds={self.limits.max_tool_rounds}），已停止继续执行工具。"
-            ),
+            AgentLoopStopReason.PROVIDER_CALL_LIMIT: (f"provider 调用次数达到上限（max_provider_calls={self.limits.max_provider_calls}），已停止继续执行。"),
+            AgentLoopStopReason.TURN_TIMEOUT: (f"本轮任务耗时达到上限（max_turn_seconds={self.limits.max_turn_seconds}），已停止继续执行。"),
+            AgentLoopStopReason.TOOL_ROUND_LIMIT: (f"工具调用轮次达到上限（max_tool_rounds={self.limits.max_tool_rounds}），已停止继续执行工具。"),
         }
         return ChatResponse(
             provider=self.provider.name,
@@ -1213,7 +1171,6 @@ class AgentLoop:
             finish_reason="interrupted",
             raw={"interrupted": True},
         )
-
 
 
 class _AgentLoopLimitReached(Exception):

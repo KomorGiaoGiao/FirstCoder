@@ -37,8 +37,6 @@ class NewSessionService:
         )
         session = bootstrap.create()
         if title:
-            SessionEventWriter(store=self.store, session_id=session.session_id).append_session_metadata_updated(
-                title=title
-            )
+            SessionEventWriter(store=self.store, session_id=session.session_id).append_session_metadata_updated(title=title)
         record = SessionCatalog(self.store.root).get_session(session.session_id)
         return ResumeResult(session=session, record=record)

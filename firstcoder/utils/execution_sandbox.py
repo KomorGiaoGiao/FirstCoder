@@ -10,7 +10,6 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import CommandResult, run_command
 
-
 _SENSITIVE_ENV_KEYWORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "COOKIE")
 
 

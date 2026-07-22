@@ -95,11 +95,7 @@ def _tail_boundary(messages: list[AgentMessage]) -> _TailBoundary:
 
 
 def _boundary_candidates(messages: list[AgentMessage]) -> list[AgentMessage]:
-    return [
-        message
-        for message in messages
-        if not any(part.kind == "checkpoint_summary" for part in message.parts)
-    ]
+    return [message for message in messages if not any(part.kind == "checkpoint_summary" for part in message.parts)]
 
 
 def _build_summary_prompt(messages: list[AgentMessage], *, summary_mode: str) -> str:
@@ -108,8 +104,7 @@ def _build_summary_prompt(messages: list[AgentMessage], *, summary_mode: str) ->
     sections = [
         f"摘要模式：{mode_hint}",
         "",
-        "只能按以下 coding handoff 格式输出。每个标题必须恰好出现一次；"
-        "若历史中没有某项的证据，写“无”：",
+        "只能按以下 coding handoff 格式输出。每个标题必须恰好出现一次；" "若历史中没有某项的证据，写“无”：",
         headings,
         "",
         "需要压缩的会话历史：",

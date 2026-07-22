@@ -134,7 +134,7 @@ def test_context_builder_projects_tool_archive_placeholder_as_tool_message() -> 
                         metadata={"tool_call_id": "call_1", "tool_name": "shell"},
                     )
                 ],
-            )
+            ),
         ],
     )
 
@@ -390,6 +390,4 @@ def test_context_builder_does_not_collapse_duplicate_id_when_arguments_differ() 
     )
 
     with pytest.raises(InvalidToolCallSequenceError, match="missing matching tool result"):
-        ContextBuilder().build_provider_messages(
-            SessionView(session_id="sess_conflicting_duplicate", messages=messages)
-        )
+        ContextBuilder().build_provider_messages(SessionView(session_id="sess_conflicting_duplicate", messages=messages))

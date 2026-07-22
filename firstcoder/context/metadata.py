@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 RESERVED_METADATA_KEYS = frozenset({"session_id"})
 
 

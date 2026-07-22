@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
@@ -119,9 +118,8 @@ def create_firstcoder_app(
     resolved_app_config = app_config or load_config(project_root=project_path)
     model_state_store = ModelStateStore(resolved_data_root / "model_state.json")
     model_catalog = resolved_app_config.model_catalog()
-    has_explicit_model_catalog = _has_explicit_model_catalog(resolved_app_config)
     selected_profile: ModelProfile | None = None
-    if provider is None and has_explicit_model_catalog and model_catalog.profiles:
+    if provider is None and model_catalog.profiles:
         selected_profile = _initial_model_profile(
             model_catalog,
             model_spec=model_spec,
@@ -134,13 +132,17 @@ def create_firstcoder_app(
     store = JsonlSessionStore(resolved_data_root)
     sandbox_access = SandboxAccess()
     background_manager = BackgroundJobManager()
-    resolved_tools = tools if tools is not None else create_builtin_registry(
-        project_path,
-        include_mutation_tools=True,
-        include_execution_tools=True,
-        include_network_tools=True,
-        access=sandbox_access,
-    ).tools()
+    resolved_tools = (
+        tools
+        if tools is not None
+        else create_builtin_registry(
+            project_path,
+            include_mutation_tools=True,
+            include_execution_tools=True,
+            include_network_tools=True,
+            access=sandbox_access,
+        ).tools()
+    )
     mcp_manager = (mcp_manager_factory or McpManager)(load_mcp_configs(resolved_app_config))
     try:
         mcp_manager.connect_all_in_background()
@@ -218,9 +220,8 @@ def create_firstcoder_app(
         app_config=resolved_app_config,
         chat_runner=chat_runner,
         compact_summarizer=compact_summarizer,
-        catalog=model_catalog if has_explicit_model_catalog else ModelCatalog(default_ref=None, profiles=()),
+        catalog=model_catalog,
         state_store=model_state_store,
-        current_profile=selected_profile,
     )
     command_handler = CompositeCommandHandler(
         [
@@ -265,14 +266,12 @@ class RuntimeModelSwitcher:
         compact_summarizer: ProviderLlmCompactSummarizer,
         catalog: ModelCatalog | None = None,
         state_store: ModelStateStore | None = None,
-        current_profile: ModelProfile | None = None,
     ) -> None:
         self._app_config = app_config
         self._chat_runner = chat_runner
         self._compact_summarizer = compact_summarizer
         self._catalog = catalog or app_config.model_catalog()
         self._state_store = state_store
-        self._current_profile = current_profile
 
     def current_model(self) -> ModelState:
         provider = self._chat_runner.provider
@@ -281,39 +280,22 @@ class RuntimeModelSwitcher:
     def model_choices(self) -> list[ModelState]:
         current = self.current_model()
         if self._catalog.profiles:
-            return _unique_model_states(
-                [
-                    ModelState(provider=profile.provider_id, model=profile.model_id)
-                    for profile in self._catalog.list()
-                ]
-            )
+            return _unique_model_states([ModelState(provider=profile.provider_id, model=profile.model_id) for profile in self._catalog.list()])
         choices = [current]
-        configured = self._app_config.get_config_value("model")
-        if configured:
-            choices.append(_model_state_from_ref(configured, fallback_provider=current.provider))
         for provider_name, preset in PROVIDER_PRESETS.items():
             choices.append(ModelState(provider=provider_name, model=preset.default_model))
         return _unique_model_states(choices)
 
     def switch_model(self, spec: str) -> ModelState:
         selected_provider, model = _parse_model_spec(spec)
-        if selected_provider is not None and self._catalog.profiles:
+        if self._catalog.profiles:
+            if selected_provider is None:
+                raise ValueError("模型目录模式需要使用 <provider>/<model>")
             ref = f"{selected_provider}/{model}"
             profile = self._catalog.get(ref)
             if profile is None:
                 raise ValueError(f"未配置模型：{ref}。请在 [models] 中添加它。")
             return self._apply_profile(profile, persist=True)
-
-        if selected_provider is None and self._current_profile is not None:
-            # 保留 `/model <model>` 兼容快捷方式：沿用当前 Profile 的
-            # provider/请求参数，但不把临时模型写进 Catalog 或状态文件。
-            profile = replace(
-                self._current_profile,
-                ref=f"{self._current_profile.provider_id}/{model}",
-                model_id=model,
-                label=model,
-            )
-            return self._apply_profile(profile, persist=False)
 
         config = _config_for_model_switch(
             self._app_config,
@@ -336,7 +318,6 @@ class RuntimeModelSwitcher:
             provider = create_provider_for_model(self._app_config, profile)
         except ProviderConfigError as error:
             raise ValueError(str(error)) from error
-        self._current_profile = profile
         self._chat_runner.set_model(
             provider,
             request_options=_main_request_options(profile),
@@ -370,40 +351,20 @@ def _initial_model_profile(
             return catalog.require(ref)
     profiles = catalog.list()
     if not profiles:
-        raise ValueError("模型目录为空，且没有旧 Provider 配置可用")
+        raise ValueError("模型目录为空")
     return profiles[0]
 
 
-def _has_explicit_model_catalog(config: AppConfig) -> bool:
-    """判断配置是否使用新格式的非空 `[models]`，而非 legacy 适配 profile。"""
-
-    return any(
-        isinstance(source, dict) and isinstance(source.get("models"), dict) and bool(source["models"])
-        for source in (config.global_config, config.project_config)
-    )
-
-
 def _parse_model_spec(spec: str) -> tuple[str | None, str]:
-    parts = spec.strip().split()
-    if len(parts) > 2:
+    value = spec.strip()
+    if not value or any(character.isspace() for character in value):
         raise ValueError("usage: /model <model> or /model <provider>/<model>")
-    if len(parts) == 2:
-        provider, model = parts
-    else:
-        value = parts[0] if parts else ""
-        provider, model = value.split("/", 1) if "/" in value else (None, value)
+    provider, model = value.split("/", 1) if "/" in value else (None, value)
     provider = provider.strip() if provider else None
     model = model.strip()
     if not model:
         raise ValueError("model name is required")
     return provider, model
-
-
-def _model_state_from_ref(ref: str, *, fallback_provider: str) -> ModelState:
-    if "/" in ref:
-        provider, model = ref.split("/", 1)
-        return ModelState(provider=provider, model=model)
-    return ModelState(provider=fallback_provider, model=ref)
 
 
 def _unique_model_states(states: list[ModelState]) -> list[ModelState]:
@@ -426,39 +387,21 @@ def _config_for_model_switch(
     model: str,
 ) -> AppConfig:
     provider_name = config.provider_name
-    model_ref = model
+    env = dict(config.env)
     if selected_provider:
         if selected_provider in PROVIDER_PRESETS:
             provider_name = selected_provider
         elif selected_provider != current_provider.name:
             raise ValueError(f"unsupported provider: {selected_provider}")
-        model_ref = f"{selected_provider}/{model}"
-    elif current_provider.name in PROVIDER_PRESETS:
-        model_ref = f"{current_provider.name}/{model}"
-
-    project_config = dict(config.project_config or {})
-    if selected_provider in PROVIDER_PRESETS:
-        project_config["provider"] = _preset_provider_config(config.project_config, provider_name=selected_provider)
-    project_config["model"] = model_ref
+    if provider_name in PROVIDER_PRESETS:
+        env[PROVIDER_PRESETS[provider_name].model_env] = model
+    else:
+        env["FIRSTCODER_MODEL"] = model
     return AppConfig(
         provider_name=provider_name,
-        env=config.env,
-        project_config=project_config,
+        env=env,
+        project_config=config.project_config,
         global_config=config.global_config,
         project_config_path=config.project_config_path,
         global_config_path=config.global_config_path,
     )
-
-
-def _preset_provider_config(project_config: dict | None, *, provider_name: str) -> dict:
-    preset = PROVIDER_PRESETS[provider_name]
-    clean: dict[str, object] = {"api_key_env": preset.api_key_env}
-    if preset.base_url_env or preset.default_base_url is not None:
-        clean["base_url"] = preset.default_base_url or ""
-    provider_config = (project_config or {}).get("provider")
-    if not isinstance(provider_config, dict):
-        return clean
-    nested = provider_config.get(provider_name)
-    if isinstance(nested, dict):
-        clean[provider_name] = dict(nested)
-    return clean

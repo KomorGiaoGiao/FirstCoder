@@ -206,20 +206,24 @@ def test_forked_session_retrieves_copied_v2_archive_and_keeps_archives_session_l
     assert source_archive_dir != fork_archive_dir
     assert (source_archive_dir / f"{archive_id}.txt").read_text(encoding="utf-8") == raw_content
     assert (fork_archive_dir / f"{archive_id}.txt").read_text(encoding="utf-8") == raw_content
-    assert (source_archive_dir / f"{archive_id}.json").read_bytes() == (
-        fork_archive_dir / f"{archive_id}.json"
-    ).read_bytes()
+    assert (source_archive_dir / f"{archive_id}.json").read_bytes() == (fork_archive_dir / f"{archive_id}.json").read_bytes()
 
     fork_only_id = _seed(tmp_path, "fork-only backing", session_id=forked_id)
     assert not (source_archive_dir / f"{fork_only_id}.txt").exists()
-    assert source.tool_registry.execute(
-        "retrieve_archive",
-        {"archive_id": fork_only_id, "full": True},
-    ).ok is False
-    assert forked_session.tool_registry.execute(
-        "retrieve_archive",
-        {"archive_id": fork_only_id, "full": True},
-    ).content == "fork-only backing"
+    assert (
+        source.tool_registry.execute(
+            "retrieve_archive",
+            {"archive_id": fork_only_id, "full": True},
+        ).ok
+        is False
+    )
+    assert (
+        forked_session.tool_registry.execute(
+            "retrieve_archive",
+            {"archive_id": fork_only_id, "full": True},
+        ).content
+        == "fork-only backing"
+    )
 
 
 def test_tool_result_to_part_copies_retrieval_data(tmp_path) -> None:

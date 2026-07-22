@@ -1,7 +1,7 @@
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.metadata import merge_metadata_patch
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.session.catalog import SessionCatalog
-from firstcoder.session.metadata import merge_metadata_patch, title_from_first_user_message
 
 
 def test_session_metadata_updated_patch_is_merged_into_session_view(tmp_path) -> None:
@@ -71,18 +71,3 @@ def test_merge_metadata_patch_ignores_none_values() -> None:
     metadata = merge_metadata_patch({"title": "旧标题", "workspace": "D:\\Project"}, {"title": None})
 
     assert metadata == {"title": "旧标题", "workspace": "D:\\Project"}
-
-
-def test_title_from_first_user_message_returns_short_preview() -> None:
-    title = title_from_first_user_message("  这是一个很长的用户问题 " * 10, max_chars=20)
-
-    assert title is not None
-    assert title.endswith("...")
-    assert len(title) == 20
-
-
-def test_title_from_first_user_message_respects_tiny_max_chars() -> None:
-    assert title_from_first_user_message("abcdef", max_chars=3) == "..."
-    assert title_from_first_user_message("abcdef", max_chars=2) == ".."
-    assert title_from_first_user_message("abcdef", max_chars=1) == "."
-    assert title_from_first_user_message("abcdef", max_chars=0) == ""

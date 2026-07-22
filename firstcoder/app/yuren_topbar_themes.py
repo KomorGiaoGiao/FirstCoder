@@ -51,16 +51,8 @@ def provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> 
     palette = model_glow_palette(provider, model)
     if palette is None:
         return None
-    return (
-        f"{glow_markup(provider, glow_frame=glow_frame, palette=palette)}"
-        f"[#6e6d72]/[/]"
-        f"{glow_markup(model, glow_frame=glow_frame + len(provider) + 1, palette=palette)}"
-    )
+    return f"{glow_markup(provider, glow_frame=glow_frame, palette=palette)}" f"[#6e6d72]/[/]" f"{glow_markup(model, glow_frame=glow_frame + len(provider) + 1, palette=palette)}"
 
 
 def glow_markup(text: str, *, glow_frame: int, palette: tuple[str, ...]) -> str:
-    return "".join(
-        f"[{palette[(index + glow_frame) % len(palette)]}]"
-        f"{escape(character)}[/]"
-        for index, character in enumerate(text)
-    )
+    return "".join(f"[{palette[(index + glow_frame) % len(palette)]}]" f"{escape(character)}[/]" for index, character in enumerate(text))

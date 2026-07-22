@@ -14,7 +14,6 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState, active_auto_compact_disabled_until
 from firstcoder.context.token_budget import estimate_text_tokens
 
-
 CheckpointBoundaryStatus = Literal["none", "ok", "missing_tail"]
 AutoCompactStatus = Literal["ready", "failed", "disabled"]
 

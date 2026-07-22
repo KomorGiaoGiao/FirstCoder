@@ -5,13 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Mapping, cast
 
-
 TaskStatus = Literal["pending", "in_progress", "completed", "cancelled"]
 TaskPlanMode = Literal["linear", "dag"]
 
-_TASK_STATUSES: frozenset[str] = frozenset(
-    {"pending", "in_progress", "completed", "cancelled"}
-)
+_TASK_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "completed", "cancelled"})
 _TASK_PLAN_MODES: frozenset[str] = frozenset({"linear", "dag"})
 
 

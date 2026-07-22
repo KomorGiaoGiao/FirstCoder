@@ -112,15 +112,9 @@ def test_path_grants_match_exact_path_and_tree(tmp_path) -> None:
         ]
     )
 
-    exact_decision = store.matching_decision(
-        PermissionRequest(id="req_read", action=PermissionAction.READ_PATH, target=str(exact))
-    )
-    tree_decision = store.matching_decision(
-        PermissionRequest(id="req_write", action=PermissionAction.WRITE_PATH, target=str(tree / "agent" / "loop.py"))
-    )
-    miss = store.matching_decision(
-        PermissionRequest(id="req_miss", action=PermissionAction.WRITE_PATH, target=str(tmp_path / "tests" / "x.py"))
-    )
+    exact_decision = store.matching_decision(PermissionRequest(id="req_read", action=PermissionAction.READ_PATH, target=str(exact)))
+    tree_decision = store.matching_decision(PermissionRequest(id="req_write", action=PermissionAction.WRITE_PATH, target=str(tree / "agent" / "loop.py")))
+    miss = store.matching_decision(PermissionRequest(id="req_miss", action=PermissionAction.WRITE_PATH, target=str(tmp_path / "tests" / "x.py")))
 
     assert exact_decision is not None
     assert exact_decision.grant is not None
@@ -143,9 +137,7 @@ def test_path_tree_grant_does_not_match_sibling_prefix(tmp_path) -> None:
         ]
     )
 
-    decision = store.matching_decision(
-        PermissionRequest(id="req_1", action=PermissionAction.WRITE_PATH, target=str(tmp_path / "firstcoder2" / "x.py"))
-    )
+    decision = store.matching_decision(PermissionRequest(id="req_1", action=PermissionAction.WRITE_PATH, target=str(tmp_path / "firstcoder2" / "x.py")))
 
     assert decision is None
 
@@ -168,12 +160,8 @@ def test_host_and_env_key_grants_match_normalized_values() -> None:
         ]
     )
 
-    host_decision = store.matching_decision(
-        PermissionRequest(id="req_host", action=PermissionAction.NETWORK_REQUEST, target="https://example.com/a")
-    )
-    env_decision = store.matching_decision(
-        PermissionRequest(id="req_env", action=PermissionAction.READ_ENV, target="FIRSTCODER_MODE")
-    )
+    host_decision = store.matching_decision(PermissionRequest(id="req_host", action=PermissionAction.NETWORK_REQUEST, target="https://example.com/a"))
+    env_decision = store.matching_decision(PermissionRequest(id="req_env", action=PermissionAction.READ_ENV, target="FIRSTCODER_MODE"))
 
     assert host_decision is not None
     assert host_decision.grant is not None
@@ -265,12 +253,6 @@ def test_mcp_tool_grant_matches_only_the_same_server_and_tool() -> None:
         ]
     )
 
-    assert store.matching_decision(
-        PermissionRequest(id="same", action=PermissionAction.MCP_TOOL, target="lark/calendar_list")
-    ) is not None
-    assert store.matching_decision(
-        PermissionRequest(id="other_tool", action=PermissionAction.MCP_TOOL, target="lark/calendar_create")
-    ) is None
-    assert store.matching_decision(
-        PermissionRequest(id="other_server", action=PermissionAction.MCP_TOOL, target="github/calendar_list")
-    ) is None
+    assert store.matching_decision(PermissionRequest(id="same", action=PermissionAction.MCP_TOOL, target="lark/calendar_list")) is not None
+    assert store.matching_decision(PermissionRequest(id="other_tool", action=PermissionAction.MCP_TOOL, target="lark/calendar_create")) is None
+    assert store.matching_decision(PermissionRequest(id="other_server", action=PermissionAction.MCP_TOOL, target="github/calendar_list")) is None

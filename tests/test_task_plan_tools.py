@@ -73,12 +73,8 @@ def test_task_plan_tools_return_normalized_mutations_and_current_state(tmp_path)
 
     assert created.ok and created.data["revision"] == 1
     assert created.data["changes"][0]["order"] == 0
-    assert updated.ok and updated.data["changes"] == [
-        {"id": "inspect", "status": "in_progress", "owner": "main"}
-    ]
-    assert revised.ok and revised.data["changes"] == [
-        {"id": "inspect", "content": "Inspect carefully"}
-    ]
+    assert updated.ok and updated.data["changes"] == [{"id": "inspect", "status": "in_progress", "owner": "main"}]
+    assert revised.ok and revised.data["changes"] == [{"id": "inspect", "content": "Inspect carefully"}]
     assert revised.data["snapshot"] == listed.data["plan"]
     assert "plan" not in revised.data
     assert listed.data["revision"] == 3

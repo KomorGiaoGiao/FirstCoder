@@ -10,7 +10,6 @@ from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_er
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.json_utils import dumps_json, loads_json
 
-
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 DEFAULT_TIMEOUT_SECONDS = 25
@@ -83,19 +82,22 @@ def create_web_search_tool() -> Tool:
 
 def _run_parallel_search(query: str, num_results: int, timeout: int) -> ToolResult | None:
     """调用 Parallel MCP 搜索。"""
-    body = dumps_json({
-        "jsonrpc": "2.0", "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "web_search",
-            "arguments": {
-                "query": query,
-                "search_queries": [query],
-                "objective": query,
-                "num_results": num_results,
+    body = dumps_json(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "web_search",
+                "arguments": {
+                    "query": query,
+                    "search_queries": [query],
+                    "objective": query,
+                    "num_results": num_results,
+                },
             },
-        },
-    }).encode("utf-8")
+        }
+    ).encode("utf-8")
     headers = {"Content-Type": "application/json", "User-Agent": "FirstCoder/0.1"}
     api_key = os.environ.get("PARALLEL_API_KEY")
     if api_key:
@@ -133,22 +135,27 @@ def _run_exa_search(
     timeout: int,
 ) -> ToolResult | None:
     url = _exa_mcp_url()
-    body = dumps_json({
-        "jsonrpc": "2.0", "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "web_search_exa",
-            "arguments": {
-                "query": query,
-                "type": search_type,
-                "numResults": num_results,
-                "livecrawl": livecrawl,
-                "contextMaxCharacters": context_max_characters,
+    body = dumps_json(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "web_search_exa",
+                "arguments": {
+                    "query": query,
+                    "type": search_type,
+                    "numResults": num_results,
+                    "livecrawl": livecrawl,
+                    "contextMaxCharacters": context_max_characters,
+                },
             },
-        },
-    }).encode("utf-8")
+        }
+    ).encode("utf-8")
     req = request.Request(
-        url, data=body, method="POST",
+        url,
+        data=body,
+        method="POST",
         headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json", "User-Agent": "FirstCoder/0.1"},
     )
     try:

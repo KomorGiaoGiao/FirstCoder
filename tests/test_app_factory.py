@@ -205,7 +205,7 @@ def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) 
     config = AppConfig(
         provider_name="fake",
         env={},
-        project_config={"provider": {"streaming": False}},
+        project_config={"providers": {"fake": {"type": "openai-compatible", "streaming": False}}},
     )
 
     app = create_firstcoder_app(
@@ -223,17 +223,13 @@ def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) 
 def test_model_command_switches_runtime_provider_and_compact_summarizer(tmp_path: Path) -> None:
     initial_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
     config = AppConfig(
-        provider_name="openai-compatible",
-        env={"YURENAPI_API_KEY": "test-key"},
-        project_config={
-            "model": "yurenapi/old-model",
-            "provider": {
-                "type": "openai-compatible",
-                "name": "yurenapi",
-                "base_url": "https://example.test/v1",
-                "api_key_env": "YURENAPI_API_KEY",
-                "parallel_tool_calls": True,
-            },
+        provider_name="custom",
+        env={
+            "FIRSTCODER_API_KEY": "test-key",
+            "FIRSTCODER_MODEL": "old-model",
+            "FIRSTCODER_PROVIDER_NAME": "yurenapi",
+            "FIRSTCODER_BASE_URL": "https://example.test/v1",
+            "FIRSTCODER_PARALLEL_TOOL_CALLS": "true",
         },
     )
     app = create_firstcoder_app(
@@ -328,35 +324,6 @@ def test_factory_catalog_startup_falls_back_from_stale_saved_state(tmp_path: Pat
     assert app.chat_runner.provider.model == "pro"
 
 
-def test_factory_legacy_custom_provider_keeps_base_url_environment_fallback(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("FIRSTCODER_API_KEY", "legacy-key")
-    monkeypatch.setenv("FIRSTCODER_BASE_URL", "https://legacy.example/v1")
-    monkeypatch.delenv("FIRSTCODER_PROVIDER_NAME", raising=False)
-    (tmp_path / "firstcoder.toml").write_text(
-        '\n'.join(
-            [
-                'model = "legacy/model"',
-                '',
-                '[provider]',
-                'type = "openai-compatible"',
-                'name = "legacy"',
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    app = create_firstcoder_app(
-        project_root=tmp_path,
-        provider=None,
-        session_id="sess_test",
-        tools=[],
-    )
-
-    assert app.chat_runner.provider.name == "legacy"
-    assert app.chat_runner.provider.model == "model"
-    assert app.chat_runner.provider.base_url == "https://legacy.example/v1"
-
-
 def test_catalog_model_switch_records_selection_and_request_options(tmp_path: Path) -> None:
     app = create_firstcoder_app(
         project_root=tmp_path,
@@ -371,6 +338,20 @@ def test_catalog_model_switch_records_selection_and_request_options(tmp_path: Pa
     assert result.output == "Model switched: mimo/pro"
     assert app.chat_runner.request_options.temperature is None
     assert ModelStateStore(tmp_path / ".firstcoder" / "model_state.json").load().last_selected == "mimo/pro"
+
+
+def test_catalog_model_switch_rejects_unconfigured_short_name(tmp_path: Path) -> None:
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        app_config=_catalog_config(),
+        session_id="sess_test",
+        tools=[],
+    )
+
+    result = app.command_handler.handle("/model pro")
+
+    assert result.output == "Model switch failed: 模型目录模式需要使用 <provider>/<model>"
 
 
 def test_catalog_picker_can_switch_mixed_case_provider_ref(tmp_path: Path) -> None:
@@ -533,17 +514,10 @@ def test_factory_background_controls_remain_session_scoped(tmp_path: Path) -> No
         release.set()
         assert manager.wait(timeout=5) is True
         loop_b._append_background_notifications()
-        assert not any(
-            message.role == "user" and "<task_notification>" in message.parts[0].content
-            for message in session_b.rebuild_view().messages
-        )
+        assert not any(message.role == "user" and "<task_notification>" in message.parts[0].content for message in session_b.rebuild_view().messages)
 
         loop_a._append_background_notifications()
-        assert sum(
-            1
-            for message in session_a.rebuild_view().messages
-            if message.role == "user" and "<task_notification>" in message.parts[0].content
-        ) == 1
+        assert sum(1 for message in session_a.rebuild_view().messages if message.role == "user" and "<task_notification>" in message.parts[0].content) == 1
     finally:
         release.set()
         manager.shutdown()
@@ -622,9 +596,7 @@ def test_create_firstcoder_app_persists_permission_grants(tmp_path: Path) -> Non
         session_id="sess_second",
         tools=[create_write_tool(tmp_path)],
     )
-    result = second.chat_runner.current_session.session.execute_tool_call(
-        ToolCall(id="call_write_again", name="write", arguments={"path": "README.md", "content": "again"})
-    )
+    result = second.chat_runner.current_session.session.execute_tool_call(ToolCall(id="call_write_again", name="write", arguments={"path": "README.md", "content": "again"}))
 
     assert result.ok is True
     assert result.data.get("request_type") != "permission_confirmation"

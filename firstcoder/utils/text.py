@@ -63,4 +63,3 @@ def ellipsis_truncate(text: str, max_chars: int, *, normalize_ws: bool = False) 
     if max_chars <= len(ellipsis):
         return ellipsis[:max_chars]
     return value[: max_chars - len(ellipsis)] + ellipsis
-

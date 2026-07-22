@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-
 JsonSchemaType = Literal["string", "integer", "boolean", "number", "object", "array"]
 
 

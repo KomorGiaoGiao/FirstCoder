@@ -20,11 +20,7 @@ def test_agents_route_selects_project_skill_for_info_database_brief() -> None:
             _skill("sensitive-claim-review", "skills/sensitive-claim-review.md", "敏感 claim 复核"),
         ]
     )
-    agents_md = (
-        "| 用户意图 | 优先读取 |\n"
-        "|---|---|\n"
-        "| “今天/某天全球家办有什么新闻”“帮我找资讯并总结” | `skills/global-family-office-news-brief.md` |\n"
-    )
+    agents_md = "| 用户意图 | 优先读取 |\n" "|---|---|\n" "| “今天/某天全球家办有什么新闻”“帮我找资讯并总结” | `skills/global-family-office-news-brief.md` |\n"
 
     decision = SkillRouter().route("按框架跑一次今天的全球家办资讯简报", agents_md=agents_md, catalog=catalog)
 
@@ -41,11 +37,7 @@ def test_agents_route_preserves_skill_order_within_matching_line() -> None:
             _skill("sensitive-claim-review", "skills/sensitive-claim-review.md", "敏感 claim 复核"),
         ]
     )
-    agents_md = (
-        "| 用户意图 | 优先读取 |\n"
-        "|---|---|\n"
-        "| “复核这条诉讼/丑闻/指控” | `skills/sensitive-claim-review.md`，必要时再读 `skills/litigation-review.md` |\n"
-    )
+    agents_md = "| 用户意图 | 优先读取 |\n" "|---|---|\n" "| “复核这条诉讼/丑闻/指控” | `skills/sensitive-claim-review.md`，必要时再读 `skills/litigation-review.md` |\n"
 
     decision = SkillRouter().route("帮我复核这条诉讼 claim", agents_md=agents_md, catalog=catalog)
 

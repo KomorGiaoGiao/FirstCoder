@@ -10,5 +10,4 @@ from firstcoder.context.manager import ContextCompactRequest, ContextCompactResu
 class ContextManagerLike(Protocol):
     """Minimal context-window manager surface used by AgentLoop."""
 
-    def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
-        ...
+    def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult: ...

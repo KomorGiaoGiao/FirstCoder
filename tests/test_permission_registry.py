@@ -180,8 +180,7 @@ def test_permission_aware_registry_normalizes_relative_cwd_arg(tmp_path) -> None
                 "required": ["command"],
             },
         ),
-        executor=lambda command, cwd=".": calls.append({"command": command, "cwd": cwd})
-        or make_text_result("shell", "ok"),
+        executor=lambda command, cwd=".": calls.append({"command": command, "cwd": cwd}) or make_text_result("shell", "ok"),
         permission=ToolPermissionSpec(
             action=PermissionAction.EXECUTE_SHELL,
             target_arg="command",

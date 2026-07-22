@@ -180,12 +180,7 @@ def _compaction_entry(event: SessionEvent) -> TranscriptEntry:
     return TranscriptEntry(
         role="compaction",
         title="Compaction",
-        content=(
-            f"Trigger: {payload.get('trigger')}\n"
-            f"Status: {payload.get('status')}\n"
-            f"Reason: {payload.get('reason')}\n"
-            f"Tokens: {before} -> {after}"
-        ),
+        content=(f"Trigger: {payload.get('trigger')}\n" f"Status: {payload.get('status')}\n" f"Reason: {payload.get('reason')}\n" f"Tokens: {before} -> {after}"),
         metadata={"event_id": event.id, "created_at": event.created_at},
     )
 
@@ -226,6 +221,3 @@ def _title_for_event(event_type: str) -> str:
     if event_type == "tool_result":
         return "Tool"
     return "User"
-
-
-

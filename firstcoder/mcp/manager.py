@@ -15,7 +15,6 @@ from firstcoder.mcp.config import resolve_environment_placeholders
 from firstcoder.mcp.models import McpConfigError, McpLocalServerConfig, McpRemoteServerConfig, McpServerStatus, McpToolDescription
 from firstcoder.mcp.transport import McpTransport, McpTransportFactory, SdkMcpTransportFactory
 
-
 McpServerConfig = McpLocalServerConfig | McpRemoteServerConfig
 
 
@@ -36,10 +35,7 @@ class McpManager:
         self._retry_attempts = max(1, retry_attempts)
         self._retry_delay_seconds = max(0.0, retry_delay_seconds)
         self._lock = threading.RLock()
-        self._statuses = {
-            config.name: McpServerStatus(config.name, "disabled" if not config.enabled else "failed")
-            for config in configs
-        }
+        self._statuses = {config.name: McpServerStatus(config.name, "disabled" if not config.enabled else "failed") for config in configs}
         self._transports: dict[str, McpTransport] = {}
         self._catalogs: dict[str, tuple[McpToolDescription, ...]] = {}
         self._loop = asyncio.new_event_loop()
@@ -52,11 +48,7 @@ class McpManager:
     def connect_all(self) -> None:
         """连接所有启用服务器；任何单个失败都只影响自身状态。"""
 
-        workers = [
-            threading.Thread(target=self._connect_one, args=(config,), daemon=True)
-            for config in self._configs.values()
-            if config.enabled
-        ]
+        workers = [threading.Thread(target=self._connect_one, args=(config,), daemon=True) for config in self._configs.values() if config.enabled]
         for config in self._configs.values():
             if not config.enabled:
                 self._set_status(config.name, "disabled")
@@ -229,9 +221,7 @@ class McpManager:
             )
         headers = resolve_environment_placeholders(config.headers, self._environment)
         if config.bearer_token_env_var is not None:
-            token = resolve_environment_placeholders(
-                f"{{env:{config.bearer_token_env_var}}}", self._environment
-            )
+            token = resolve_environment_placeholders(f"{{env:{config.bearer_token_env_var}}}", self._environment)
             headers["Authorization"] = f"Bearer {token}"
         return replace(
             config,
@@ -250,9 +240,7 @@ class McpManager:
             self._statuses[name] = McpServerStatus(name, state, tool_count, error)
 
     def _submit(self, coroutine: Coroutine[object, object, object], timeout_ms: int) -> object:
-        future: Future[object] = asyncio.run_coroutine_threadsafe(
-            self._with_timeout(coroutine, timeout_ms), self._loop
-        )
+        future: Future[object] = asyncio.run_coroutine_threadsafe(self._with_timeout(coroutine, timeout_ms), self._loop)
         with self._lock:
             self._pending_futures.add(future)
         try:
@@ -264,22 +252,14 @@ class McpManager:
             with self._lock:
                 self._pending_futures.discard(future)
 
-    async def _with_timeout(
-        self, coroutine: Coroutine[object, object, object], timeout_ms: int
-    ) -> object:
+    async def _with_timeout(self, coroutine: Coroutine[object, object, object], timeout_ms: int) -> object:
         return await asyncio.wait_for(coroutine, timeout=timeout_ms / 1000)
 
     @staticmethod
-    def _allowed_tools(
-        config: McpServerConfig, tools: tuple[McpToolDescription, ...]
-    ) -> tuple[McpToolDescription, ...]:
+    def _allowed_tools(config: McpServerConfig, tools: tuple[McpToolDescription, ...]) -> tuple[McpToolDescription, ...]:
         if config.allowed_tools is None:
             return tools
-        return tuple(
-            tool
-            for tool in tools
-            if any(fnmatch.fnmatchcase(tool.name, pattern) for pattern in config.allowed_tools)
-        )
+        return tuple(tool for tool in tools if any(fnmatch.fnmatchcase(tool.name, pattern) for pattern in config.allowed_tools))
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)

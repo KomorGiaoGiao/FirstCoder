@@ -6,7 +6,6 @@ from typing import Any
 
 from rich.text import Text
 
-
 DEFAULT_MAX_DIFF_LINES_PER_FILE = 80
 
 
@@ -73,11 +72,7 @@ def review_command_from_text(text: str, payload: dict[str, object]) -> tuple[str
         return "clear", None
     if not remainder:
         return "show", None
-    known_paths = {
-        str(item.get("path") or "")
-        for item in payload.get("files", [])
-        if isinstance(item, dict)
-    }
+    known_paths = {str(item.get("path") or "") for item in payload.get("files", []) if isinstance(item, dict)}
     return ("show", remainder) if remainder in known_paths else None
 
 

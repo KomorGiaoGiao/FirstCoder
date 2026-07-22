@@ -22,9 +22,7 @@ MAX_INLINE_TEXT_BYTES = 200 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 16
 
 _FILE_URI_RE = re.compile(r"file://[^\s]+", re.IGNORECASE)
-_PATH_CANDIDATE_RE = re.compile(
-    r"(?:(?:[A-Za-z]:)?(?:/|\\)[^\s]+|(?:\./|\.\./)[^\s]+|~[^\s]+)"
-)
+_PATH_CANDIDATE_RE = re.compile(r"(?:(?:[A-Za-z]:)?(?:/|\\)[^\s]+|(?:\./|\.\./)[^\s]+|~[^\s]+)")
 _TEXT_MEDIA_PREFIXES = ("text/",)
 _TEXT_MEDIA_TYPES = {
     "application/json",
@@ -157,9 +155,7 @@ def parse_path_candidates(text: str) -> list[str]:
         stripped = line.strip().strip('"').strip("'")
         if not stripped:
             continue
-        if stripped.startswith("file://") or stripped.startswith(("/", "~", "./", "../")) or re.match(
-            r"^[A-Za-z]:[\\/]", stripped
-        ):
+        if stripped.startswith("file://") or stripped.startswith(("/", "~", "./", "../")) or re.match(r"^[A-Za-z]:[\\/]", stripped):
             candidates.append(stripped)
             continue
         # Single-token relative path without spaces.
@@ -300,11 +296,7 @@ def load_image_base64(path: Path) -> str:
 
 
 def _inline_attachment_text(item: UserAttachment, raw: bytes) -> str | None:
-    if (
-        item.kind != "file"
-        or item.size_bytes > MAX_INLINE_TEXT_BYTES
-        or not is_text_like_media_type(item.media_type, item.path)
-    ):
+    if item.kind != "file" or item.size_bytes > MAX_INLINE_TEXT_BYTES or not is_text_like_media_type(item.media_type, item.path):
         return None
     return raw.decode("utf-8", errors="replace")
 

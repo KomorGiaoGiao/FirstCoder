@@ -92,9 +92,7 @@ def test_connect_all_discovers_tools_and_call_tool_uses_connected_transport():
 
 
 def test_connect_all_filters_discovered_tools_using_allowed_tools_patterns():
-    transport = FakeTransport(
-        tools=(McpToolDescription("calendar_list", None), McpToolDescription("doc_read", None))
-    )
+    transport = FakeTransport(tools=(McpToolDescription("calendar_list", None), McpToolDescription("doc_read", None)))
     manager = McpManager(
         (server("lark", allowed_tools=("calendar_*",)),),
         FakeTransportFactory({"lark": transport}),
@@ -127,9 +125,7 @@ def test_connect_all_keeps_other_servers_available_after_initialization_failure(
 
 def test_connect_all_marks_timeout_as_failed_and_does_not_raise():
     slow = FakeTransport(delay=0.2)
-    manager = McpManager(
-        (server("slow", timeout_ms=20),), FakeTransportFactory({"slow": slow}), retry_delay_seconds=0
-    )
+    manager = McpManager((server("slow", timeout_ms=20),), FakeTransportFactory({"slow": slow}), retry_delay_seconds=0)
 
     started = time.monotonic()
     manager.connect_all()

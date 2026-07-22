@@ -238,7 +238,7 @@ def test_aggressive_shell_still_requires_confirmation_for_destructive_commands(t
         "python3 scripts/inspect_sqlite.py",
         "python -c \"__import__('os').system('id')\"",
         "sqlite3 shop.db .schema",
-        "sqlite3 :memory: \".shell id\"",
+        'sqlite3 :memory: ".shell id"',
     ):
         decision = policy.decide(
             _request(PermissionAction.EXECUTE_SHELL, command, cwd=tmp_path),

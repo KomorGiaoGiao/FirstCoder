@@ -17,7 +17,6 @@ from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatRequest, ChatResponse
 
-
 EXPECTED_CODING_HANDOFF_HEADINGS = (
     "## 当前目标",
     "## 已知事实与硬约束",
@@ -118,9 +117,7 @@ def test_provider_summarizer_prompt_and_normalizer_enforce_exact_handoff_heading
     )
     provider = FakeProvider(ChatResponse(provider="fake", model="fake-model", content=model_output))
 
-    summary = ProviderLlmCompactSummarizer(provider).summarize(
-        [_message("msg_1", "user", "目标"), _message("msg_2", "assistant", "进展")]
-    )
+    summary = ProviderLlmCompactSummarizer(provider).summarize([_message("msg_1", "user", "目标"), _message("msg_2", "assistant", "进展")])
 
     assert all(summary.summary.count(heading) == 1 for heading in CODING_HANDOFF_HEADINGS)
     assert "Implement L1.\nKeep the latest user message." in summary.summary

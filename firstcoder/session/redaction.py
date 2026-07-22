@@ -10,7 +10,6 @@ import re
 
 from firstcoder.session.models import RedactionOptions
 
-
 SECRET_VALUE = "[REDACTED_SECRET]"
 PATH_VALUE = "[REDACTED_PATH]"
 

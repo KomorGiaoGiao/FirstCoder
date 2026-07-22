@@ -360,9 +360,7 @@ def test_edit_fails_when_old_text_spans_multiple_lines(tmp_path):
     registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
 
     # 跨两行的 old 文本出现了 2 次，因此默认应该拒绝
-    result = registry.execute(
-        "edit", {"path": "app.py", "old": "line1\nline2", "new": "A\nB"}
-    )
+    result = registry.execute("edit", {"path": "app.py", "old": "line1\nline2", "new": "A\nB"})
 
     assert result.ok is False
     assert "出现 2 次" in result.error
@@ -373,9 +371,7 @@ def test_edit_can_replace_multiline_old_when_unique(tmp_path):
     target.write_text("line1\nline2\nline3\n", encoding="utf-8")
     registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
 
-    result = registry.execute(
-        "edit", {"path": "app.py", "old": "line1\nline2", "new": "A\nB"}
-    )
+    result = registry.execute("edit", {"path": "app.py", "old": "line1\nline2", "new": "A\nB"})
 
     assert result.ok is True
     assert target.read_text(encoding="utf-8") == "A\nB\nline3\n"

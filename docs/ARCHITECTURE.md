@@ -134,8 +134,7 @@ providers / config
      small helper change risks circular imports and UI/test coupling.
    - *Where shared types live:* `firstcoder.runtime`
      (`CancellationToken`, `UserInputRequest`, …).
-   - *Compatibility:* `firstcoder.agent.cancellation` and
-     `firstcoder.agent.user_input` re-export what older call sites need.
+   - Runtime primitives are imported directly from `firstcoder.runtime`.
 
 2. **UI and CLI depend on ports, not concrete loop internals.**
    - `firstcoder.app.ports`: `CommandHandlerLike`, `ChatRunnerLike`,

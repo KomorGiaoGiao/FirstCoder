@@ -110,11 +110,7 @@ class SessionEventWriter:
                     id=new_part_id(),
                     message_id=message_id,
                     kind=attachment.kind,
-                    content=(
-                        f"[image: {attachment.filename}]"
-                        if attachment.kind == "image"
-                        else attachment.inline_text or f"[file: {attachment.filename}]"
-                    ),
+                    content=(f"[image: {attachment.filename}]" if attachment.kind == "image" else attachment.inline_text or f"[file: {attachment.filename}]"),
                     metadata=self._part_metadata(attachment_metadata),
                 )
             )
@@ -277,11 +273,7 @@ class SessionEventWriter:
     ) -> None:
         """追加一次规划操作及其完整、已验证快照。"""
 
-        if (
-            isinstance(previous_revision, bool)
-            or not isinstance(previous_revision, int)
-            or previous_revision < 0
-        ):
+        if isinstance(previous_revision, bool) or not isinstance(previous_revision, int) or previous_revision < 0:
             raise ValueError("previous_revision must be a non-negative integer")
         if not isinstance(operation, str) or not operation.strip():
             raise ValueError("operation must be a non-blank string")
@@ -289,9 +281,7 @@ class SessionEventWriter:
         plan = TaskPlan.from_dict(snapshot.to_dict() if isinstance(snapshot, TaskPlan) else snapshot)
         validate_plan(plan)
         if plan.revision != previous_revision + 1:
-            raise ValueError(
-                "task plan revision must be exactly one greater than previous_revision"
-            )
+            raise ValueError("task plan revision must be exactly one greater than previous_revision")
         normalized_changes = [dict(change) for change in changes]
         self.append_event(
             "task_plan_updated",

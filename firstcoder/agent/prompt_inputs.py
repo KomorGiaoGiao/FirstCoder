@@ -13,7 +13,6 @@ from typing import Any
 from firstcoder.context.system_prompt import SystemPromptInputs
 from firstcoder.providers.types import ProviderCapabilities
 
-
 DEFAULT_PERMISSION_POLICY: dict[str, Any] = {
     "path_access": "project_root_only",
     "read": "allow",

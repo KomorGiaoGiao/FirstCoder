@@ -120,7 +120,7 @@ providers / config
 1. **`utils`、`permissions`、`tools` 不得 import `agent`。**
    - *为什么：* 它们更接近叶子层。一旦依赖编排层，小改动就容易环依赖，并和 UI/测试缠在一起。
    - *共享类型放哪：* `firstcoder.runtime`（`CancellationToken`、`UserInputRequest` 等）。
-   - *兼容层：* `firstcoder.agent.cancellation`、`firstcoder.agent.user_input` 再导出旧调用点需要的名字。
+   - 运行时原语统一从 `firstcoder.runtime` 直接引用。
 
 2. **UI/CLI 依赖 ports，不绑 loop 内部实现。**
    - `firstcoder.app.ports`：`CommandHandlerLike`、`ChatRunnerLike`、`CurrentSessionLike`、`ContextManagerLike`。
@@ -256,7 +256,7 @@ SessionBootstrap
 - `session.catalog.build_record_from_events`
 - `session.catalog.session_sort_key`
 
-`session.index` 只依赖这些公开函数。`_record_from_path` 等兼容别名可能仍服务旧测试/monkeypatch，但新代码应使用公开名。
+`session.index` 只依赖这些公开函数，不保留下划线兼容别名。
 
 ---
 

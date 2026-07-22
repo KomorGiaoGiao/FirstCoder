@@ -33,8 +33,7 @@ class ToolExecutor(Protocol):
     每个工具最终都是一个接收关键字参数、返回 `ToolResult` 的函数。
     """
 
-    def __call__(self, **kwargs: Any) -> ToolResult:
-        ...
+    def __call__(self, **kwargs: Any) -> ToolResult: ...
 
 
 @dataclass(slots=True)

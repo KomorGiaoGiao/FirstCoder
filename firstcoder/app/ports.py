@@ -12,8 +12,7 @@ if TYPE_CHECKING:
 
 
 class CommandHandlerLike(Protocol):
-    def handle(self, text: str) -> CommandResult:
-        ...
+    def handle(self, text: str) -> CommandResult: ...
 
 
 class ChatRunnerLike(Protocol):
@@ -24,11 +23,9 @@ class ChatRunnerLike(Protocol):
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
-    def resume_with_user_input(self, request_id: str, answer: str) -> Any:
-        ...
+    def resume_with_user_input(self, request_id: str, answer: str) -> Any: ...
 
 
 class CurrentSessionLike(Protocol):
@@ -36,5 +33,4 @@ class CurrentSessionLike(Protocol):
 
 
 class ContextManagerLike(Protocol):
-    def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
-        ...
+    def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult: ...

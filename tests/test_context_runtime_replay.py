@@ -205,13 +205,13 @@ def test_replay_records_compaction_input_fingerprint(tmp_path) -> None:
             id="evt_compact",
             session_id="sess_test",
             type="compaction_completed",
-                payload={
-                    "trigger": "auto",
-                    "target_tokens": 100,
-                    "event": asdict(event),
-                },
-            )
+            payload={
+                "trigger": "auto",
+                "target_tokens": 100,
+                "event": asdict(event),
+            },
         )
+    )
 
     state = replay_runtime_state(store, "sess_test")
 

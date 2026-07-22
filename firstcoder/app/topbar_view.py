@@ -6,11 +6,13 @@ from rich.markup import escape
 from rich.text import Text
 
 from firstcoder.app import yuren_topbar_themes
+
 PERMISSION_MODE_COLORS = {
     "standard": "#cfd1d6",
     "aggressive": "#f6b73c",
     "bypass": "#ff6b5f",
 }
+
 
 def _markup_width(markup: str) -> int:
     return len(Text.from_markup(markup).plain)

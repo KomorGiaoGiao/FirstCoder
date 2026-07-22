@@ -6,7 +6,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 MessageRole = Literal["system", "user", "assistant", "tool"]
 FinishReason = Literal[
     "stop",

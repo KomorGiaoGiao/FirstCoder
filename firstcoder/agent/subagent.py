@@ -30,7 +30,6 @@ from firstcoder.skills.models import SkillCatalog
 from firstcoder.tools.types import Tool
 from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
 
-
 SubagentRole = Literal["researcher", "reviewer", "tester", "coder"]
 
 READ_ONLY_TOOL_NAMES = frozenset(
@@ -52,7 +51,6 @@ READ_ONLY_TOOL_NAMES = frozenset(
 REVIEWER_TOOL_NAMES = frozenset({"view", "grep", "git_status", "git_diff", "git_log", "read_multi", "think", "retrieve_archive"})
 TESTER_TOOL_NAMES = READ_ONLY_TOOL_NAMES | frozenset({"shell", "python_exec"})
 CODER_TOOL_NAMES = TESTER_TOOL_NAMES | frozenset({"write", "edit", "delete", "apply_patch"})
-BACKGROUND_SAFE_ROLES = frozenset({"researcher", "reviewer", "tester"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +80,7 @@ SUBAGENT_PROFILES: dict[str, SubagentProfile] = {
     ),
     "coder": SubagentProfile(
         role="coder",
-        description=(
-            "Implementation work. Background coding runs inside an isolated git worktree "
-            "so it can never mutate the parent working tree."
-        ),
+        description=("Implementation work. Background coding runs inside an isolated git worktree " "so it can never mutate the parent working tree."),
         allowed_tool_names=CODER_TOOL_NAMES,
         allow_background=True,
         requires_worktree=True,
@@ -281,9 +276,7 @@ class SubagentRunner:
             )
 
         try:
-            child_session = self._create_isolated_child_session(
-                request, profile=profile, worktree=worktree, session_id=session_id
-            )
+            child_session = self._create_isolated_child_session(request, profile=profile, worktree=worktree, session_id=session_id)
             prompt = self._child_prompt(request, profile=profile, worktree=worktree)
             from firstcoder.agent.loop import AgentLoop
 
@@ -401,9 +394,7 @@ class SubagentRunner:
             session_id=session_id,
             agents_md=self.agents_md,
             skill_catalog=self.skill_catalog,
-            tools=self._worktree_child_tools(
-                worktree.path, profile=profile, access=sandbox_access, for_registry=True
-            ),
+            tools=self._worktree_child_tools(worktree.path, profile=profile, access=sandbox_access, for_registry=True),
             permission_manager=permission_manager,
             sandbox_access=sandbox_access,
         )
@@ -525,12 +516,3 @@ class SubagentRunner:
             diff.render(),
         ]
         return "\n".join(parts)
-
-
-def result_from_response(*, role: SubagentRole, child_session_id: str, response: ChatResponse) -> SubagentResult:
-    return SubagentResult(
-        ok=True,
-        role=role,
-        child_session_id=child_session_id,
-        summary=response.content.strip() or "Subagent finished without text output.",
-    )

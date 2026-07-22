@@ -5,7 +5,6 @@ from __future__ import annotations
 from rich.align import Align
 from rich.text import Text
 
-
 WELCOME_LOGO_PALETTE = {
     "M": "#81e8bb",
     "C": "#18cfcb",

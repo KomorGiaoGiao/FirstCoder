@@ -47,7 +47,7 @@ disable permission checks or tool-result sequence validation.
 
 The explicit stop reasons are `tool_round_limit`, `provider_call_limit`, and
 `turn_timeout`. Cancellation is separate: `CancellationToken` (defined in
-`firstcoder.runtime.cancellation`, re-exported from `agent.cancellation`) lets a
+`firstcoder.runtime.cancellation`) lets a
 user or UI interrupt active work, rather than masquerading as one of these
 budgets.
 

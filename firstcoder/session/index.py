@@ -13,7 +13,6 @@ from firstcoder.session.catalog import session_sort_key
 from firstcoder.session.models import SessionRecord
 from firstcoder.utils.text import optional_str
 
-
 INDEX_VERSION = 1
 _INDEX_LOCK = threading.RLock()
 
@@ -140,5 +139,3 @@ def _record_from_dict(data: dict[str, Any]) -> SessionRecord:
         error=optional_str(data.get("error")),
         metadata=dict(data.get("metadata") or {}),
     )
-
-

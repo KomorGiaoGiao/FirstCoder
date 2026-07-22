@@ -158,6 +158,8 @@ def test_web_search_redacts_exa_api_key_from_result_data(monkeypatch, tmp_path):
     assert "secret-token" in captured["url"]
     assert result.ok is True
     assert result.data.get("url", "") == "https://mcp.exa.ai/mcp?exaApiKey=%2A%2A%2A"
+
+
 def test_web_search_parses_sse_response():
     payload = web_search_module.dumps_json(
         {

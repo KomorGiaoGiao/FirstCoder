@@ -14,7 +14,6 @@ from firstcoder.planning.models import (
 )
 from firstcoder.planning.validation import validate_plan
 
-
 _VALID_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 _VALID_MODES = frozenset({"linear", "dag"})
 
@@ -59,9 +58,7 @@ class TaskPlanRevisionConflict(TaskPlanCommandError):
     def __init__(self, expected: int, actual: int) -> None:
         self.expected = expected
         self.actual = actual
-        super().__init__(
-            f"task plan revision conflict: expected {expected}, actual {actual}"
-        )
+        super().__init__(f"task plan revision conflict: expected {expected}, actual {actual}")
 
 
 def create_tasks(
@@ -79,9 +76,7 @@ def create_tasks(
     raw_tasks = _require_list(tasks, field="tasks")
 
     if current_plan is not None and normalized_mode != current_plan.mode:
-        raise TaskPlanCommandError(
-            f"cannot switch task plan mode from {current_plan.mode} to {normalized_mode}"
-        )
+        raise TaskPlanCommandError(f"cannot switch task plan mode from {current_plan.mode} to {normalized_mode}")
     if current_plan is None and not raw_tasks:
         raise TaskPlanCommandError("initial task plan must contain at least one task")
 
@@ -123,10 +118,7 @@ def update_tasks(
 
     _require_revision(expected_revision, plan.revision)
     raw_updates = _require_list(updates, field="updates")
-    patches = tuple(
-        _parse_task_patch(item, field=f"updates[{index}]")
-        for index, item in enumerate(raw_updates)
-    )
+    patches = tuple(_parse_task_patch(item, field=f"updates[{index}]") for index, item in enumerate(raw_updates))
     _require_unique_command_ids(patches)
 
     task_by_id = {task.id: task for task in plan.tasks}
@@ -167,13 +159,7 @@ def update_tasks(
     if not changes:
         return ReductionResult(plan=plan, changes=(), changed=False)
 
-    candidate = TaskPlan(
-        mode=plan.mode,
-        revision=plan.revision + 1,
-        tasks=tuple(replacements.get(task.id, task) for task in plan.tasks),
-    )
-    _validate_candidate(candidate)
-    return ReductionResult(plan=candidate, changes=tuple(changes), changed=True)
+    return _changed_result(plan, replacements, changes)
 
 
 def revise_tasks(
@@ -186,10 +172,7 @@ def revise_tasks(
 
     _require_revision(expected_revision, plan.revision)
     raw_revisions = _require_list(revisions, field="revisions")
-    parsed = tuple(
-        _parse_task_revision(item, field=f"revisions[{index}]")
-        for index, item in enumerate(raw_revisions)
-    )
+    parsed = tuple(_parse_task_revision(item, field=f"revisions[{index}]") for index, item in enumerate(raw_revisions))
     _require_unique_command_ids(parsed)
 
     task_by_id = {task.id: task for task in plan.tasks}
@@ -206,13 +189,7 @@ def revise_tasks(
     if not changes:
         return ReductionResult(plan=plan, changes=(), changed=False)
 
-    candidate = TaskPlan(
-        mode=plan.mode,
-        revision=plan.revision + 1,
-        tasks=tuple(replacements.get(task.id, task) for task in plan.tasks),
-    )
-    _validate_candidate(candidate)
-    return ReductionResult(plan=candidate, changes=tuple(changes), changed=True)
+    return _changed_result(plan, replacements, changes)
 
 
 def _parse_created_task(value: object, *, field: str) -> Task:
@@ -233,6 +210,20 @@ def _parse_created_task(value: object, *, field: str) -> Task:
         raise TaskPlanCommandError(f"{field}: {error}") from error
 
 
+def _changed_result(
+    plan: TaskPlan,
+    replacements: Mapping[str, Task],
+    changes: list[dict[str, object]],
+) -> ReductionResult:
+    candidate = TaskPlan(
+        mode=plan.mode,
+        revision=plan.revision + 1,
+        tasks=tuple(replacements.get(task.id, task) for task in plan.tasks),
+    )
+    _validate_candidate(candidate)
+    return ReductionResult(plan=candidate, changes=tuple(changes), changed=True)
+
+
 def _parse_task_patch(value: object, *, field: str) -> TaskPatch:
     if isinstance(value, TaskPatch):
         _validate_patch(value, field=field)
@@ -246,15 +237,9 @@ def _parse_task_patch(value: object, *, field: str) -> TaskPatch:
     patch = TaskPatch(
         id=_require_non_blank_string(payload.get("id"), field=f"{field}.id"),
         status=_parse_optional_status(payload.get("status"), field=f"{field}.status"),
-        owner=_parse_owner(payload["owner"], field=f"{field}.owner")
-        if "owner" in payload
-        else UNSET,
-        add_depends_on=_parse_string_sequence(
-            payload.get("add_depends_on", []), field=f"{field}.add_depends_on"
-        ),
-        remove_depends_on=_parse_string_sequence(
-            payload.get("remove_depends_on", []), field=f"{field}.remove_depends_on"
-        ),
+        owner=_parse_owner(payload["owner"], field=f"{field}.owner") if "owner" in payload else UNSET,
+        add_depends_on=_parse_string_sequence(payload.get("add_depends_on", []), field=f"{field}.add_depends_on"),
+        remove_depends_on=_parse_string_sequence(payload.get("remove_depends_on", []), field=f"{field}.remove_depends_on"),
     )
     _validate_patch(patch, field=field)
     return patch
@@ -265,18 +250,12 @@ def _validate_patch(patch: TaskPatch, *, field: str) -> None:
     _parse_optional_status(patch.status, field=f"{field}.status")
     if not isinstance(patch.owner, Unset):
         _parse_owner(patch.owner, field=f"{field}.owner")
-    additions = _parse_string_sequence(
-        patch.add_depends_on, field=f"{field}.add_depends_on"
-    )
-    removals = _parse_string_sequence(
-        patch.remove_depends_on, field=f"{field}.remove_depends_on"
-    )
+    additions = _parse_string_sequence(patch.add_depends_on, field=f"{field}.add_depends_on")
+    removals = _parse_string_sequence(patch.remove_depends_on, field=f"{field}.remove_depends_on")
     overlap = set(additions).intersection(removals)
     if overlap:
         dependency = next(entry for entry in additions if entry in overlap)
-        raise TaskPlanCommandError(
-            f"{field} cannot add and remove dependency {dependency!r}"
-        )
+        raise TaskPlanCommandError(f"{field} cannot add and remove dependency {dependency!r}")
 
 
 def _parse_task_revision(value: object, *, field: str) -> TaskRevision:
@@ -289,9 +268,7 @@ def _parse_task_revision(value: object, *, field: str) -> TaskRevision:
     _reject_unknown_fields(payload, allowed={"id", "content"}, field=field)
     return TaskRevision(
         id=_require_non_blank_string(payload.get("id"), field=f"{field}.id"),
-        content=_require_non_blank_string(
-            payload.get("content"), field=f"{field}.content"
-        ),
+        content=_require_non_blank_string(payload.get("content"), field=f"{field}.content"),
     )
 
 
@@ -356,9 +333,7 @@ def _require_mapping(value: object, *, field: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], value)
 
 
-def _reject_unknown_fields(
-    payload: Mapping[str, object], *, allowed: set[str], field: str
-) -> None:
+def _reject_unknown_fields(payload: Mapping[str, object], *, allowed: set[str], field: str) -> None:
     unknown = [key for key in payload if key not in allowed]
     if unknown:
         raise TaskPlanCommandError(f"{field} has unknown field: {unknown[0]}")

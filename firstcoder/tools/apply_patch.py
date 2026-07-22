@@ -12,7 +12,6 @@ from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
-
 BEGIN_MARKER = "*** Begin Patch"
 END_MARKER = "*** End Patch"
 

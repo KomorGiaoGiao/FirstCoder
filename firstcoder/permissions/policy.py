@@ -196,11 +196,6 @@ def _is_dangerous_shell_command(command: str) -> bool:
     return any(_command_matches_prefix(command, prefix) for prefix in _DANGEROUS_SHELL_PREFIXES)
 
 
-def _first_token(command: str) -> str:
-    parts = command.strip().split()
-    return parts[0] if parts else ""
-
-
 def _has_shell_control_operator(command: str) -> bool:
     return bool(_SHELL_CONTROL_PATTERN.search(command))
 
@@ -215,11 +210,4 @@ def _is_private_network_target(target: str) -> bool:
         address = ipaddress.ip_address(hostname.strip("[]"))
     except ValueError:
         return False
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_unspecified
-        or address.is_reserved
-    )
+    return address.is_private or address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified or address.is_reserved

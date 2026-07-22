@@ -7,7 +7,6 @@ from typing import Any
 
 from firstcoder.providers.types import ProviderCapabilities
 
-
 OPENAI_COMPATIBLE_CAPABILITIES = ProviderCapabilities(supports_streaming=True)
 
 

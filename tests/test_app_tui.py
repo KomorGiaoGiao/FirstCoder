@@ -9,7 +9,7 @@ from textual.widgets import TextArea
 from firstcoder.agent.loop import ToolExecutionEvent
 from firstcoder.app.commands import CommandResult
 from firstcoder.app.commands import ContextCommandHandler
-from firstcoder.agent.user_input import UserInputOption, UserInputRequest
+from firstcoder.runtime.user_input import UserInputOption, UserInputRequest
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
@@ -76,14 +76,8 @@ class FakeOutput:
 
 
 def _static_output_text(app: FirstCoderApp) -> str:
-    static_text = "\n".join(
-        str(getattr(widget, "content", getattr(widget, "renderable", "")))
-        for widget in app.query_one("#output").query("Static")
-    )
-    markdown_text = "\n".join(
-        str(getattr(widget, "source", "") or "\n".join(getattr(widget, "updates", []) or []))
-        for widget in app.query_one("#output").query("FirstCoderMarkdown")
-    )
+    static_text = "\n".join(str(getattr(widget, "content", getattr(widget, "renderable", ""))) for widget in app.query_one("#output").query("Static"))
+    markdown_text = "\n".join(str(getattr(widget, "source", "") or "\n".join(getattr(widget, "updates", []) or [])) for widget in app.query_one("#output").query("FirstCoderMarkdown"))
     return "\n".join(part for part in [static_text, markdown_text] if part)
 
 
@@ -181,9 +175,7 @@ def test_stage_paste_attachments_reports_attachment_errors(monkeypatch) -> None:
     )
 
     assert app._stage_paste_attachments(None) is True
-    assert messages == [
-        ("Could not attach pasted image: Image exceeds 20MB limit: clipboard.png", TuiEntryKind.ERROR)
-    ]
+    assert messages == [("Could not attach pasted image: Image exceeds 20MB limit: clipboard.png", TuiEntryKind.ERROR)]
 
 
 def test_skill_picker_item_renderer_keeps_name_path_and_description_separate() -> None:
@@ -416,10 +408,7 @@ def test_firstcoder_app_topbar_colors_each_permission_mode(mode, color) -> None:
     session.mode = mode
     app = FirstCoderApp(current_session=session)
 
-    assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
-        f"[#303238]·[/]   [{color}]{mode}[/]"
-    )
+    assert app._topbar_text() == ("[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   " f"[#303238]·[/]   [{color}]{mode}[/]")
     assert "sess_test" not in app._topbar_text()
 
 
@@ -471,12 +460,8 @@ def test_other_provider_names_keep_the_standard_green() -> None:
     assert _provider_name_markup("OpenAI", glow_frame=4) == "[#7bba55]OpenAI[/]"
     assert _provider_model_markup("OpenAI", "gpt-5.6", glow_frame=4) == "[#7bba55]OpenAI[/][#6e6d72]/gpt-5.6[/]"
     # Same model ids only glow under the Yuren provider display name.
-    assert _provider_model_markup("yurenapi", "gpt-5.5", glow_frame=0) == (
-        "[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]"
-    )
-    assert _provider_model_markup("OpenAI", "grok-4.5", glow_frame=0) == (
-        "[#7bba55]OpenAI[/][#6e6d72]/grok-4.5[/]"
-    )
+    assert _provider_model_markup("yurenapi", "gpt-5.5", glow_frame=0) == ("[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]")
+    assert _provider_model_markup("OpenAI", "grok-4.5", glow_frame=0) == ("[#7bba55]OpenAI[/][#6e6d72]/grok-4.5[/]")
 
 
 @pytest.mark.anyio
@@ -606,9 +591,7 @@ async def test_firstcoder_app_uses_compact_welcome_in_an_80_by_24_terminal() -> 
         await pilot.pause(0.2)
 
         full_welcome = app.query_one("#welcome")
-        full_plain = getattr(
-            getattr(full_welcome.content, "renderable", full_welcome.content), "plain", str(full_welcome.content)
-        )
+        full_plain = getattr(getattr(full_welcome.content, "renderable", full_welcome.content), "plain", str(full_welcome.content))
         assert "██" in full_plain
         assert app._welcome_particle_timer is not None
 
@@ -640,10 +623,7 @@ def test_firstcoder_app_topbar_highlights_bypass_mode_and_truncates_long_session
 
     app = FirstCoderApp(current_session=BypassSession())
 
-    assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
-        "[#303238]·[/]   [#ff6b5f]bypass[/]"
-    )
+    assert app._topbar_text() == ("[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   " "[#303238]·[/]   [#ff6b5f]bypass[/]")
 
 
 def test_firstcoder_app_topbar_includes_live_activity_status() -> None:
@@ -794,12 +774,7 @@ def test_task_plan_panel_text_renders_linear_tasks_in_ordered_single_column() ->
                 },
             ],
         }
-    ) == (
-        "Task Plan · linear\n"
-        "[✓] 读代码\n"
-        "[~] 实现改动\n"
-        "[!] 跑测试"
-    )
+    ) == ("Task Plan · linear\n" "[✓] 读代码\n" "[~] 实现改动\n" "[!] 跑测试")
 
 
 def test_task_plan_panel_text_renders_dag_levels_dependencies_and_derived_statuses() -> None:
@@ -834,14 +809,7 @@ def test_task_plan_panel_text_renders_dag_levels_dependencies_and_derived_status
                 },
             ],
         }
-    ) == (
-        "Task Plan · dag\n"
-        "Level 0 · parallel\n"
-        "  [→] 调研 A (research_a)\n"
-        "  [~] 调研 B (research_b)\n"
-        "Level 1\n"
-        "  [!] 汇总 (summary) · depends on: research_a, research_b"
-    )
+    ) == ("Task Plan · dag\n" "Level 0 · parallel\n" "  [→] 调研 A (research_a)\n" "  [~] 调研 B (research_b)\n" "Level 1\n" "  [!] 汇总 (summary) · depends on: research_a, research_b")
 
 
 def test_firstcoder_app_records_rendered_messages_in_transcript(monkeypatch) -> None:
@@ -1177,9 +1145,7 @@ async def test_composer_advertises_ctrl_or_cmd_v_for_image_paste() -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
-async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_composer_is_focused(
-    tmp_path, monkeypatch, paste_key
-) -> None:
+async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_composer_is_focused(tmp_path, monkeypatch, paste_key) -> None:
     image = tmp_path / "clipboard.png"
     image.write_bytes(b"image")
     attachment = UserAttachment("image", image, "clipboard.png", "image/png", 5, "clipboard")
@@ -1198,9 +1164,7 @@ async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_compos
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
-async def test_firstcoder_app_paste_shortcut_reports_missing_clipboard_image_while_composer_is_focused(
-    monkeypatch, paste_key
-) -> None:
+async def test_firstcoder_app_paste_shortcut_reports_missing_clipboard_image_while_composer_is_focused(monkeypatch, paste_key) -> None:
     monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
     app = FirstCoderApp()
 
@@ -1529,10 +1493,7 @@ async def test_firstcoder_app_double_escape_interrupts_running_chat() -> None:
         assert app._chat_busy is True
         await pilot.press("escape")
         await pilot.pause()
-        output_text = "\n".join(
-            str(getattr(widget, "content", getattr(widget, "renderable", "")))
-            for widget in app.query_one("#output").query("Static")
-        )
+        output_text = "\n".join(str(getattr(widget, "content", getattr(widget, "renderable", ""))) for widget in app.query_one("#output").query("Static"))
 
     assert runner.inputs == ["start"]
     assert app._chat_busy is False
@@ -2269,14 +2230,7 @@ def test_firstcoder_app_replays_dag_task_plan_from_current_session_view(monkeypa
     monkeypatch.setattr(app, "query_one", query_one)
     app._replay_current_session()
 
-    assert panel.updates[-1] == (
-        "Task Plan · dag\n"
-        "Level 0 · parallel\n"
-        "  [✓] 调研 A (a)\n"
-        "  [~] 调研 B (b)\n"
-        "Level 1\n"
-        "  [!] 汇总 (c) · depends on: a, b"
-    )
+    assert panel.updates[-1] == ("Task Plan · dag\n" "Level 0 · parallel\n" "  [✓] 调研 A (a)\n" "  [~] 调研 B (b)\n" "Level 1\n" "  [!] 汇总 (c) · depends on: a, b")
 
 
 def test_firstcoder_app_refreshes_task_plan_from_session_instead_of_tool_result(monkeypatch) -> None:
@@ -2544,10 +2498,7 @@ def test_tool_skipped_has_stable_gray_tool_class() -> None:
 
 
 def test_plain_static_renders_tool_arguments_with_markup_characters_as_text() -> None:
-    content = (
-        'tool shell running\n'
-        '  正在调用工具：shell {"cmd": "python -m pytest tests/test_app_tui.py -q", "args": ["-q"]}'
-    )
+    content = "tool shell running\n" '  正在调用工具：shell {"cmd": "python -m pytest tests/test_app_tui.py -q", "args": ["-q"]}'
     widget = _plain_static(content, classes="message tool-message tool-running")
 
     rendered = widget.render()
@@ -2568,10 +2519,7 @@ async def test_firstcoder_app_displays_live_tool_status_during_turn() -> None:
         await pilot.press("enter")
         await pilot.pause()
         output = app.query_one("#output")
-        text = "\n".join(
-            str(getattr(widget, "content", getattr(widget, "renderable", "")))
-            for widget in output.query("Static")
-        )
+        text = "\n".join(str(getattr(widget, "content", getattr(widget, "renderable", ""))) for widget in output.query("Static"))
 
     assert "正在调用工具：echo" in text
     assert "工具完成：echo：hello" in text
@@ -2617,9 +2565,7 @@ def test_firstcoder_app_displays_pending_permission_prompt_immediately(monkeypat
 
     app._write_chat_response(ChatResponse(provider="fake", model="fake", content="等待权限确认。"))
 
-    rendered = "\n".join(
-        [*output.lines, *(str(getattr(widget, "content", "")) for widget in output.mounted)]
-    )
+    rendered = "\n".join([*output.lines, *(str(getattr(widget, "content", "")) for widget in output.mounted)])
     assert "permission requested  write_path README.md" in rendered
     assert "写入文件需要用户确认。" in rendered
     assert "Review before writing · 1 file · +1 -1" in rendered

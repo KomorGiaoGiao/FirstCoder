@@ -17,9 +17,7 @@ def test_transcript_builder_keeps_conversation_order_and_redacts_text(tmp_path: 
     writer = SessionEventWriter(store=store, session_id="sess_test")
     writer.append_session_created(title="demo")
     user_id = writer.append_user_message("读取 D:\\Project\\secret.txt TOKEN=abc")
-    assistant_id = writer.append_assistant_response(
-        ChatResponse(provider="fake", model="fake-model", content="我会处理 /home/user/project/file.txt")
-    )
+    assistant_id = writer.append_assistant_response(ChatResponse(provider="fake", model="fake-model", content="我会处理 /home/user/project/file.txt"))
 
     transcript = TranscriptBuilder(store).build("sess_test")
 
@@ -114,12 +112,7 @@ def test_transcript_builder_uses_archive_placeholder_without_reading_archive_fil
 
     transcript = TranscriptBuilder(store).build("sess_test")
 
-    assert transcript.entries[0].content == (
-        "Status: success\n"
-        "Archive: ar_1\n"
-        "Summary: shell 输出过大，已归档。\n"
-        "Preview: safe preview"
-    )
+    assert transcript.entries[0].content == ("Status: success\n" "Archive: ar_1\n" "Summary: shell 输出过大，已归档。\n" "Preview: safe preview")
     assert "raw archive secret" not in transcript.entries[0].content
 
 

@@ -127,11 +127,7 @@ def test_python_exec_filters_sensitive_environment(monkeypatch, tmp_path):
     result = registry.execute(
         "python_exec",
         {
-            "code": (
-                "import os; "
-                "print(os.environ.get('OPENAI_API_KEY', '<missing>')); "
-                "print(os.environ.get('FIRSTCODER_VISIBLE_TEST_FLAG', '<missing>'))"
-            ),
+            "code": ("import os; " "print(os.environ.get('OPENAI_API_KEY', '<missing>')); " "print(os.environ.get('FIRSTCODER_VISIBLE_TEST_FLAG', '<missing>'))"),
         },
     )
 

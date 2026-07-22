@@ -30,7 +30,6 @@ from firstcoder.context.tool_lifecycle import (
 )
 from firstcoder.context.versions import COMPACTION_STRATEGY_VERSION, CONTEXT_EVENT_SCHEMA_VERSION
 
-
 CompactionLevel = Literal["l1", "l2", "l3"]
 
 
@@ -120,10 +119,7 @@ class CompactionPipeline:
             and not request.force_old_task_compaction
             and not required_levels
             and not ("l3" in request.enabled_levels and has_l3_mandatory_candidates)
-            and not (
-                {"l2", "l3"}.intersection(request.enabled_levels)
-                and has_l3_per_result_pressure
-            )
+            and not ({"l2", "l3"}.intersection(request.enabled_levels) and has_l3_per_result_pressure)
         ):
             deduped = input_fingerprint in self._seen_noop_fingerprints
             self._seen_noop_fingerprints.add(input_fingerprint)
@@ -359,11 +355,7 @@ class CompactionPipeline:
             ),
         )
         for candidate in candidates:
-            if (
-                not candidate.mandatory
-                and not candidate.over_per_result_target
-                and _estimate_view_tokens(view) <= request.target_tokens
-            ):
+            if not candidate.mandatory and not candidate.over_per_result_target and _estimate_view_tokens(view) <= request.target_tokens:
                 break
 
             part = candidate.message.parts[candidate.part_index]
@@ -468,11 +460,7 @@ def _is_cold_old_task_part(
     cold_turn_distance: int,
 ) -> bool:
     created_turn = part.metadata.get("created_turn")
-    return (
-        isinstance(created_turn, int)
-        and not isinstance(created_turn, bool)
-        and current_turn - created_turn >= cold_turn_distance
-    )
+    return isinstance(created_turn, int) and not isinstance(created_turn, bool) and current_turn - created_turn >= cold_turn_distance
 
 
 def _archive_ids_from_replacements(replacements: list[dict[str, object]]) -> list[str]:
@@ -551,11 +539,7 @@ def _is_retrieval_protected(part: MessagePart, *, current_turn: int) -> bool:
             return False
         retrieval_metadata = nested_data
     protected_until_turn = retrieval_metadata.get("compaction_protected_until_turn")
-    return (
-        isinstance(protected_until_turn, int)
-        and not isinstance(protected_until_turn, bool)
-        and protected_until_turn >= current_turn
-    )
+    return isinstance(protected_until_turn, int) and not isinstance(protected_until_turn, bool) and protected_until_turn >= current_turn
 
 
 def _lifecycle_summary(part: MessagePart, lifecycle: ToolResultLifecycleRecord) -> str:
@@ -664,11 +648,7 @@ def _l3_candidates(
 
             tokens = estimate_text_tokens(part.content)
             mandatory = _is_l3_mandatory(lifecycle)
-            over_per_result_target = (
-                per_result_target is not None
-                and lifecycle.lifecycle is ToolResultLifecycle.DERIVED
-                and tokens > per_result_target
-            )
+            over_per_result_target = per_result_target is not None and lifecycle.lifecycle is ToolResultLifecycle.DERIVED and tokens > per_result_target
             if mandatory:
                 priority = _l3_priority(lifecycle.lifecycle)
             elif over_per_result_target:
@@ -689,9 +669,7 @@ def _l3_candidates(
                     over_per_result_target=over_per_result_target,
                     priority=priority,
                     tokens=tokens,
-                    created_turn=created_turn
-                    if isinstance(created_turn, int) and not isinstance(created_turn, bool)
-                    else 0,
+                    created_turn=created_turn if isinstance(created_turn, int) and not isinstance(created_turn, bool) else 0,
                     tail_index=tail_index,
                 )
             )

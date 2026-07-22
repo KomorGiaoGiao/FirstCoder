@@ -58,11 +58,7 @@ class SkillRouter:
 
 def _explicit_matches(user_message: str, skills: list[SkillDefinition]) -> list[SkillDefinition]:
     normalized = user_message.lower()
-    return [
-        skill
-        for skill in skills
-        if skill.name.lower() in normalized or skill.path.lower() in normalized
-    ]
+    return [skill for skill in skills if skill.name.lower() in normalized or skill.path.lower() in normalized]
 
 
 def _agents_route_matches(user_message: str, agents_md: str, skills: list[SkillDefinition]) -> list[SkillDefinition]:

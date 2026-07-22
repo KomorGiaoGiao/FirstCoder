@@ -19,84 +19,11 @@ def _part(content: str = "line\n" * 200) -> MessagePart:
     )
 
 
-def test_large_tool_result_is_written_to_archive(tmp_path) -> None:
-    part = _part()
-    archived = ToolResultArchive(tmp_path).archive_part(session_id="sess_test", part=part)
-
-    archive_id = archived.metadata["archive_id"]
-    archive_dir = tmp_path / "archives" / "sess_test"
-    assert (archive_dir / f"{archive_id}.txt").read_text(encoding="utf-8") == part.content
-
-    metadata = json.loads((archive_dir / f"{archive_id}.json").read_text(encoding="utf-8"))
-    assert metadata["archive_id"] == archive_id
-    assert metadata["content_sha256"] == hashlib.sha256(part.content.encode()).hexdigest()
-    assert metadata["original_tokens"] > 0
-    assert metadata["schema_version"] == ARCHIVE_SCHEMA_VERSION
-    assert set(metadata) == {
-        "archive_id",
-        "content_sha256",
-        "original_chars",
-        "original_tokens",
-        "created_at",
-        "schema_version",
-    }
-
-
-def test_archive_placeholder_keeps_archive_id_summary_and_preview(tmp_path) -> None:
-    content = "abcdef" * 200
-    archived = ToolResultArchive(tmp_path, preview_chars=24).archive_part(
-        session_id="sess_test",
-        part=_part(content),
-        summary="read_file 输出过大，已归档。",
-    )
-
-    assert archived.kind == "tool_result"
-    assert archived.content.startswith("[Tool result archived]")
-    assert "archive_id=" in archived.content
-    assert "preview=abcdefabcdefabcdefabcdef" in archived.content
-    assert archived.metadata["summary"] == "read_file 输出过大，已归档。"
-    assert archived.metadata["preview"] == "abcdefabcdefabcdefabcdef"
-    assert archived.metadata["original_tokens"] > archived.metadata["preview_tokens"]
-    assert archived.metadata["compaction_state"] == "archived"
-    assert archived.metadata["archive_path"].endswith(".txt")
-
-
-def test_archived_tool_result_is_not_archived_twice(tmp_path) -> None:
-    archive = ToolResultArchive(tmp_path)
-    first = archive.archive_part(session_id="sess_test", part=_part())
-    second = archive.archive_part(session_id="sess_test", part=first)
-
-    assert second == first
-    archive_dir = tmp_path / "archives" / "sess_test"
-    assert len(list(archive_dir.glob("*.txt"))) == 1
-    assert len(list(archive_dir.glob("*.json"))) == 1
-
-
-def test_archive_part_accepts_caller_provided_archive_id(tmp_path) -> None:
-    part = _part()
-    archive_id = "ar_" + hashlib.sha256(part.content.encode()).hexdigest()[:32]
-    archived = ToolResultArchive(tmp_path).archive_part(
-        session_id="sess_test", part=part, archive_id=archive_id
-    )
-
-    archive_dir = tmp_path / "archives" / "sess_test"
-    assert archived.metadata["archive_id"] == archive_id
-    assert (archive_dir / f"{archive_id}.txt").exists()
-    assert (archive_dir / f"{archive_id}.json").exists()
-
-
-def test_archive_part_rejects_non_content_addressed_caller_id(tmp_path) -> None:
-    with pytest.raises(ValueError, match="content-addressed"):
-        ToolResultArchive(tmp_path).archive_part(
-            session_id="sess_test", part=_part(), archive_id="ar_existing"
-        )
-
-
 def test_resume_projection_keeps_archive_placeholder(tmp_path) -> None:
     original = "very large output\n" * 200
-    archived = ToolResultArchive(tmp_path, preview_chars=20).archive_part(
-        session_id="sess_test", part=_part(original)
-    )
+    archive = ToolResultArchive(tmp_path)
+    part = _part(original)
+    archived = archive.make_placeholder(part, archive.store_original("sess_test", part))
     view = SessionView(
         session_id="sess_test",
         messages=[
@@ -148,9 +75,11 @@ def test_store_original_uses_explicit_empty_content(tmp_path) -> None:
 @pytest.mark.parametrize("session_id,archive_id", [("../escape", "ar_safe"), ("sess", "../escape")])
 def test_archive_path_traversal_is_rejected(tmp_path, session_id, archive_id) -> None:
     with pytest.raises(ValueError):
-        ToolResultArchive(tmp_path).archive_part(
-            session_id=session_id, part=_part(), archive_id=archive_id
-        )
+        archive = ToolResultArchive(tmp_path)
+        if session_id == "../escape":
+            archive.store_original(session_id, _part())
+        else:
+            archive.read(session_id, archive_id)
 
 
 def test_preexisting_content_addressed_text_with_other_content_is_integrity_error(tmp_path) -> None:
@@ -174,36 +103,11 @@ def test_each_session_has_its_own_content_addressed_files(tmp_path) -> None:
     assert (tmp_path / "archives" / "second" / f"{record_two.archive_id}.txt").exists()
 
 
-def test_legacy_random_id_archive_can_be_read(tmp_path) -> None:
-    path = tmp_path / "archives" / "sess_test"
-    path.mkdir(parents=True)
-    (path / "ar_random.txt").write_text("old output", encoding="utf-8")
-    (path / "ar_random.json").write_text(
-        json.dumps(
-            {
-                "archive_id": "ar_random",
-                "content_fingerprint": "legacy-fingerprint",
-                "original_tokens": 12,
-                "created_at": "2026-01-01T00:00:00+00:00",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    record, original = ToolResultArchive(tmp_path).read("sess_test", "ar_random")
-    assert record.schema_version == "v1"
-    assert record.content_sha256 == hashlib.sha256(b"old output").hexdigest()
-    assert record.original_chars == len("old output")
-    assert original == "old output"
-
-
 def test_v2_placeholder_has_no_raw_preview_and_is_bounded(tmp_path) -> None:
     raw = "SECRET_RESULT_SHOULD_NOT_APPEAR " * 100
     archive = ToolResultArchive(tmp_path)
     record = archive.store_original("sess_test", _part(raw))
-    placeholder = archive.make_placeholder(
-        _part(raw), record, summary="x" * 600, key_errors=("first", "second", "third", "fourth")
-    )
+    placeholder = archive.make_placeholder(_part(raw), record, summary="x" * 600, key_errors=("first", "second", "third", "fourth"))
 
     assert len(placeholder.content) <= 480
     assert raw not in placeholder.content

@@ -71,11 +71,7 @@ def replay_loaded_skills(store: JsonlSessionStore, session_id: str, catalog: Ski
         skill_path = str(event.payload.get("skill_path") or "")
         skill_root = str(event.payload.get("skill_root") or "")
         skill = next(
-            (
-                candidate
-                for candidate in catalog.skills
-                if candidate.path == skill_path and candidate.root == skill_root
-            ),
+            (candidate for candidate in catalog.skills if candidate.path == skill_path and candidate.root == skill_root),
             None,
         )
         if skill is None:

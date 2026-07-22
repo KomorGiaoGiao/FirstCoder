@@ -35,10 +35,6 @@ def new_event_id() -> str:
     return _new_id("evt")
 
 
-def new_archive_id() -> str:
-    return _new_id("ar")
-
-
 def new_checkpoint_id() -> str:
     return _new_id("ckpt")
 

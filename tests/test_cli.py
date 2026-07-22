@@ -108,17 +108,20 @@ def test_main_parses_model_reference_for_single_message(tmp_path: Path):
         seen.append(config)
         return "done"
 
-    assert main(
-        [
-            "--project",
-            str(tmp_path),
-            "--model",
-            "yuren/gpt-5.6-terra",
-            "--message",
-            "hello",
-        ],
-        runner=fake_runner,
-    ) == 0
+    assert (
+        main(
+            [
+                "--project",
+                str(tmp_path),
+                "--model",
+                "yuren/gpt-5.6-terra",
+                "--message",
+                "hello",
+            ],
+            runner=fake_runner,
+        )
+        == 0
+    )
 
     assert seen[0].model_spec == "yuren/gpt-5.6-terra"
 
@@ -193,13 +196,13 @@ def test_main_config_show_uses_project_config_without_leaking_key(tmp_path: Path
     (tmp_path / "firstcoder.toml").write_text(
         "\n".join(
             [
-                'model = "yurenapi/gpt-5.5"',
-                "[provider]",
+                'default_model = "yurenapi/gpt-5.5"',
+                "[providers.yurenapi]",
                 'type = "openai-compatible"',
-                'name = "yurenapi"',
                 'base_url = "https://yurenapi.cn/v1"',
                 'api_key_env = "YURENAPI_API_KEY"',
                 "parallel_tool_calls = true",
+                '[models."yurenapi/gpt-5.5"]',
             ]
         ),
         encoding="utf-8",
@@ -209,7 +212,7 @@ def test_main_config_show_uses_project_config_without_leaking_key(tmp_path: Path
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "provider: openai-compatible" in output
+    assert "provider: yurenapi" in output
     assert "model: yurenapi/gpt-5.5" in output
     assert "base_url: https://yurenapi.cn/v1" in output
     assert "parallel_tool_calls: true" in output
@@ -227,11 +230,11 @@ def test_main_config_show_lists_catalog_refs_without_secrets_or_state(tmp_path: 
                 'type = "openai-compatible"',
                 'base_url = "https://yurenapi.cn/v1"',
                 'api_key_env = "YURENAPI_API_KEY"',
-                "[models.\"yuren/gpt-5.6-terra\"]",
+                '[models."yuren/gpt-5.6-terra"]',
                 'label = "Yuren Terra"',
-                "[models.\"yuren/gpt-5.6-terra\".request]",
+                '[models."yuren/gpt-5.6-terra".request]',
                 'extra_body = { secret = "do-not-print" }',
-                "[models.\"openai/gpt-5.5\"]",
+                '[models."openai/gpt-5.5"]',
                 'label = "OpenAI"',
                 "[providers.openai]",
                 'type = "openai-compatible"',
@@ -324,15 +327,7 @@ def test_run_repl_routes_next_line_to_pending_permission(capsys):
 
     assert runner.turns == ["write file"]
     assert runner.resumes == [("perm_1", "allow_once")]
-    assert capsys.readouterr().out == (
-        "FirstCoder> need permission\n"
-        "Permission> Allow?\n"
-        "Choose:\n"
-        "  1. Deny\n"
-        "  2. Allow once\n"
-        "  3. Allow always for same scope\n"
-        "FirstCoder> done\n"
-    )
+    assert capsys.readouterr().out == ("FirstCoder> need permission\n" "Permission> Allow?\n" "Choose:\n" "  1. Deny\n" "  2. Allow once\n" "  3. Allow always for same scope\n" "FirstCoder> done\n")
 
 
 def test_run_repl_accepts_human_permission_aliases(capsys):

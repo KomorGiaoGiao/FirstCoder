@@ -296,5 +296,3 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
         strategy_version=str(data.get("strategy_version") or TASK_BOUNDARY_TOOL_VERSION),
         created_at=str(data.get("created_at") or ""),
     )
-
-

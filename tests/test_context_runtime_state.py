@@ -2,7 +2,6 @@ from firstcoder.context.runtime_state import (
     SessionRuntimeState,
     active_auto_compact_disabled_until,
     auto_compact_circuit_is_open,
-    parse_utc_iso,
 )
 
 
@@ -33,18 +32,6 @@ def test_runtime_state_records_compact_failure_and_circuit_breaker() -> None:
 
     assert state.auto_compact_failure_count == 0
     assert state.auto_compact_disabled_until is None
-
-
-def test_parse_utc_iso_accepts_z_and_naive_values() -> None:
-    assert parse_utc_iso("2026-06-01T00:00:00Z").tzinfo is not None
-    assert parse_utc_iso("2026-06-01T00:00:00").tzinfo is not None
-
-
-def test_parse_utc_iso_only_treats_trailing_z_as_utc_marker() -> None:
-    parsed = parse_utc_iso("2026-06-01Z00:00:00Z")
-
-    assert parsed.year == 2026
-    assert parsed.tzinfo is not None
 
 
 def test_auto_compact_circuit_open_only_while_disabled_until_is_active() -> None:

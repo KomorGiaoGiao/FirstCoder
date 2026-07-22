@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from firstcoder.context.checkpoint import CheckpointIndex, checkpoint_summary_content
 from firstcoder.context.models import AgentMessage, SessionView
-from firstcoder.context.token_budget import TokenBudgetService, estimate_text_tokens
+from firstcoder.context.token_budget import estimate_text_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,27 +29,6 @@ class ContextCompactionConfig:
     cold_turn_distance: int = 8
     cold_preview_chars: int = 160
     reserved_output_tokens: int = 4_096
-
-    @classmethod
-    def from_token_budget(
-        cls,
-        budget: TokenBudgetService,
-        *,
-        large_tool_result_tokens: int = 1_200,
-        max_turn_tool_result_tokens: int = 4_000,
-        max_tail_messages: int = 120,
-        max_tail_tokens: int | None = None,
-    ) -> "ContextCompactionConfig":
-        built = budget.build_budget()
-        return cls(
-            auto_compact_threshold=built.auto_compact_threshold,
-            target_tokens=built.warning_threshold,
-            blocking_target_tokens=built.warning_threshold,
-            large_tool_result_tokens=large_tool_result_tokens,
-            max_turn_tool_result_tokens=max_turn_tool_result_tokens,
-            max_tail_messages=max_tail_messages,
-            max_tail_tokens=max_tail_tokens or built.blocking_threshold,
-        )
 
     def target_for_trigger(self, trigger: str) -> int:
         if trigger == "prompt_too_long" and self.blocking_target_tokens is not None:

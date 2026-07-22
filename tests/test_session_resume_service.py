@@ -153,9 +153,7 @@ def test_resume_rejects_future_schema_before_parsing_later_events(tmp_path: Path
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     path = store.sessions_dir / "sess_future.jsonl"
     path.write_text(
-        '{"id":"evt_created","session_id":"sess_future","type":"session_created",'
-        '"payload":{"context_event_schema_version":"v3"}}\n'
-        '{"future_event_shape":true}\n',
+        '{"id":"evt_created","session_id":"sess_future","type":"session_created",' '"payload":{"context_event_schema_version":"v3"}}\n' '{"future_event_shape":true}\n',
         encoding="utf-8",
     )
 

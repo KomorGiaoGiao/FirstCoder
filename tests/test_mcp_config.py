@@ -15,9 +15,7 @@ def test_load_mcp_configs_parses_local_server_with_defaults():
     config = AppConfig(
         provider_name="openai",
         env={},
-        project_config={
-            "mcp": {"lark": {"type": "local", "command": ["lark-mcp", "serve"]}}
-        },
+        project_config={"mcp": {"lark": {"type": "local", "command": ["lark-mcp", "serve"]}}},
     )
 
     servers = load_mcp_configs(config)
@@ -151,9 +149,7 @@ def test_project_server_completely_overrides_same_named_global_server():
         "github": {"type": "local", "command": ["project"]},
         "global-only": {"type": "local", "command": ["global"]},
     }
-    assert load_mcp_configs(config)[0] == McpLocalServerConfig(
-        name="github", command=("project",), env={}, allowed_tools=None
-    )
+    assert load_mcp_configs(config)[0] == McpLocalServerConfig(name="github", command=("project",), env={}, allowed_tools=None)
 
 
 def test_resolve_environment_placeholders_reports_only_missing_variable_name():

@@ -126,9 +126,7 @@ class AnthropicProvider(ChatProvider):
         diagnostics.reasoning = _collect_thinking(content_blocks) or None
         tool_calls = self._parse_tool_calls(content_blocks, diagnostics=diagnostics)
         if finish_reason == "length" and tool_calls:
-            diagnostics.warnings.append(
-                "finish_reason=length，丢弃可能不完整的 tool_calls，避免执行半截工具调用。"
-            )
+            diagnostics.warnings.append("finish_reason=length，丢弃可能不完整的 tool_calls，避免执行半截工具调用。")
             tool_calls = []
 
         return ChatResponse(
@@ -287,9 +285,7 @@ class AnthropicProvider(ChatProvider):
 
         tool_calls: list[ToolCall] = []
         if tool_accumulators and finish_reason != "tool_calls":
-            diagnostics.warnings.append(
-                f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。"
-            )
+            diagnostics.warnings.append(f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。")
         elif tool_accumulators:
             tool_calls = complete_stream_tool_calls(
                 tool_accumulators,
@@ -409,10 +405,7 @@ class AnthropicProvider(ChatProvider):
                     converted
                     and converted[-1]["role"] == "user"
                     and isinstance(converted[-1]["content"], list)
-                    and all(
-                        isinstance(item, dict) and item.get("type") == "tool_result"
-                        for item in converted[-1]["content"]
-                    )
+                    and all(isinstance(item, dict) and item.get("type") == "tool_result" for item in converted[-1]["content"])
                 ):
                     converted[-1]["content"].append(block)
                 else:
@@ -482,18 +475,14 @@ class AnthropicProvider(ChatProvider):
                 if not isinstance(arguments, dict):
                     call_id = _read_field(block, "id", "")
                     name = _read_field(block, "name", "")
-                    diagnostics.warnings.append(
-                        f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}"
-                    )
+                    diagnostics.warnings.append(f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}")
                     return []
             elif isinstance(raw_input, dict):
                 arguments = raw_input
             else:
                 call_id = _read_field(block, "id", "")
                 name = _read_field(block, "name", "")
-                diagnostics.warnings.append(
-                    f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}"
-                )
+                diagnostics.warnings.append(f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}")
                 return []
 
             parsed.append(
@@ -542,14 +531,10 @@ def _normalize_stop_reason(reason: Any) -> FinishReason:
 
 
 def _parse_usage(usage: Any):
-    """解析 Anthropic usage；同时兼容 OpenAI 字段名以便测试/代理。"""
+    """解析 Anthropic usage。"""
 
     if usage is None:
         return None
     input_tokens = _read_field(usage, "input_tokens")
-    if input_tokens is None:
-        input_tokens = _read_field(usage, "prompt_tokens")
     output_tokens = _read_field(usage, "output_tokens")
-    if output_tokens is None:
-        output_tokens = _read_field(usage, "completion_tokens")
     return token_usage(input_tokens, output_tokens, _read_field(usage, "total_tokens"))

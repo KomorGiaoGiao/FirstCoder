@@ -181,10 +181,7 @@ def test_messages_before_tail_are_not_projected_twice() -> None:
         created_at="2026-06-01T00:00:00Z",
     )
 
-    contents = [
-        message.content
-        for message in ContextBuilder().build_provider_messages(view, checkpoint=checkpoint)
-    ]
+    contents = [message.content for message in ContextBuilder().build_provider_messages(view, checkpoint=checkpoint)]
 
     assert "已经被 checkpoint 覆盖" not in contents
     assert contents[0] == "[Checkpoint summary]\n覆盖 msg_1"
@@ -231,7 +228,7 @@ def test_resume_does_not_expand_archived_tool_result() -> None:
                         },
                     )
                 ],
-            )
+            ),
         ],
     )
 

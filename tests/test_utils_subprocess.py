@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from firstcoder.agent.cancellation import CancellationToken
+from firstcoder.runtime.cancellation import CancellationToken
 from firstcoder.utils.subprocess import CommandResult, run_command
 
 
@@ -20,7 +20,8 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
 class TestRunCommand:
     def test_successful_command(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **kw: _fake_completed(stdout="hello\n"),
         )
         result = run_command(["echo", "hello"], cwd=tmp_path)
@@ -32,7 +33,8 @@ class TestRunCommand:
 
     def test_failed_command(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **kw: _fake_completed(returncode=1, stderr="error\n"),
         )
         result = run_command(["false"], cwd=tmp_path)
@@ -63,7 +65,8 @@ class TestRunCommand:
 
     def test_stdout_truncation(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **kw: _fake_completed(stdout="abcdefghij"),
         )
         result = run_command(["echo"], cwd=tmp_path, max_output_chars=5)
@@ -74,7 +77,8 @@ class TestRunCommand:
 
     def test_stderr_truncation(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **kw: _fake_completed(returncode=1, stderr="abcdefghij"),
         )
         result = run_command(["fail"], cwd=tmp_path, max_output_chars=5)
@@ -85,7 +89,8 @@ class TestRunCommand:
 
     def test_result_is_command_result_type(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            subprocess, "run",
+            subprocess,
+            "run",
             lambda *a, **kw: _fake_completed(stdout="ok"),
         )
         result = run_command(["echo"], cwd=tmp_path)

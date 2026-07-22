@@ -23,7 +23,6 @@ from firstcoder.planning.reducer import (
     update_tasks,
 )
 
-
 _THREAD_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 
@@ -116,9 +115,7 @@ class TaskPlanService:
 
     @contextmanager
     def _mutation_lock(self) -> Iterator[None]:
-        session_key = str(
-            (self._store.sessions_dir / f"{self._writer.session_id}.jsonl").resolve()
-        )
+        session_key = str((self._store.sessions_dir / f"{self._writer.session_id}.jsonl").resolve())
         with _THREAD_LOCKS_GUARD:
             thread_lock = _THREAD_LOCKS.setdefault(session_key, threading.RLock())
 
@@ -137,9 +134,7 @@ class TaskPlanService:
     def _require_current_plan(self, operation: str) -> TaskPlan:
         plan = self.current()
         if plan is None:
-            raise TaskPlanCommandError(
-                f"cannot {operation}: no current task plan; create one first"
-            )
+            raise TaskPlanCommandError(f"cannot {operation}: no current task plan; create one first")
         return plan
 
     def _finish(

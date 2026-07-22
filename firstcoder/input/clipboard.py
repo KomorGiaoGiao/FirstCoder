@@ -73,7 +73,7 @@ def _read_macos_clipboard_image() -> bytes | None:
     with tempfile.TemporaryDirectory(prefix="firstcoder-clipboard-") as tmp:
         out_path = Path(tmp) / "clipboard.png"
         # Prefer PNG; fall back to TIFF and convert via sips when needed.
-        script = f'''
+        script = f"""
         set outPath to "{out_path.as_posix()}"
         try
           set pngData to the clipboard as «class PNGf»
@@ -101,7 +101,7 @@ def _read_macos_clipboard_image() -> bytes | None:
           end try
           return "none"
         end try
-        '''
+        """
         try:
             completed = subprocess.run(
                 ["osascript", "-e", script],

@@ -31,12 +31,12 @@ def test_load_config_reads_project_firstcoder_toml(tmp_path, monkeypatch):
     (tmp_path / "firstcoder.toml").write_text(
         "\n".join(
             [
-                'model = "custom/custom-model"',
-                "[provider]",
+                'default_model = "custom/custom-model"',
+                "[providers.custom]",
                 'type = "openai-compatible"',
-                'name = "custom"',
                 'base_url = "https://example.com/v1"',
                 'api_key_env = "CUSTOM_API_KEY"',
+                '[models."custom/custom-model"]',
             ]
         ),
         encoding="utf-8",
@@ -44,9 +44,8 @@ def test_load_config_reads_project_firstcoder_toml(tmp_path, monkeypatch):
 
     config = load_config(project_root=tmp_path, env={"CUSTOM_API_KEY": "test-key"})
 
-    assert config.provider_name == "openai-compatible"
-    assert config.get_config_value("model") == "custom/custom-model"
-    assert config.get_provider_value("name") == "custom"
+    assert config.provider_name == "custom"
+    assert config.get_config_value("default_model") == "custom/custom-model"
     assert config.get_provider_value("base_url") == "https://example.com/v1"
     assert config.project_config_path == tmp_path / "firstcoder.toml"
 
@@ -54,7 +53,7 @@ def test_load_config_reads_project_firstcoder_toml(tmp_path, monkeypatch):
 def test_environment_provider_overrides_project_config(tmp_path, monkeypatch):
     monkeypatch.setenv("FIRSTCODER_PROVIDER", "deepseek")
     (tmp_path / "firstcoder.toml").write_text(
-        "\n".join(["[provider]", 'type = "openai-compatible"']),
+        "\n".join(['default_model = "custom/model"', "[providers.custom]", 'type = "openai-compatible"', '[models."custom/model"]']),
         encoding="utf-8",
     )
 
@@ -111,77 +110,6 @@ def test_create_provider_from_config_supports_custom_openai_compatible():
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.name == "example"
     assert provider.model == "custom-model"
-
-
-def test_create_provider_from_config_supports_toml_openai_compatible():
-    config = AppConfig(
-        provider_name="openai-compatible",
-        env={"YURENAPI_API_KEY": "test-key"},
-        project_config={
-            "model": "yurenapi/gpt-5.5",
-            "provider": {
-                "type": "openai-compatible",
-                "name": "yurenapi",
-                "base_url": "https://yurenapi.cn/v1",
-                "api_key_env": "YURENAPI_API_KEY",
-            },
-        },
-    )
-
-    provider = create_provider_from_config(config)
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == "yurenapi"
-    assert provider.model == "gpt-5.5"
-    assert provider.base_url == "https://yurenapi.cn/v1"
-
-
-def test_create_provider_from_config_reads_parallel_tool_calls_capability():
-    config = AppConfig(
-        provider_name="openai-compatible",
-        env={"YURENAPI_API_KEY": "test-key"},
-        project_config={
-            "model": "yurenapi/gpt-5.5",
-            "provider": {
-                "type": "openai-compatible",
-                "name": "yurenapi",
-                "base_url": "https://yurenapi.cn/v1",
-                "api_key_env": "YURENAPI_API_KEY",
-                "parallel_tool_calls": True,
-            },
-        },
-    )
-
-    provider = create_provider_from_config(config)
-
-    assert provider.capabilities.supports_parallel_tool_calls is True
-
-
-def test_create_provider_from_config_project_overrides_global_model():
-    config = AppConfig(
-        provider_name="openai-compatible",
-        env={"YURENAPI_API_KEY": "test-key"},
-        global_config={
-            "model": "yurenapi/global-model",
-            "provider": {
-                "type": "openai-compatible",
-                "name": "yurenapi",
-                "base_url": "https://global.example/v1",
-                "api_key_env": "YURENAPI_API_KEY",
-            },
-        },
-        project_config={
-            "model": "yurenapi/project-model",
-            "provider": {
-                "base_url": "https://project.example/v1",
-            },
-        },
-    )
-
-    provider = create_provider_from_config(config)
-
-    assert provider.model == "project-model"
-    assert provider.base_url == "https://project.example/v1"
 
 
 def test_render_default_config_uses_api_key_env_not_plain_secret():
@@ -302,7 +230,7 @@ def test_model_catalog_rejects_model_without_declared_provider() -> None:
         config.model_catalog()
 
 
-def test_model_catalog_adapts_legacy_single_provider_config() -> None:
+def test_model_catalog_rejects_legacy_single_provider_config() -> None:
     config = AppConfig(
         provider_name="openai-compatible",
         env={"YUREN_API_KEY": "test-key"},
@@ -317,10 +245,8 @@ def test_model_catalog_adapts_legacy_single_provider_config() -> None:
         },
     )
 
-    profile = config.model_catalog().require("yurenapi/gpt-legacy")
-
-    assert profile.provider.type == "openai-compatible"
-    assert profile.provider.base_url == "https://example.test/v1"
+    with pytest.raises(ModelCatalogError, match="旧的 model.*不受支持"):
+        config.model_catalog()
 
 
 def test_create_provider_for_model_uses_profile_provider_and_model_options() -> None:

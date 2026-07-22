@@ -22,7 +22,6 @@ from firstcoder.session.errors import (
 from firstcoder.session.models import SessionRecord
 from firstcoder.utils.text import optional_str
 
-
 MESSAGE_EVENT_TYPES = {"user_message", "assistant_message", "tool_result"}
 PREVIEW_CHARS = 80
 SAFE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -66,6 +65,7 @@ class SessionCatalog:
         if not is_safe_session_id(session_id):
             return False
         return (self.sessions_dir / f"{session_id}.jsonl").exists()
+
 
 def record_from_path(path: Path) -> SessionRecord:
     session_id = path.stem
@@ -229,6 +229,7 @@ def _preview(value: str | None) -> str | None:
     if len(normalized) <= PREVIEW_CHARS:
         return normalized
     return normalized[: PREVIEW_CHARS - 1] + "..."
+
 
 def session_sort_key(record: SessionRecord) -> tuple[str, str]:
     return (record.updated_at or "", record.session_id)

@@ -71,17 +71,11 @@ def complete_stream_tool_calls(
         missing_identity = require_identity and (not item.id or not item.name)
         if missing_identity or not item.saw_arguments:
             missing = "id、name 或 arguments" if require_identity else "arguments"
-            diagnostics.warnings.append(
-                f"streaming tool_call 缺少 {missing}，已丢弃整组不可执行调用："
-                f"index={index}, id={item.id}, name={item.name}"
-            )
+            diagnostics.warnings.append(f"streaming tool_call 缺少 {missing}，已丢弃整组不可执行调用：" f"index={index}, id={item.id}, name={item.name}")
             return []
         arguments = loads_json_object(item.arguments_text)
         if not isinstance(arguments, dict):
-            diagnostics.warnings.append(
-                f"streaming tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用："
-                f"index={index}, id={item.id}, name={item.name}"
-            )
+            diagnostics.warnings.append(f"streaming tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：" f"index={index}, id={item.id}, name={item.name}")
             return []
         parsed.append(ToolCall(id=item.id, name=item.name, arguments=arguments))
     return parsed

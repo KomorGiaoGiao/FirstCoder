@@ -14,7 +14,6 @@ from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.text import safe_read_text
 
-
 ReviewOperation = Literal["create", "modify", "delete", "move", "delete_directory", "unchanged"]
 
 
@@ -221,11 +220,7 @@ def _review_delete(sandbox: PathSandbox, arguments: dict[str, object]) -> list[R
             _review_file(
                 path=item.relative_to(sandbox.root).as_posix(),
                 operation="delete",
-                before=(
-                    f"Symbolic link will be deleted: {item.readlink()}"
-                    if item.is_symlink()
-                    else _read_existing_text_or_binary(item)
-                ),
+                before=(f"Symbolic link will be deleted: {item.readlink()}" if item.is_symlink() else _read_existing_text_or_binary(item)),
                 after=None,
                 snapshot=(
                     (
@@ -254,11 +249,7 @@ def _review_delete(sandbox: PathSandbox, arguments: dict[str, object]) -> list[R
         _review_file(
             path=relative,
             operation="delete",
-            before=(
-                f"Symbolic link will be deleted: {lexical.readlink()}"
-                if lexical.is_symlink()
-                else _read_existing_text_or_binary(lexical)
-            ),
+            before=(f"Symbolic link will be deleted: {lexical.readlink()}" if lexical.is_symlink() else _read_existing_text_or_binary(lexical)),
             after=None,
             snapshot=((relative, _path_digest(lexical)),),
         )

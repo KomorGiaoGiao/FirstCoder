@@ -40,9 +40,7 @@ class TuiPickerState:
         return self.items[index]
 
 
-def visible_picker_window(
-    items: list[TuiPickerItem], *, selected_index: int, limit: int
-) -> tuple[int, list[TuiPickerItem]]:
+def visible_picker_window(items: list[TuiPickerItem], *, selected_index: int, limit: int) -> tuple[int, list[TuiPickerItem]]:
     if not items:
         return 0, []
     selected_index = max(0, min(selected_index, len(items) - 1))
@@ -87,5 +85,3 @@ def _default_item_text(item: TuiPickerItem) -> str:
     if item.detail:
         return f"{item.label} {item.detail}"
     return item.label
-
-

@@ -59,9 +59,7 @@ def test_create_worktree_is_constrained_and_leaves_parent_untouched(tmp_path) ->
 
     # 父工作区仍然是我们留下的 dirty 状态，没有被隔离流程改动。
     assert (tmp_path / "seed.txt").read_text(encoding="utf-8").strip() == "seed dirty"
-    parent_status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
-    ).stdout
+    parent_status = subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True).stdout
     assert "seed.txt" in parent_status
 
 

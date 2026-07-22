@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 
 from firstcoder.config.models import ModelCatalog, build_model_catalog
 
-
 PROJECT_CONFIG_NAME = "firstcoder.toml"
 
 
@@ -25,7 +24,7 @@ PROJECT_CONFIG_NAME = "firstcoder.toml"
 class AppConfig:
     """FirstCoder 的应用级配置。
 
-    `env` 保留给旧的 FIRSTCODER_* 和厂商环境变量；`project_config` / `global_config`
+    `env` 保留 FIRSTCODER_* 和厂商环境变量；`project_config` / `global_config`
     承载 TOML 配置。provider factory 只依赖这个对象的方法，不需要知道配置来自哪里。
     """
 
@@ -108,13 +107,11 @@ class AppConfig:
         return merged
 
     def model_catalog(self) -> ModelCatalog:
-        """返回合并后的多模型目录；旧配置自动适配为单模型目录。"""
+        """返回合并后的多模型目录。"""
 
         return build_model_catalog(
             global_config=self.global_config,
             project_config=self.project_config,
-            legacy_provider_name=self.provider_name,
-            env=self.env,
         )
 
     @property
@@ -163,13 +160,8 @@ def load_config(
     global_config = _read_toml_file(global_path)
     project_config = _read_toml_file(project_path)
 
-    selected_provider = (
-        provider_name
-        or env_snapshot.get("FIRSTCODER_PROVIDER")
-        or _provider_name_from_config(project_config)
-        or _provider_name_from_config(global_config)
-        or "openai"
-    ).lower()
+    provider_override = provider_name or env_snapshot.get("FIRSTCODER_PROVIDER")
+    selected_provider = provider_override.lower() if provider_override else _provider_name_from_config(project_config) or _provider_name_from_config(global_config) or "openai"
 
     return AppConfig(
         provider_name=selected_provider,
@@ -202,14 +194,16 @@ def render_default_config() -> str:
     return "\n".join(
         [
             '# FirstCoder global configuration. Project-level "./firstcoder.toml" can override it.',
-            'model = "yurenapi/gpt-5.5"',
+            'default_model = "yurenapi/gpt-5.5"',
             "",
-            "[provider]",
+            "[providers.yurenapi]",
             'type = "openai-compatible"',
-            'name = "yurenapi"',
             'base_url = "https://yurenapi.cn/v1"',
             'api_key_env = "YURENAPI_API_KEY"',
             "parallel_tool_calls = true",
+            "",
+            '[models."yurenapi/gpt-5.5"]',
+            'label = "GPT-5.5"',
             "",
             "[permissions]",
             'mode = "ask"',
@@ -230,29 +224,20 @@ def _read_toml_file(path: Path) -> dict[str, Any] | None:
 
 
 def _provider_name_from_config(config: dict[str, Any] | None) -> str | None:
-    provider_type = _provider_raw_value(config, "type", provider_name=None)
-    if provider_type is not None:
-        return str(provider_type)
-    model = _string_value(config, "model")
-    if model and "/" in model:
-        return model.split("/", 1)[0]
+    default_model = _string_value(config, "default_model")
+    if default_model and "/" in default_model:
+        return default_model.split("/", 1)[0]
     return None
 
 
 def _provider_raw_value(config: dict[str, Any] | None, name: str, *, provider_name: str | None) -> Any | None:
-    if not config:
+    if not config or not provider_name:
         return None
-    provider = config.get("provider")
-    if not isinstance(provider, dict):
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
         return None
-    direct = provider.get(name)
-    if direct is not None:
-        return direct
-    if provider_name:
-        nested = provider.get(provider_name)
-        if isinstance(nested, dict):
-            return nested.get(name)
-    return None
+    provider = providers.get(provider_name)
+    return provider.get(name) if isinstance(provider, dict) else None
 
 
 def _string_value(config: dict[str, Any] | None, name: str) -> str | None:

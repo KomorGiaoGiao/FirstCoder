@@ -61,15 +61,7 @@ def test_skill_loader_extracts_required_files_from_common_chinese_headings(tmp_p
 
     loaded = SkillLoader().load_from_content(
         skill,
-        (
-            "# Claim Review\n\n"
-            "## 预读文件\n\n"
-            "- `docs/evidence-policy.md`\n"
-            "- `skills/litigation-review.md`\n\n"
-            "## 执行\n\n"
-            "必须先读：\n\n"
-            "- `skills/source-verification.md`\n"
-        ),
+        ("# Claim Review\n\n" "## 预读文件\n\n" "- `docs/evidence-policy.md`\n" "- `skills/litigation-review.md`\n\n" "## 执行\n\n" "必须先读：\n\n" "- `skills/source-verification.md`\n"),
     )
 
     assert loaded.required_files == [

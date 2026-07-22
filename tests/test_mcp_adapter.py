@@ -122,9 +122,7 @@ def test_adapt_mcp_tool_renders_text_and_retains_structured_metadata() -> None:
 
 
 def test_adapt_mcp_tool_converts_call_failure_to_safe_error() -> None:
-    tool = adapt_mcp_tool(
-        FakeManager(error=RuntimeError("Bearer secret-value")), "lark", McpToolDescription("calendar_list", None)
-    )
+    tool = adapt_mcp_tool(FakeManager(error=RuntimeError("Bearer secret-value")), "lark", McpToolDescription("calendar_list", None))
 
     result = tool.executor()
 

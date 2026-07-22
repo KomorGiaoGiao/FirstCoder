@@ -87,7 +87,7 @@ class SlowContextBuilder:
     def __init__(self, delay_seconds: float) -> None:
         self.delay_seconds = delay_seconds
 
-    def build_provider_messages(self, view, *, system_prefix=None, checkpoint=None):
+    def build_provider_messages(self, view, *, system_prefix=None, checkpoint=None, store_root=None):
         time.sleep(self.delay_seconds)
         return list(system_prefix or [])
 
@@ -477,9 +477,7 @@ async def test_agent_chat_runner_async_entry_can_use_streaming_loop(tmp_path) ->
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_stream", agents_md="")
     state = CurrentSessionState(session)
-    provider = FakeStreamingProvider(
-        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="streamed")]
-    )
+    provider = FakeStreamingProvider([ChatResponse(provider="fake-stream", model="fake-stream-model", content="streamed")])
     runner = AgentChatRunner(current_session=state, provider=provider, use_streaming=True)
 
     response = await runner.arun_user_turn("你好")
@@ -501,9 +499,7 @@ async def test_agent_chat_runner_streaming_does_not_block_event_loop_during_setu
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_stream_threaded", agents_md="")
     state = CurrentSessionState(session)
-    provider = FakeStreamingProvider(
-        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="streamed")]
-    )
+    provider = FakeStreamingProvider([ChatResponse(provider="fake-stream", model="fake-stream-model", content="streamed")])
     runner = AgentChatRunner(
         current_session=state,
         provider=provider,

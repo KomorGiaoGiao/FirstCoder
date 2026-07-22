@@ -12,8 +12,7 @@ from firstcoder.permissions.types import PermissionMode
 class PermissionSessionLike(Protocol):
     mode: str
 
-    def set_permission_mode(self, mode: PermissionMode | str) -> PermissionMode:
-        ...
+    def set_permission_mode(self, mode: PermissionMode | str) -> PermissionMode: ...
 
 
 @dataclass(slots=True)
@@ -30,10 +29,7 @@ class PermissionCommandHandler:
         if command == "/mode":
             return CommandResult(
                 handled=True,
-                output=(
-                    f"Permission mode: {self.session.mode}\n"
-                    "Available: standard, aggressive, bypass"
-                ),
+                output=(f"Permission mode: {self.session.mode}\n" "Available: standard, aggressive, bypass"),
             )
 
         if command.startswith("/mode "):

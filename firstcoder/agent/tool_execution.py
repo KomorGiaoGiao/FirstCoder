@@ -273,11 +273,7 @@ class ToolExecutor:
                 "delegate 该角色不支持后台执行；仅 researcher/reviewer/tester/coder 可后台运行。",
                 background_rejected="role_not_allowed",
             )
-        if (
-            tool_call.name == "delegate"
-            and self._delegate_call_requires_worktree(tool_call)
-            and not self._worktree_isolation_available()
-        ):
+        if tool_call.name == "delegate" and self._delegate_call_requires_worktree(tool_call) and not self._worktree_isolation_available():
             return make_error_result(
                 tool_call.name,
                 "后台 coder 需要 git worktree 隔离，但当前项目不是 git 仓库；请在 git 仓库内使用，或改用前台 coder。",
@@ -333,16 +329,14 @@ class ToolExecutor:
         if plan is None:
             return make_error_result(
                 tool_name,
-                f"Cannot start background work for task_id {task_id!r}: no current task plan. "
-                "Call task_create first, or remove task_id.",
+                f"Cannot start background work for task_id {task_id!r}: no current task plan. " "Call task_create first, or remove task_id.",
                 background_rejected="task_plan_missing",
                 task_id=task_id,
             )
         if not any(task.id == task_id for task in plan.tasks):
             return make_error_result(
                 tool_name,
-                f"Cannot start background work: task_id {task_id!r} is not in the current task plan. "
-                "Call task_list, then retry with an existing task ID.",
+                f"Cannot start background work: task_id {task_id!r} is not in the current task plan. " "Call task_list, then retry with an existing task ID.",
                 background_rejected="task_not_found",
                 task_id=task_id,
                 actual_revision=plan.revision,
@@ -365,10 +359,7 @@ class ToolExecutor:
             try:
                 if task.status == "pending":
                     if plan.revision != observed_revision:
-                        return (
-                            f"TaskPlan task {task_id!r} was not updated because it returned to pending "
-                            "after this background job started."
-                        )
+                        return f"TaskPlan task {task_id!r} was not updated because it returned to pending " "after this background job started."
                     if task_id not in ready_task_ids(plan):
                         return f"TaskPlan task {task_id!r} was not updated because it is pending and blocked."
                     plan = service.update(
@@ -423,10 +414,7 @@ class ToolExecutor:
                 ),
                 permission_request=preflight.request,
             )
-        review_only = (
-            preflight.decision.kind == PermissionDecisionKind.ALLOW
-            and self.requires_prewrite_review(tool_call)
-        )
+        review_only = preflight.decision.kind == PermissionDecisionKind.ALLOW and self.requires_prewrite_review(tool_call)
         if preflight.decision.kind == PermissionDecisionKind.ASK or review_only:
             pending = self.store_pending_permission_request(
                 tool_call=tool_call,
@@ -488,11 +476,7 @@ class ToolExecutor:
 
     def requires_prewrite_review(self, tool_call: ToolCall) -> bool:
         manager = self.session.permission_manager
-        return (
-            self.session.require_prewrite_review
-            and (manager is None or manager.mode != PermissionMode.BYPASS)
-            and supports_prewrite_review(tool_call.name)
-        )
+        return self.session.require_prewrite_review and (manager is None or manager.mode != PermissionMode.BYPASS) and supports_prewrite_review(tool_call.name)
 
     def requires_bypass_prewrite_review(self, tool_call: ToolCall) -> bool:
         manager = self.session.permission_manager
@@ -569,11 +553,7 @@ class ToolExecutor:
         if self.session.permission_manager is None:
             raise RuntimeError("permission confirmation requires a permission manager")
 
-        confirmation = (
-            self.session.permission_manager.build_prewrite_review_confirmation(request)
-            if review_only
-            else self.session.permission_manager.build_confirmation(request)
-        )
+        confirmation = self.session.permission_manager.build_prewrite_review_confirmation(request) if review_only else self.session.permission_manager.build_confirmation(request)
         prewrite_review = None
         if supports_prewrite_review(tool_call.name):
             prewrite_review = build_prewrite_review(

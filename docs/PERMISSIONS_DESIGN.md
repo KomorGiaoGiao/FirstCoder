@@ -102,8 +102,8 @@ An “allow always” is converted to a calculated scope via
 
 `UserInputRequest` / `UserInputOption` are defined in
 `firstcoder.runtime.user_input` so `permissions`, `tools`, and UI code can share
-them **without** importing `firstcoder.agent`. Compatibility re-exports may still
-exist under `agent.user_input` for older call sites.
+them **without** importing `firstcoder.agent`. `agent.user_input` only owns
+agent-turn result types.
 
 ## Pause, Resume, and Replay
 

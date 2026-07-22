@@ -39,10 +39,7 @@ def create_background_status_tool(
     return Tool(
         definition=ToolDefinition(
             name="background_status",
-            description=(
-                "Inspect background jobs started with run_in_background. Omit job_id to list "
-                "all jobs, or pass a job_id to see one job's status and result availability."
-            ),
+            description=("Inspect background jobs started with run_in_background. Omit job_id to list " "all jobs, or pass a job_id to see one job's status and result availability."),
             parameters=object_schema(
                 {
                     "job_id": property_schema(
@@ -69,18 +66,14 @@ def create_background_cancel_tool(
             return make_error_result("background_cancel", f"未找到后台任务：{job_id}")
         return make_text_result(
             "background_cancel",
-            f"Background job {job.id} is now {job.status}"
-            + (" (cancellation requested)." if job.cancel_requested else "."),
+            f"Background job {job.id} is now {job.status}" + (" (cancellation requested)." if job.cancel_requested else "."),
             job=job.snapshot(),
         )
 
     return Tool(
         definition=ToolDefinition(
             name="background_cancel",
-            description=(
-                "Request cancellation of a background job by id. Jobs that already finished "
-                "are returned unchanged; running jobs stop only if the tool honours cancellation."
-            ),
+            description=("Request cancellation of a background job by id. Jobs that already finished " "are returned unchanged; running jobs stop only if the tool honours cancellation."),
             parameters=object_schema(
                 {
                     "job_id": property_schema(

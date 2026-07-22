@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
+from typing import Any
 
 from firstcoder.config import AppConfig, load_config
 from firstcoder.config.models import ModelProfile
@@ -60,35 +62,19 @@ def create_provider_from_config(config: AppConfig) -> ChatProvider:
         raise ProviderConfigError(f"缺少环境变量：{preset.api_key_env}")
 
     model = _provider_model(config, preset.model_env, default=preset.default_model, provider_name=preset.name)
-    base_url = (
-        config.get_provider_value("base_url", env=preset.base_url_env, provider_name=preset.name)
-        if preset.base_url_env
-        else config.get_provider_value("base_url", provider_name=preset.name)
-    )
+    base_url = config.get_provider_value("base_url", env=preset.base_url_env, provider_name=preset.name) if preset.base_url_env else config.get_provider_value("base_url", provider_name=preset.name)
     base_url = base_url or preset.default_base_url
 
-    if preset.kind == "openai-compatible":
-        return OpenAICompatibleProvider(
-            name=preset.name,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            capabilities=preset.capabilities,
-            extra_headers=preset.extra_headers,
-            extra_body=preset.extra_body,
-        )
-
-    if preset.kind == "anthropic":
-        return AnthropicProvider(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            capabilities=preset.capabilities,
-            extra_headers=preset.extra_headers,
-            extra_body=preset.extra_body,
-        )
-
-    raise ProviderConfigError(f"provider 类型未实现：{preset.kind}")
+    return _create_provider_instance(
+        kind=preset.kind,
+        name=preset.name,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        capabilities=preset.capabilities,
+        extra_headers=preset.extra_headers,
+        extra_body=preset.extra_body,
+    )
 
 
 def create_provider_for_model(config: AppConfig, profile: ModelProfile) -> ChatProvider:
@@ -124,9 +110,7 @@ def _create_catalog_openai_compatible(config: AppConfig, profile: ModelProfile) 
     api_key, env_name = _catalog_api_key(config, profile, "FIRSTCODER_API_KEY")
     if not api_key:
         raise ProviderConfigError(f"缺少环境变量：{env_name}")
-    capabilities = _catalog_capabilities(
-        ProviderCapabilities(supports_streaming=True), profile
-    )
+    capabilities = _catalog_capabilities(ProviderCapabilities(supports_streaming=True), profile)
     return OpenAICompatibleProvider(
         name=profile.provider.id,
         model=profile.model_id,
@@ -148,47 +132,57 @@ def _create_catalog_preset(config: AppConfig, profile: ModelProfile) -> ChatProv
         base_url = config.get_env(preset.base_url_env)
     base_url = base_url or preset.default_base_url
     capabilities = _catalog_capabilities(preset.capabilities, profile)
-    if preset.kind == "openai-compatible":
-        return OpenAICompatibleProvider(
-            name=profile.provider.id,
-            model=profile.model_id,
-            api_key=api_key,
-            base_url=base_url,
-            capabilities=capabilities,
-            extra_headers=preset.extra_headers,
-            extra_body=preset.extra_body,
-        )
-    if preset.kind == "anthropic":
-        return AnthropicProvider(
-            name=profile.provider.id,
-            model=profile.model_id,
-            api_key=api_key,
-            base_url=base_url,
-            capabilities=capabilities,
-            extra_headers=preset.extra_headers,
-            extra_body=preset.extra_body,
-        )
-    raise ProviderConfigError(f"provider 类型未实现：{preset.kind}")
+    return _create_provider_instance(
+        kind=preset.kind,
+        name=profile.provider.id,
+        model=profile.model_id,
+        api_key=api_key,
+        base_url=base_url,
+        capabilities=capabilities,
+        extra_headers=preset.extra_headers,
+        extra_body=preset.extra_body,
+    )
+
+
+def _create_provider_instance(
+    *,
+    kind: str,
+    name: str,
+    model: str,
+    api_key: str,
+    base_url: str | None,
+    capabilities: ProviderCapabilities,
+    extra_headers: Mapping[str, str] | None = None,
+    extra_body: Mapping[str, Any] | None = None,
+) -> ChatProvider:
+    provider_class = {
+        "openai-compatible": OpenAICompatibleProvider,
+        "anthropic": AnthropicProvider,
+    }.get(kind)
+    if provider_class is None:
+        raise ProviderConfigError(f"provider 类型未实现：{kind}")
+    return provider_class(
+        name=name,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        capabilities=capabilities,
+        extra_headers=dict(extra_headers or {}),
+        extra_body=dict(extra_body or {}),
+    )
 
 
 def _create_custom_openai_compatible(config: AppConfig) -> ChatProvider:
-    """创建 OpenAI-compatible provider。
+    """从环境变量或显式 provider 配置创建 OpenAI-compatible provider。"""
 
-    兼容旧的 FIRSTCODER_* 环境变量，同时支持配置文件：
-
-    model = "yurenapi/gpt-5.5"
-    [provider]
-    type = "openai-compatible"
-    name = "yurenapi"
-    base_url = "https://example.com/v1"
-    api_key_env = "YURENAPI_API_KEY"
-    """
-
-    provider_display_name = config.get_provider_value(
-        "name",
-        env="FIRSTCODER_PROVIDER_NAME",
-        default="openai-compatible",
-    ) or "openai-compatible"
+    provider_display_name = (
+        config.get_provider_value(
+            "name",
+            env="FIRSTCODER_PROVIDER_NAME",
+            default=config.provider_name,
+        )
+        or config.provider_name
+    )
     api_key = _provider_api_key(config, "FIRSTCODER_API_KEY", provider_name=provider_display_name)
     if not api_key:
         configured_key_env = config.get_provider_value("api_key_env", provider_name=provider_display_name)
@@ -241,7 +235,7 @@ def _provider_model(
     env_model = config.get_env(fallback_env)
     if env_model:
         return env_model
-    configured = config.get_config_value("model")
+    configured = config.get_config_value("default_model")
     if configured:
         if "/" in configured:
             configured_provider, configured_model = configured.split("/", 1)

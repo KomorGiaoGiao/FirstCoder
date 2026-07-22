@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 import tomlkit
 from tomlkit import TOMLDocument
 
-
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 _ENVIRONMENT_VARIABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

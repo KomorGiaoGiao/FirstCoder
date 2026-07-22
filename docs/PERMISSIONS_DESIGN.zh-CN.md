@@ -70,7 +70,7 @@ Mode 影响 policy：
 
 ## 共享请求类型归属
 
-`UserInputRequest` / `UserInputOption` 定义在 `firstcoder.runtime.user_input`，这样 `permissions`、`tools` 和 UI 可以共享它们，**不必** import `firstcoder.agent`。`agent.user_input` 仍可能再导出兼容旧调用点。
+`UserInputRequest` / `UserInputOption` 定义在 `firstcoder.runtime.user_input`，这样 `permissions`、`tools` 和 UI 可以共享它们，**不必** import `firstcoder.agent`。`agent.user_input` 只保留 agent turn 的结果类型。
 
 ## 暂停、恢复与回放
 

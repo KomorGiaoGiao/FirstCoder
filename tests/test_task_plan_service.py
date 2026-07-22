@@ -24,11 +24,7 @@ def _service(tmp_path, *, session_id: str = "sess_plan") -> tuple[
 
 
 def _plan_events(store: JsonlSessionStore, session_id: str = "sess_plan"):
-    return [
-        event
-        for event in store.list_events(session_id)
-        if event.type == "task_plan_updated"
-    ]
+    return [event for event in store.list_events(session_id) if event.type == "task_plan_updated"]
 
 
 def test_create_returns_projection_and_writes_exactly_one_replayable_event(
@@ -98,13 +94,9 @@ def test_update_and_revise_each_write_one_event_with_reducer_changes(tmp_path) -
     events = _plan_events(store)
     assert len(events) == 3
     assert events[1].payload["operation"] == "update"
-    assert events[1].payload["changes"] == [
-        {"id": "inspect", "status": "completed", "owner": "main"}
-    ]
+    assert events[1].payload["changes"] == [{"id": "inspect", "status": "completed", "owner": "main"}]
     assert events[2].payload["operation"] == "revise"
-    assert events[2].payload["changes"] == [
-        {"id": "implement", "content": "Implement and verify"}
-    ]
+    assert events[2].payload["changes"] == [{"id": "implement", "content": "Implement and verify"}]
     assert store.rebuild_session_view("sess_plan").task_plan == revised.plan
 
 
@@ -112,9 +104,7 @@ def test_update_and_revise_each_write_one_event_with_reducer_changes(tmp_path) -
     "mutate",
     [
         pytest.param(
-            lambda service: service.create(
-                mode="linear", expected_revision=1, tasks=[]
-            ),
+            lambda service: service.create(mode="linear", expected_revision=1, tasks=[]),
             id="create",
         ),
         pytest.param(

@@ -18,8 +18,7 @@ def execute_task_plan_mutation(
     except TaskPlanRevisionConflict as error:
         return make_error_result(
             tool_name,
-            f"Revision conflict: expected {error.expected}, actual {error.actual}. "
-            "Call task_list, then retry with the latest revision.",
+            f"Revision conflict: expected {error.expected}, actual {error.actual}. " "Call task_list, then retry with the latest revision.",
             expected_revision=error.expected,
             actual_revision=error.actual,
         )

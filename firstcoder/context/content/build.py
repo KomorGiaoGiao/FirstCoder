@@ -8,15 +8,13 @@ from dataclasses import dataclass
 from firstcoder.context.content.router import RouteCompactResult, RouteContentType, RouteContext
 from firstcoder.context.models import MessagePart
 
-
 _ERROR_RE = re.compile(
     r"(ERROR|FAILED|FAIL\b|FATAL|Traceback \(most recent call last\)|Exception|AssertionError|npm ERR!|panic|error:)",
     re.IGNORECASE,
 )
 _WARNING_RE = re.compile(r"\b(WARN|WARNING|warning:)\b", re.IGNORECASE)
 _SUMMARY_RE = re.compile(
-    r"(^=+|^-+|\b\d+\s+(passed|failed|skipped|error|errors|warning|warnings)\b|"
-    r"\b(Build|Compile|Test|Tests|Suites?).*(succeeded|failed|complete|passed)\b)",
+    r"(^=+|^-+|\b\d+\s+(passed|failed|skipped|error|errors|warning|warnings)\b|" r"\b(Build|Compile|Test|Tests|Suites?).*(succeeded|failed|complete|passed)\b)",
     re.IGNORECASE,
 )
 _STACK_RE = re.compile(

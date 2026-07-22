@@ -32,7 +32,6 @@ class CliConfig:
 CliRunner = Callable[[CliConfig], str]
 
 
-
 def read_message(message: str | None, *, stdin_text: str | None = None) -> str:
     """Return a user message from an argument or stdin."""
 
@@ -187,7 +186,7 @@ def run_benchmark_turn(config: CliConfig) -> str:
 def create_cli_app(config: CliConfig):
     provider = None
     # A fully qualified --model selects the catalog profile in the app factory;
-    # do not pre-create the legacy provider override in that case.
+    # do not pre-create a separate provider override in that case.
     if config.provider_name is not None and config.model_spec is None:
         from firstcoder.providers.factory import create_provider
 
@@ -308,7 +307,7 @@ def _key_values(values: list[str], option: str) -> dict[str, str]:
 
 
 def _effective_model(config) -> str:
-    model = config.get_config_value("model") or config.get_env("FIRSTCODER_MODEL")
+    model = config.get_config_value("default_model") or config.get_env("FIRSTCODER_MODEL")
     return model or "<provider default>"
 
 
@@ -456,11 +455,7 @@ def _permission_choice_for_text(text: str, pending: object) -> str | None:
 def _permission_options_text(pending: object) -> str:
     question = _pending_question(pending)
     options = _permission_options(pending)
-    option_lines = [
-        f"  {index}. {_option_label(option)}"
-        + (f" ({_option_id(option)})" if _option_id(option) != _option_label(option) else "")
-        for index, option in enumerate(options, start=1)
-    ]
+    option_lines = [f"  {index}. {_option_label(option)}" + (f" ({_option_id(option)})" if _option_id(option) != _option_label(option) else "") for index, option in enumerate(options, start=1)]
     if not option_lines:
         option_lines = [
             "  1. Deny",

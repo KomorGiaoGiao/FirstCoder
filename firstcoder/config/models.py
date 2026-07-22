@@ -155,60 +155,41 @@ def _request_options(raw: Any, *, ref: str) -> ModelRequestOptions:
 def build_model_catalog(
     global_config: Mapping[str, Any] | None = None,
     project_config: Mapping[str, Any] | None = None,
-    *,
-    legacy_provider_name: str | None = None,
-    env: Mapping[str, str] | None = None,
 ) -> ModelCatalog:
     """合并全局/项目 TOML，并构造不可变模型目录。"""
     providers_raw = _merged_sections(global_config, project_config, "providers")
     models_raw = _merged_sections(global_config, project_config, "models")
-    if models_raw:
-        providers = {provider_id: _provider_profile(provider_id, raw) for provider_id, raw in providers_raw.items()}
-        profiles: list[ModelProfile] = []
-        for ref, raw in sorted(models_raw.items()):
-            if not isinstance(ref, str) or "/" not in ref:
-                raise ModelCatalogError(f"模型引用无效：{ref}")
-            provider_id, model_id = ref.split("/", 1)
-            if not provider_id or not model_id:
-                raise ModelCatalogError(f"模型引用无效：{ref}")
-            provider = providers.get(provider_id)
-            if provider is None:
-                raise ModelCatalogError(f"模型 {ref} 指向的 provider {provider_id} 缺失")
-            if not isinstance(raw, dict):
-                raise ModelCatalogError(f"模型 {ref} 必须是表")
-            label = raw.get("label", ref)
-            if not isinstance(label, str):
-                raise ModelCatalogError(f"模型 {ref}.label 必须是字符串")
-            profiles.append(ModelProfile(ref, provider_id, model_id, label, provider, _request_options(raw.get("request"), ref=ref)))
-        default_ref = _config_value(project_config, "default_model") or _config_value(global_config, "default_model")
-        if default_ref is None:
-            default_ref = _config_value(project_config, "model") or _config_value(global_config, "model")
-        if default_ref is not None and default_ref not in {profile.ref for profile in profiles}:
-            raise ModelCatalogError(f"默认模型未配置：{default_ref}")
-        return ModelCatalog(default_ref=default_ref, profiles=tuple(profiles))
+    if not models_raw:
+        if any(config and ("model" in config or "provider" in config) for config in (global_config, project_config)):
+            raise ModelCatalogError("旧的 model + [provider] 配置已不受支持；请迁移到 default_model + [providers] + [models]")
+        return ModelCatalog(default_ref=None, profiles=())
 
-    return _build_legacy_catalog(global_config, project_config, legacy_provider_name=legacy_provider_name)
+    providers = {provider_id: _provider_profile(provider_id, raw) for provider_id, raw in providers_raw.items()}
+    profiles: list[ModelProfile] = []
+    for ref, raw in sorted(models_raw.items()):
+        if not isinstance(ref, str) or "/" not in ref:
+            raise ModelCatalogError(f"模型引用无效：{ref}")
+        provider_id, model_id = ref.split("/", 1)
+        if not provider_id or not model_id:
+            raise ModelCatalogError(f"模型引用无效：{ref}")
+        provider = providers.get(provider_id)
+        if provider is None:
+            raise ModelCatalogError(f"模型 {ref} 指向的 provider {provider_id} 缺失")
+        if not isinstance(raw, dict):
+            raise ModelCatalogError(f"模型 {ref} 必须是表")
+        label = raw.get("label", ref)
+        if not isinstance(label, str):
+            raise ModelCatalogError(f"模型 {ref}.label 必须是字符串")
+        profiles.append(ModelProfile(ref, provider_id, model_id, label, provider, _request_options(raw.get("request"), ref=ref)))
+    default_ref = _config_value(project_config, "default_model") or _config_value(global_config, "default_model")
+    if default_ref is not None and default_ref not in {profile.ref for profile in profiles}:
+        raise ModelCatalogError(f"默认模型未配置：{default_ref}")
+    return ModelCatalog(default_ref=default_ref, profiles=tuple(profiles))
 
 
 def _config_value(config: Mapping[str, Any] | None, name: str) -> str | None:
     value = config.get(name) if config else None
     return value if isinstance(value, str) and value else None
-
-
-def _build_legacy_catalog(global_config: Mapping[str, Any] | None, project_config: Mapping[str, Any] | None, *, legacy_provider_name: str | None) -> ModelCatalog:
-    model = _config_value(project_config, "model") or _config_value(global_config, "model")
-    if not model:
-        return ModelCatalog(default_ref=None, profiles=())
-    if "/" in model:
-        provider_id, model_id = model.split("/", 1)
-    else:
-        provider_id, model_id = legacy_provider_name or "openai", model
-    provider_raw = _deep_merge_dicts(_section(global_config, "provider"), _section(project_config, "provider"))
-    provider_id = str(provider_raw.get("name") or provider_id)
-    provider_raw.setdefault("type", legacy_provider_name or "openai-compatible")
-    provider = _provider_profile(provider_id, provider_raw)
-    profile = ModelProfile(model if "/" in model else f"{provider_id}/{model_id}", provider_id, model_id, model_id, provider, ModelRequestOptions())
-    return ModelCatalog(default_ref=profile.ref, profiles=(profile,))
 
 
 __all__ = [

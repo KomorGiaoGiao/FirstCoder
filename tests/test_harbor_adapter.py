@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-
 pytest.importorskip("harbor")
 
 from benchmark.harbor.firstcoder_agent import (  # noqa: E402
@@ -71,8 +70,8 @@ def test_harbor_agent_rejects_invalid_tool_round_limit(tmp_path: Path) -> None:
 def test_harbor_install_prefers_a_suitable_existing_python() -> None:
     command = _install_command("/installed-agent/firstcoder-src")
 
-    assert 'for candidate in python3.12 python3.11 python3' in command
-    assert 'sys.version_info < (3, 11)' in command
+    assert "for candidate in python3.12 python3.11 python3" in command
+    assert "sys.version_info < (3, 11)" in command
     assert '--python "$PYTHON_BIN" --clear' in command
 
 
@@ -103,7 +102,7 @@ def test_harbor_agent_bootstraps_python_311_before_installing(tmp_path: Path) ->
     command = agent._python_setup_command()
 
     assert 'missing_packages+=("python3.11" "python3.11-venv")' in command
-    assert 'apt-get install -y --no-install-recommends' in command
+    assert "apt-get install -y --no-install-recommends" in command
     assert '"$PYTHON_BIN" -m venv "$venv_probe/test-venv"' in command
-    assert 'for candidate in python3.12 python3.11 python3; do' in command
+    assert "for candidate in python3.12 python3.11 python3; do" in command
     assert '"$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"' in command

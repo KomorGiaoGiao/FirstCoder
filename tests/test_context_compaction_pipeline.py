@@ -166,9 +166,7 @@ def test_compaction_event_records_full_schema(tmp_path: Path) -> None:
 
 
 def test_l2_routes_derived_search_and_stores_raw_backing(tmp_path: Path) -> None:
-    raw_content = "\n".join(
-        f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160)
-    )
+    raw_content = "\n".join(f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160))
     view = SessionView(
         session_id="sess_test",
         messages=[
@@ -313,9 +311,7 @@ def test_l2_routes_build_and_diff_derived_results_with_raw_backing(tmp_path: Pat
 
 
 def test_l2_then_l3_uses_existing_raw_backing_and_is_idempotent(tmp_path: Path) -> None:
-    raw_content = "\n".join(
-        f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160)
-    )
+    raw_content = "\n".join(f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160))
     view = SessionView(
         session_id="sess_test",
         messages=[
@@ -356,9 +352,7 @@ def test_l2_then_l3_uses_existing_raw_backing_and_is_idempotent(tmp_path: Path) 
 
 
 def test_per_result_pressure_runs_l2_then_l3_below_total_budget(tmp_path: Path) -> None:
-    raw_content = "\n".join(
-        f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160)
-    )
+    raw_content = "\n".join(f"firstcoder/app.py:{line}: def function_{line}(): pass" for line in range(1, 160))
     view = SessionView(
         session_id="sess_test",
         messages=[
@@ -1080,9 +1074,7 @@ def test_task_switch_compaction_saves_context_without_breaking_tool_transaction(
     """A task switch must release old dialogue/output while retaining legal calls."""
 
     old_dialogue = "old-task discussion that is no longer actionable\n" * 240
-    old_search_output = "\n".join(
-        f"firstcoder/old_module.py:{line}: obsolete_symbol_{line}" for line in range(1, 500)
-    )
+    old_search_output = "\n".join(f"firstcoder/old_module.py:{line}: obsolete_symbol_{line}" for line in range(1, 500))
     current_request = "Implement the new task and keep this request visible."
     view = SessionView(
         session_id="sess_test",

@@ -9,7 +9,6 @@ from html.parser import HTMLParser
 from firstcoder.context.content.router import RouteCompactResult, RouteContentType, RouteContext
 from firstcoder.context.models import MessagePart
 
-
 _SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas"}
 _HEADING_TAGS = {"h1", "h2", "h3"}
 

@@ -297,9 +297,7 @@ class ObservingStreamingProvider(ChatProvider):
         tool_call = self.response.tool_calls[0]
         yield ChatStreamEvent(kind="tool_call_started", tool_call_id=tool_call.id, tool_name=tool_call.name)
         yield ChatStreamEvent(kind="tool_call_completed", tool_call=tool_call)
-        self.tool_results_before_message_completed = len(
-            [message for message in self.session.rebuild_view().messages if message.role == "tool"]
-        )
+        self.tool_results_before_message_completed = len([message for message in self.session.rebuild_view().messages if message.role == "tool"])
         yield ChatStreamEvent(kind="message_completed", response=self.response)
 
 
@@ -555,9 +553,7 @@ def test_agent_loop_appends_user_and_assistant_messages(tmp_path) -> None:
 
 def test_agent_loop_projects_image_attachment_into_provider_request(tmp_path) -> None:
     image = tmp_path / "image.png"
-    image.write_bytes(
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    )
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01")
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     session = AgentSession.create(store=store, session_id="sess_image_request")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="收到图片")])
@@ -668,11 +664,7 @@ def test_sync_and_streaming_tool_loops_persist_equivalent_terminal_state(tmp_pat
     provider = StreamingProvider(responses) if streaming else FakeProvider(responses)
     loop = AgentLoop(session=session, provider=provider, tools=[_echo_tool()])
 
-    response = (
-        loop.run_user_turn_streaming_sync("调用工具")
-        if streaming
-        else loop.run_user_turn("调用工具")
-    )
+    response = loop.run_user_turn_streaming_sync("调用工具") if streaming else loop.run_user_turn("调用工具")
 
     view = session.rebuild_view()
     assert response.content == "完成"
@@ -962,9 +954,7 @@ def test_agent_loop_streaming_retries_once_after_prompt_too_long_compaction(tmp_
     )
     context_manager = PromptTooLongSuccessContextManager()
 
-    result = AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync(
-        "问题"
-    )
+    result = AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync("问题")
 
     assert result.content == "ok"
     assert len(provider.requests) == 2
@@ -1097,9 +1087,7 @@ def test_agent_loop_streaming_prompt_too_long_does_not_retry_when_compaction_fai
     context_manager = RecordingContextManager(status="failed", reason="l4_service_missing")
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync(
-            "问题"
-        )
+        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync("问题")
 
     assert exc_info.value.kind == ProviderErrorKind.PROMPT_TOO_LONG
     assert len(provider.requests) == 1
@@ -1512,7 +1500,7 @@ def test_agent_loop_does_not_persist_unexecuted_tool_calls_after_round_limit(tmp
         session=session,
         provider=provider,
         tools=[_echo_tool()],
-        max_tool_rounds=1,
+        limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=400, max_turn_seconds=3600),
     ).run_user_turn("连续工具")
 
     assert not result.tool_calls
@@ -1560,7 +1548,7 @@ def test_task_boundary_classification_prompt_defines_same_and_uncertain() -> Non
     prompt = CLASSIFICATION_PROMPT
 
     assert "continuation or follow-up of the active task" in prompt
-    assert "Use \"uncertain\" only when the conversation does not provide enough information" in prompt
+    assert 'Use "uncertain" only when the conversation does not provide enough information' in prompt
 
 
 def test_agent_loop_retries_invalid_boundary_json_then_records_valid_observation(tmp_path) -> None:
@@ -1688,15 +1676,8 @@ def test_agent_loop_runs_task_plan_reconciliation_before_final_answer(tmp_path) 
     assert response.content == "还需要跑测试，我继续。"
     assert len(provider.requests) == 3
     reconciliation = provider.requests[2].messages
-    assert any(
-        message.role == "system" and "unfinished linear task plan" in message.content
-        for message in reconciliation
-    )
-    assert all(
-        "unfinished linear task plan" not in part.content
-        for message in store.rebuild_session_view("sess_task_plan_self_check").messages
-        for part in message.parts
-    )
+    assert any(message.role == "system" and "unfinished linear task plan" in message.content for message in reconciliation)
+    assert all("unfinished linear task plan" not in part.content for message in store.rebuild_session_view("sess_task_plan_self_check").messages for part in message.parts)
 
 
 def test_runtime_instruction_is_ephemeral_and_only_applies_to_one_request(tmp_path) -> None:
@@ -1714,16 +1695,9 @@ def test_runtime_instruction_is_ephemeral_and_only_applies_to_one_request(tmp_pa
     loop._complete_once(runtime_instruction="Reconcile task plan state")
     loop._complete_once()
 
-    assert any(
-        message.role == "system" and message.content == "Reconcile task plan state"
-        for message in provider.requests[0].messages
-    )
+    assert any(message.role == "system" and message.content == "Reconcile task plan state" for message in provider.requests[0].messages)
     assert all(message.content != "Reconcile task plan state" for message in provider.requests[1].messages)
-    assert all(
-        "Reconcile task plan state" not in part.content
-        for message in session.rebuild_view().messages
-        for part in message.parts
-    )
+    assert all("Reconcile task plan state" not in part.content for message in session.rebuild_view().messages for part in message.parts)
 
 
 def test_runtime_instruction_survives_prompt_too_long_retry(tmp_path) -> None:
@@ -1746,10 +1720,7 @@ def test_runtime_instruction_survives_prompt_too_long_retry(tmp_path) -> None:
 
     assert response.content == "ok"
     assert len(provider.requests) == 2
-    assert all(
-        any(message.role == "system" and message.content == "Reconcile task plan state" for message in request.messages)
-        for request in provider.requests
-    )
+    assert all(any(message.role == "system" and message.content == "Reconcile task plan state" for message in request.messages) for request in provider.requests)
 
 
 def test_agent_loop_skips_task_plan_reconciliation_when_all_tasks_done(tmp_path) -> None:
@@ -1893,12 +1864,7 @@ def test_agent_loop_executes_incremental_task_plan_updates_after_reconciliation(
 
     assert response.content == "现在完成了"
     view = store.rebuild_session_view("sess_task_plan_self_check_tools")
-    tool_result_ids = [
-        part.metadata["tool_call_id"]
-        for message in view.messages
-        for part in message.parts
-        if part.kind == "tool_result"
-    ]
+    tool_result_ids = [part.metadata["tool_call_id"] for message in view.messages for part in message.parts if part.kind == "tool_result"]
     assert tool_result_ids == ["call_plan_create", "call_echo", "call_plan_done"]
     plan_events = [event for event in store.list_events("sess_task_plan_self_check_tools") if event.type == "task_plan_updated"]
     assert [event.payload["revision"] for event in plan_events] == [1, 2]
@@ -1946,11 +1912,7 @@ def test_agent_loop_runs_task_plan_reconciliation_at_most_once_per_user_turn(tmp
     response = AgentLoop(session=session, provider=provider).run_user_turn("执行任务")
 
     assert response.content == "仍有未完成项"
-    reconciliation_requests = [
-        request
-        for request in provider.requests
-        if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)
-    ]
+    reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)]
     assert len(reconciliation_requests) == 1
 
 
@@ -1982,14 +1944,7 @@ def test_agent_loop_resets_task_plan_reconciliation_for_each_user_turn(tmp_path)
 
     assert first.content == "第一轮仍有未完成任务"
     assert second.content == "第二轮仍有未完成任务"
-    reconciliation_requests = [
-        request
-        for request in provider.requests
-        if any(
-            message.role == "system" and "unfinished linear task plan" in message.content
-            for message in request.messages
-        )
-    ]
+    reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)]
     assert len(reconciliation_requests) == 2
 
 
@@ -2206,12 +2161,7 @@ def test_agent_loop_propagates_prewrite_review_from_task_plan_reconciliation_wit
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     assert result.pending_input is not None
     assert result.pending_input.payload["pending_tool_call"]["id"] == "call_write_from_self_check"
-    call_ids = [
-        part.metadata["tool_call_id"]
-        for message in store.rebuild_session_view("sess_task_plan_review_pause").messages
-        for part in message.parts
-        if part.kind == "tool_call"
-    ]
+    call_ids = [part.metadata["tool_call_id"] for message in store.rebuild_session_view("sess_task_plan_review_pause").messages for part in message.parts if part.kind == "tool_call"]
     assert call_ids.count("call_write_from_self_check") == 1
 
     resumed = loop.resume_with_user_input(result.pending_input.id, "allow_once")
@@ -2280,11 +2230,7 @@ def test_permission_resume_does_not_repeat_task_plan_reconciliation_for_same_use
 
     assert resumed.response is not None
     assert resumed.response.content == "写入完成，但任务计划尚未更新"
-    reconciliation_requests = [
-        request
-        for request in provider.requests
-        if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)
-    ]
+    reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)]
     assert len(reconciliation_requests) == 1
 
 
@@ -2337,12 +2283,7 @@ def test_agent_loop_streaming_propagates_prewrite_review_from_task_plan_reconcil
     assert response.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
     pending = response.raw["pending_input"]
     assert pending.payload["pending_tool_call"]["id"] == "call_stream_write_from_self_check"
-    call_ids = [
-        part.metadata["tool_call_id"]
-        for message in store.rebuild_session_view("sess_stream_task_plan_review_pause").messages
-        for part in message.parts
-        if part.kind == "tool_call"
-    ]
+    call_ids = [part.metadata["tool_call_id"] for message in store.rebuild_session_view("sess_stream_task_plan_review_pause").messages for part in message.parts if part.kind == "tool_call"]
     assert call_ids.count("call_stream_write_from_self_check") == 1
 
 
@@ -2409,7 +2350,7 @@ def test_agent_loop_does_not_persist_task_plan_reconciliation_as_user_message(tm
                             "tasks": [
                                 {"id": "inspect", "content": "检查实现", "status": "in_progress"},
                                 {"id": "test", "content": "运行测试", "status": "pending"},
-                            ]
+                            ],
                         },
                     )
                 ],
@@ -2438,7 +2379,7 @@ def test_agent_loop_does_not_persist_task_plan_reconciliation_as_user_message(tm
                             "updates": [
                                 {"id": "inspect", "status": "completed"},
                                 {"id": "test", "status": "completed"},
-                            ]
+                            ],
                         },
                     )
                 ],
@@ -2450,12 +2391,7 @@ def test_agent_loop_does_not_persist_task_plan_reconciliation_as_user_message(tm
 
     AgentLoop(session=session, provider=provider).run_user_turn("完成多步骤任务")
 
-    projected_user_messages = [
-        message.content
-        for request in provider.requests
-        for message in request.messages
-        if message.role == "user"
-    ]
+    projected_user_messages = [message.content for request in provider.requests for message in request.messages if message.role == "user"]
     assert all("unfinished linear task plan" not in text for text in projected_user_messages)
     assert [message.role for message in session.rebuild_view().messages].count("user") == 1
 
@@ -2515,35 +2451,6 @@ def test_agent_loop_allows_unlimited_tool_rounds_when_limit_is_none(tmp_path) ->
             max_turn_seconds=None,
         ),
     ).run_user_turn("调用两轮工具")
-
-    assert response.content == "done"
-    assert response.finish_reason != "tool_round_limit"
-
-
-def test_agent_loop_allows_public_max_tool_rounds_none_override(tmp_path) -> None:
-    store = JsonlSessionStore(tmp_path)
-    session = AgentSession.create(store=store, session_id="sess_public_unlimited_tools", agents_md="")
-    provider = FakeProvider(
-        [
-            ChatResponse(
-                provider="fake",
-                model="fake-model",
-                content="",
-                tool_calls=[ToolCall(id=f"call_echo_{index}", name="echo", arguments={"text": str(index)})],
-                finish_reason="tool_calls",
-            )
-            for index in range(21)
-        ]
-        + [ChatResponse(provider="fake", model="fake-model", content="done")]
-    )
-
-    response = AgentLoop(
-        session=session,
-        provider=provider,
-        tools=[_echo_tool()],
-        max_tool_rounds=None,
-        limits=AgentLoopLimits(max_tool_rounds=20, max_provider_calls=30, max_turn_seconds=None),
-    ).run_user_turn("调用很多轮工具")
 
     assert response.content == "done"
     assert response.finish_reason != "tool_round_limit"
@@ -3044,9 +2951,7 @@ def test_agent_loop_shell_permission_does_not_claim_precomputed_diff(tmp_path) -
                 provider="fake",
                 model="fake-model",
                 content="",
-                tool_calls=[
-                    ToolCall(id="call_shell", name="shell", arguments={"command": "echo hello"})
-                ],
+                tool_calls=[ToolCall(id="call_shell", name="shell", arguments={"command": "echo hello"})],
                 finish_reason="tool_calls",
             )
         ]
@@ -3683,15 +3588,8 @@ def test_agent_loop_reconciles_unfinished_dag_task_plan_before_final_answer(tmp_
     assert response.content == "还需要完成 Code 节点。"
     assert len(provider.requests) == 3
     reconciliation = provider.requests[2].messages
-    assert any(
-        message.role == "system" and "unfinished dag task plan" in message.content
-        for message in reconciliation
-    )
-    assert all(
-        "unfinished dag task plan" not in part.content
-        for message in store.rebuild_session_view("sess_dag_task_plan_self_check").messages
-        for part in message.parts
-    )
+    assert any(message.role == "system" and "unfinished dag task plan" in message.content for message in reconciliation)
+    assert all("unfinished dag task plan" not in part.content for message in store.rebuild_session_view("sess_dag_task_plan_self_check").messages for part in message.parts)
 
 
 def test_agent_loop_runs_dag_task_plan_reconciliation_at_most_once_per_user_turn(tmp_path) -> None:
@@ -3736,9 +3634,5 @@ def test_agent_loop_runs_dag_task_plan_reconciliation_at_most_once_per_user_turn
     response = AgentLoop(session=session, provider=provider).run_user_turn("执行 DAG 任务")
 
     assert response.content == "仍有未完成图节点"
-    reconciliation_requests = [
-        request
-        for request in provider.requests
-        if any(message.role == "system" and "unfinished dag task plan" in message.content for message in request.messages)
-    ]
+    reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished dag task plan" in message.content for message in request.messages)]
     assert len(reconciliation_requests) == 1

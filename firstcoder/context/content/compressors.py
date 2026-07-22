@@ -42,29 +42,6 @@ def compact_old_task_part(part: MessagePart) -> MessagePart:
     )
 
 
-def compact_cold_text_part(part: MessagePart, *, preview_chars: int = 160) -> MessagePart:
-    preview = part.content[:preview_chars]
-    metadata = _compacted_metadata(part, state="route_compacted", compacted_by="l2_current_task_cold")
-    metadata["preview"] = preview
-    metadata["preview_tokens"] = estimate_text_tokens(preview)
-    content = "\n".join(
-        [
-            "[Current task cold content compacted]",
-            f"part_id={part.id}",
-            f"original_tokens={metadata['original_tokens']}",
-            f"preview_tokens={metadata['preview_tokens']}",
-            f"preview={preview}",
-        ]
-    )
-    return MessagePart(
-        id=part.id,
-        message_id=part.message_id,
-        kind=part.kind,
-        content=content,
-        metadata=metadata,
-    )
-
-
 class PlainTextRouteCompressor:
     """派生工具输出的确定性 fallback compressor。
 

@@ -24,8 +24,7 @@ class SessionLike(Protocol):
     runtime_state: SessionRuntimeState
     current_turn: int
 
-    def rebuild_view(self) -> SessionView:
-        ...
+    def rebuild_view(self) -> SessionView: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +80,8 @@ class ContextCommandHandler:
             )
         )
         if _is_noop_compact(result):
-            return (
-                f"Manual compact skipped: {result.programmatic_event.reason} "
-                f"({result.before_tokens} -> {result.after_tokens} tokens)"
-            )
-        return (
-            f"Manual compact {result.status}: {result.reason} "
-            f"({result.before_tokens} -> {result.after_tokens} tokens)"
-        )
+            return f"Manual compact skipped: {result.programmatic_event.reason} " f"({result.before_tokens} -> {result.after_tokens} tokens)"
+        return f"Manual compact {result.status}: {result.reason} " f"({result.before_tokens} -> {result.after_tokens} tokens)"
 
 
 def _render_context_report(report: ContextInspectionReport) -> str:
@@ -121,15 +114,8 @@ def _render_compact_status(report: ContextInspectionReport) -> str:
         lines.append("- none")
     else:
         for event in report.recent_compaction_events:
-            lines.append(
-                "- "
-                f"{event.get('event_type')} "
-                f"{event.get('trigger')} "
-                f"{event.get('status')} "
-                f"{display_value(event.get('reason'))}"
-            )
+            lines.append("- " f"{event.get('event_type')} " f"{event.get('trigger')} " f"{event.get('status')} " f"{display_value(event.get('reason'))}")
     return "\n".join(lines)
-
 
 
 def _manual_target_tokens(estimated_tokens: int) -> int | None:
@@ -139,9 +125,4 @@ def _manual_target_tokens(estimated_tokens: int) -> int | None:
 
 
 def _is_noop_compact(result: ContextCompactResult) -> bool:
-    return (
-        result.programmatic_event is not None
-        and result.programmatic_event.noop
-        and result.l4_event is None
-        and result.before_tokens == result.after_tokens
-    )
+    return result.programmatic_event is not None and result.programmatic_event.noop and result.l4_event is None and result.before_tokens == result.after_tokens

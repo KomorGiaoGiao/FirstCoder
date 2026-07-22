@@ -54,7 +54,6 @@ from firstcoder.app.tui_widgets import (
 )
 from firstcoder.input.attachments import UserAttachment, format_attachment_chip, resolve_paste_attachments
 
-
 __all__ = [
     "ComposerTextArea",
     "FirstCoderApp",
@@ -68,14 +67,10 @@ __all__ = [
 ]
 
 
-
 @dataclass(slots=True)
 class _ActiveChatTurn:
     id: str
     token: int
-    started_at: float
-
-
 
 
 class FirstCoderApp(FirstCoderViewMixin, App[None]):
@@ -313,10 +308,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
 
     def _begin_active_chat_turn(self) -> int:
         token = self._next_chat_turn_token()
+        self._start_turn_metrics()
         self._active_chat_turn = _ActiveChatTurn(
             id=uuid4().hex,
             token=token,
-            started_at=self._start_turn_metrics(),
         )
         return token
 
@@ -421,11 +416,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 if review_command is not None:
                     action, path = review_command
                     if action == "all":
-                        self._review_expanded_paths = {
-                            str(item.get("path") or "")
-                            for item in review_payload.get("files", [])
-                            if isinstance(item, dict)
-                        }
+                        self._review_expanded_paths = {str(item.get("path") or "") for item in review_payload.get("files", []) if isinstance(item, dict)}
                     elif action == "clear":
                         self._review_expanded_paths.clear()
                     elif path:
@@ -495,11 +486,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             self._open_picker(
                 kind=kind,
                 title=title,
-                items=[
-                    item_factory(item)
-                    for item in action.get(items_key, [])
-                    if isinstance(item, dict)
-                ],
+                items=[item_factory(item) for item in action.get(items_key, []) if isinstance(item, dict)],
                 selected_index=int(action.get("selected_index") or 0),
                 empty_text=empty_text,
                 footer=footer,
@@ -711,25 +698,17 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             previous_stream_handler = self._install_stream_event_handler(token)
             previous_tool_handler = self._install_tool_event_handler(token)
             if self._active_chat_turn is None:
+                self._start_turn_metrics()
                 self._active_chat_turn = _ActiveChatTurn(
                     id=uuid4().hex,
                     token=token,
-                    started_at=self._start_turn_metrics(),
                 )
             self._show_working_indicator("planning next step...")
             async_runner = getattr(self.chat_runner, "arun_user_turn", None) if self.chat_runner else None
             if async_runner is not None:
-                response = (
-                    await async_runner(text, attachments=attachments)
-                    if attachments
-                    else await async_runner(text)
-                )
+                response = await async_runner(text, attachments=attachments) if attachments else await async_runner(text)
             else:
-                response = (
-                    self.chat_runner.run_user_turn(text, attachments=attachments)
-                    if attachments
-                    else self.chat_runner.run_user_turn(text)
-                )
+                response = self.chat_runner.run_user_turn(text, attachments=attachments) if attachments else self.chat_runner.run_user_turn(text)
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -753,12 +732,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 self._stream_text_buffer = content
                 if self._stream_text_entry is not None:
                     self._stream_text_entry.body = content
-            display_lines = [
-                line
-                for line in display_lines
-                if looks_like_tool_display_line(line)
-                or normalize_stream_text(line) != normalize_stream_text(self._stream_text_buffer)
-            ]
+            display_lines = [line for line in display_lines if looks_like_tool_display_line(line) or normalize_stream_text(line) != normalize_stream_text(self._stream_text_buffer)]
             self._flush_stream_text()
         if self._live_tool_events_seen:
             display_lines = [line for line in display_lines if not looks_like_tool_display_line(line)]
@@ -786,11 +760,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._set_activity(self._activity_animation_body())
         self._start_activity_animation()
 
-    def _start_turn_metrics(self) -> float:
+    def _start_turn_metrics(self) -> None:
         self._turn_started_at = time.monotonic()
         self._turn_tool_count = 0
         self._running_tool_call_ids = set()
-        return self._turn_started_at
 
     def _turn_elapsed_seconds(self) -> float:
         if not self._turn_started_at:

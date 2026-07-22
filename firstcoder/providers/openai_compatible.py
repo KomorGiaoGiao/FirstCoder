@@ -243,9 +243,7 @@ class OpenAICompatibleProvider(ChatProvider):
         if tool_accumulators and finish_reason != "tool_calls":
             # 如果 stream 结束原因不是 tool_calls，说明这些工具片段没有完整结束语义。
             # 保守做法是不给 agent 任何可执行 tool_call。
-            diagnostics.warnings.append(
-                f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。"
-            )
+            diagnostics.warnings.append(f"finish_reason={finish_reason}，丢弃 streaming 中未以 tool_calls 完成的 tool_calls。")
         elif tool_accumulators:
             tool_calls = complete_stream_tool_calls(
                 tool_accumulators,
@@ -338,11 +336,7 @@ class OpenAICompatibleProvider(ChatProvider):
                     "type": "function",
                     "function": {
                         "name": tool_call.name,
-                        "arguments": (
-                            tool_call.arguments
-                            if isinstance(tool_call.arguments, str)
-                            else dumps_json(tool_call.arguments)
-                        ),
+                        "arguments": (tool_call.arguments if isinstance(tool_call.arguments, str) else dumps_json(tool_call.arguments)),
                     },
                 }
                 for tool_call in message.tool_calls
@@ -367,9 +361,7 @@ class OpenAICompatibleProvider(ChatProvider):
                 # “修复”或执行其中一部分，因为工具调用一旦有副作用就不能靠猜。
                 call_id = _read_field(call, "id", "")
                 name = _read_field(function, "name", "")
-                diagnostics.warnings.append(
-                    f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}"
-                )
+                diagnostics.warnings.append(f"tool_call 参数不是合法 JSON object，已丢弃整组不可执行调用：id={call_id}, name={name}")
                 return []
 
             parsed.append(

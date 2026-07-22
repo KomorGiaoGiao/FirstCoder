@@ -150,9 +150,7 @@ def test_background_delegate_returns_placeholder_and_notification(tmp_path) -> N
             run_in_background=True,
             task_id="research_a",
         )
-        session.append_assistant_response(
-            ChatResponse(provider="fake", model="fake-model", content="", tool_calls=[call], finish_reason="tool_calls")
-        )
+        session.append_assistant_response(ChatResponse(provider="fake", model="fake-model", content="", tool_calls=[call], finish_reason="tool_calls"))
 
         state = loop.tool_executor.execute_interactive([call])
         assert state.pending_input is None
@@ -164,11 +162,7 @@ def test_background_delegate_returns_placeholder_and_notification(tmp_path) -> N
         gate.set()
         assert manager.wait(timeout=5) is True
         loop._append_background_notifications()
-        notifications = [
-            message.parts[0].content
-            for message in session.rebuild_view().messages
-            if message.role == "user" and "<task_notification>" in message.parts[0].content
-        ]
+        notifications = [message.parts[0].content for message in session.rebuild_view().messages if message.role == "user" and "<task_notification>" in message.parts[0].content]
         assert len(notifications) == 1
         assert "<task_id>research_a</task_id>" in notifications[0]
         assert "background child done" in notifications[0]
@@ -198,9 +192,7 @@ def test_coder_delegate_background_rejected_without_git_repo(tmp_path) -> None:
         loop = AgentLoop(session=session, provider=provider, background_manager=manager)
         session.append_user_message("start")
         call = _delegate_call("call_delegate", role="coder", task="edit files", run_in_background=True)
-        session.append_assistant_response(
-            ChatResponse(provider="fake", model="fake-model", content="", tool_calls=[call], finish_reason="tool_calls")
-        )
+        session.append_assistant_response(ChatResponse(provider="fake", model="fake-model", content="", tool_calls=[call], finish_reason="tool_calls"))
 
         loop.tool_executor.execute_interactive([call])
         tool_result = [message for message in session.rebuild_view().messages if message.role == "tool"][0].parts[0]
@@ -257,9 +249,7 @@ def test_isolated_coder_writes_only_in_worktree(tmp_path) -> None:
         ]
     )
     store = JsonlSessionStore(repo / ".fc_sessions")
-    permission_manager = PermissionManager(
-        policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD
-    )
+    permission_manager = PermissionManager(policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD)
     runner = SubagentRunner(
         store=store,
         provider=provider,
@@ -318,9 +308,7 @@ def test_isolated_coder_can_delete_inside_worktree_without_parent_delete(tmp_pat
         provider=provider,
         tools=[],
         project_root=repo,
-        permission_manager=PermissionManager(
-            policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD
-        ),
+        permission_manager=PermissionManager(policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD),
     )
 
     result = runner.run(
@@ -407,14 +395,10 @@ def test_background_coder_uses_worktree_and_leaves_parent_untouched(tmp_path) ->
         ]
     )
     store = JsonlSessionStore(repo / ".fc_sessions")
-    permission_manager = PermissionManager(
-        policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD
-    )
+    permission_manager = PermissionManager(policy=DefaultPermissionPolicy(repo), mode=PermissionMode.STANDARD)
     manager = BackgroundJobManager()
     try:
-        session = AgentSession.create(
-            store=store, session_id="parent_bg_coder", permission_manager=permission_manager
-        )
+        session = AgentSession.create(store=store, session_id="parent_bg_coder", permission_manager=permission_manager)
         loop = AgentLoop(session=session, provider=provider, background_manager=manager)
         _create_task_plan(session, task_id="impl")
         session.append_user_message("start")
@@ -436,20 +420,14 @@ def test_background_coder_uses_worktree_and_leaves_parent_untouched(tmp_path) ->
         )
 
         loop.tool_executor.execute_interactive([call])
-        tool_result = [
-            message for message in session.rebuild_view().messages if message.role == "tool"
-        ][0].parts[0]
+        tool_result = [message for message in session.rebuild_view().messages if message.role == "tool"][0].parts[0]
         assert tool_result.metadata["ok"] is True
         assert tool_result.metadata["data"]["background_job_id"] == "bg_0001"
         assert tool_result.metadata["data"].get("background_rejected") is None
 
         assert manager.wait(timeout=10) is True
         loop._append_background_notifications()
-        notifications = [
-            message.parts[0].content
-            for message in session.rebuild_view().messages
-            if message.role == "user" and "<task_notification>" in message.parts[0].content
-        ]
+        notifications = [message.parts[0].content for message in session.rebuild_view().messages if message.role == "user" and "<task_notification>" in message.parts[0].content]
         assert len(notifications) == 1
         assert "bg_new.py" in notifications[0]
         assert "<task_id>impl</task_id>" in notifications[0]

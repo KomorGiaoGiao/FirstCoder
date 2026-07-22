@@ -59,9 +59,18 @@ def test_builtin_registry_contains_read_only_tools(tmp_path):
     registry = create_builtin_registry(tmp_path)
 
     assert registry.names() == [
-        "ls", "view", "grep", "glob", "tree",
-        "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user",
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+        "think",
+        "read_multi",
+        "ask_user",
     ]
     assert [definition.name for definition in registry.definitions()] == registry.names()
     assert [tool.name for tool in registry.tools()] == registry.names()
@@ -99,10 +108,22 @@ def test_builtin_registry_can_include_mutation_tools_when_explicitly_enabled(tmp
     registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
 
     assert registry.names() == [
-        "ls", "view", "grep", "glob", "tree",
-        "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user",
-        "write", "edit", "delete", "apply_patch",
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+        "think",
+        "read_multi",
+        "ask_user",
+        "write",
+        "edit",
+        "delete",
+        "apply_patch",
     ]
 
 
@@ -110,10 +131,20 @@ def test_builtin_registry_can_include_network_tools_when_explicitly_enabled(tmp_
     registry = create_builtin_registry(tmp_path, include_network_tools=True)
 
     assert registry.names() == [
-        "ls", "view", "grep", "glob", "tree",
-        "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user",
-        "fetch", "web_search",
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+        "think",
+        "read_multi",
+        "ask_user",
+        "fetch",
+        "web_search",
     ]
 
 
@@ -121,10 +152,20 @@ def test_builtin_registry_can_include_execution_tools_when_explicitly_enabled(tm
     registry = create_builtin_registry(tmp_path, include_execution_tools=True)
 
     assert registry.names() == [
-        "ls", "view", "grep", "glob", "tree",
-        "git_status", "git_diff", "git_log",
-        "diagnostics", "think", "read_multi", "ask_user",
-        "shell", "python_exec",
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+        "think",
+        "read_multi",
+        "ask_user",
+        "shell",
+        "python_exec",
     ]
 
 

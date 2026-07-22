@@ -89,9 +89,7 @@ def test_model_command_reports_switch_errors() -> None:
 
 
 def test_model_command_reports_unknown_catalog_model() -> None:
-    result = ModelCommandHandler(FakeSwitcher(error=ValueError("未配置模型：missing/model"))).handle(
-        "/model missing/model"
-    )
+    result = ModelCommandHandler(FakeSwitcher(error=ValueError("未配置模型：missing/model"))).handle("/model missing/model")
 
     assert result.handled is True
     assert result.output == "Model switch failed: 未配置模型：missing/model"

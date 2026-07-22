@@ -38,10 +38,7 @@ def resolve_environment_placeholders(value: Any, env: Mapping[str, str]) -> Any:
     if isinstance(value, tuple):
         return tuple(resolve_environment_placeholders(item, env) for item in value)
     if isinstance(value, Mapping):
-        return {
-            key: resolve_environment_placeholders(item, env)
-            for key, item in value.items()
-        }
+        return {key: resolve_environment_placeholders(item, env) for key, item in value.items()}
     return value
 
 
@@ -85,9 +82,7 @@ def _parse_server(name: object, raw_server: object) -> McpLocalServerConfig | Mc
         name=name,
         url=_url(raw_server.get("url"), name),
         headers=_string_mapping(raw_server.get("headers", {}), name, "headers"),
-        bearer_token_env_var=_environment_variable_name(
-            raw_server.get("bearer_token_env_var"), name, "bearer_token_env_var"
-        ),
+        bearer_token_env_var=_environment_variable_name(raw_server.get("bearer_token_env_var"), name, "bearer_token_env_var"),
         enabled=enabled,
         timeout_ms=timeout_ms,
         allowed_tools=allowed_tools,
@@ -121,9 +116,7 @@ def _url(value: object, name: str) -> str:
 
 
 def _string_mapping(value: object, name: str, field: str) -> dict[str, str]:
-    if not isinstance(value, Mapping) or any(
-        not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()
-    ):
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
         raise McpConfigError(f"MCP 服务器 {name} 的 {field} 必须是字符串映射")
     return dict(value)
 
@@ -151,8 +144,6 @@ def _timeout(value: object, name: str) -> int:
 def _allowed_tools(value: object, name: str) -> tuple[str, ...] | None:
     if value is None:
         return None
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not _ALLOWED_TOOL_NAME.fullmatch(item) for item in value
-    ):
+    if not isinstance(value, list) or any(not isinstance(item, str) or not _ALLOWED_TOOL_NAME.fullmatch(item) for item in value):
         raise McpConfigError(f"MCP 服务器 {name} 的 allowed_tools 必须是有效工具名列表")
     return tuple(value)

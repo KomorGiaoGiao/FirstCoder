@@ -121,7 +121,5 @@ class _StreamableHttpMcpTransport(_SdkMcpTransport):
         self._config = config
 
     async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
-        read_stream, write_stream, _ = await stack.enter_async_context(
-            streamablehttp_client(self._config.url, headers=dict(self._config.headers))
-        )
+        read_stream, write_stream, _ = await stack.enter_async_context(streamablehttp_client(self._config.url, headers=dict(self._config.headers)))
         return read_stream, write_stream
