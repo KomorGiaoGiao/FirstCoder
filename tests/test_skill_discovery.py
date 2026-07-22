@@ -1,7 +1,8 @@
 from pathlib import Path
 
+from firstcoder.skills.catalog import render_skill_catalog
 from firstcoder.skills.discovery import discover_all_skills, discover_project_skills
-from firstcoder.skills.models import SkillSource
+from firstcoder.skills.models import SkillCatalog, SkillDefinition, SkillSource
 
 
 def test_discovers_project_markdown_skills_and_uses_index_as_context(tmp_path: Path) -> None:
@@ -42,6 +43,30 @@ def test_discovers_project_agent_skill_frontmatter(tmp_path: Path) -> None:
     assert skill.source == SkillSource.PROJECT_AGENT_SKILL
 
 
+def test_discovers_quoted_name_and_folded_yaml_description(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".agents" / "skills" / "family-office"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        'name: "family-office-research"\n'
+        "description: >\n"
+        "  Generate comprehensive family office research.\n"
+        "  Use primary sources and verify claims.\n"
+        "triggers:\n"
+        "  - family office\n"
+        "  - 家族办公室\n"
+        "---\n\n"
+        "# Family Office Research\n",
+        encoding="utf-8",
+    )
+
+    skill = discover_project_skills(tmp_path).skills[0]
+
+    assert skill.name == "family-office-research"
+    assert skill.description == "Generate comprehensive family office research. Use primary sources and verify claims."
+    assert skill.triggers == ("family office", "家族办公室")
+
+
 def test_discovers_frontmatter_triggers(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -53,6 +78,20 @@ def test_discovers_frontmatter_triggers(tmp_path: Path) -> None:
     catalog = discover_project_skills(tmp_path)
 
     assert catalog.skills[0].triggers == ("今日资讯", "daily news")
+
+
+def test_non_string_frontmatter_name_and_description_fall_back_safely(tmp_path: Path) -> None:
+    skill_dir = tmp_path / ".agents" / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname:\n  - invalid\ndescription:\n  nested: invalid\n---\n\n# Review safely\n",
+        encoding="utf-8",
+    )
+
+    skill = discover_project_skills(tmp_path).skills[0]
+
+    assert skill.name == "review"
+    assert skill.description == "Review safely"
 
 
 def test_discovers_global_agent_skills_from_default_roots(tmp_path: Path, monkeypatch) -> None:
@@ -120,3 +159,48 @@ def test_catalog_fingerprint_changes_when_skill_metadata_changes(tmp_path: Path)
     after = discover_project_skills(tmp_path).fingerprint
 
     assert before != after
+
+
+def test_resolved_catalog_prefers_project_skill_for_duplicate_name() -> None:
+    global_skill = SkillDefinition(
+        name="review",
+        path="review/SKILL.md",
+        source=SkillSource.GLOBAL_AGENT_SKILL,
+        root="/global",
+        description="Global review rules.",
+    )
+    project_skill = SkillDefinition(
+        name="review",
+        path=".agents/skills/review/SKILL.md",
+        source=SkillSource.PROJECT_AGENT_SKILL,
+        root="/project",
+        description="Project review rules.",
+    )
+
+    resolved = SkillCatalog(skills=[global_skill, project_skill]).resolved()
+
+    assert resolved.skills == [project_skill]
+
+
+def test_render_skill_catalog_hides_filesystem_metadata_and_bounds_whole_lines() -> None:
+    skills = [
+        SkillDefinition(
+            name=f"skill-{index:03d}",
+            path=f"skill-{index:03d}/SKILL.md",
+            source=SkillSource.GLOBAL_AGENT_SKILL,
+            root="/Users/example/.agents/skills",
+            description=("A long description with\nextra whitespace. " * 20),
+        )
+        for index in range(100)
+    ]
+
+    rendered = render_skill_catalog(SkillCatalog(skills=skills))
+
+    assert len(rendered) <= 8_000
+    assert "root=" not in rendered
+    assert "SKILL.md" not in rendered
+    assert "global_agent_skill" not in rendered
+    assert "\nextra whitespace" not in rendered
+    assert rendered.splitlines()[0].startswith("- skill-000: A long description")
+    assert rendered.splitlines()[-1] == "Use load_skill(name, args?) to load full instructions when needed."
+    assert all(line.startswith("- skill-") for line in rendered.splitlines()[:-1])

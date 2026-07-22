@@ -387,3 +387,43 @@ def test_agent_session_task_plan_tool_writes_one_event_before_tool_result(tmp_pa
     assert [task.id for task in view.task_plan.tasks] == ["research", "code"]
     assert view.messages[-1].role == "tool"
     assert view.messages[-1].parts[0].metadata["tool_name"] == "task_create"
+
+
+def test_task_list_snapshot_is_visible_in_provider_messages(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_list_projection", agents_md="")
+    calls = [
+        ToolCall(
+            id="call_create",
+            name="task_create",
+            arguments={
+                "mode": "linear",
+                "expected_revision": 0,
+                "tasks": [
+                    {"id": "inspect", "content": "Inspect implementation", "status": "in_progress"},
+                    {"id": "verify", "content": "Run tests"},
+                ],
+            },
+        ),
+        ToolCall(id="call_list", name="task_list", arguments={}),
+    ]
+
+    for call in calls:
+        session.append_assistant_response(
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[call],
+                finish_reason="tool_calls",
+            )
+        )
+        session.append_tool_result(tool_call=call, result=session.execute_tool_call(call))
+
+    projected = ContextBuilder().build_provider_messages(session.rebuild_view())
+    task_list_result = next(message for message in projected if message.tool_call_id == "call_list")
+
+    assert "Task plan revision 1 (linear)" in task_list_result.content
+    assert "- inspect [in_progress]: Inspect implementation" in task_list_result.content
+    assert "- verify [pending]: Run tests" in task_list_result.content
+    assert "Ready task IDs: none" in task_list_result.content

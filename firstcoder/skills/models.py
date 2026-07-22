@@ -36,22 +36,6 @@ class LoadedSkill:
     skill: SkillDefinition
     content: str
     required_files: list[str] = field(default_factory=list)
-    required_file_contents: list[LoadedSkillRequiredFile] = field(default_factory=list)
-
-    @property
-    def content_hash(self) -> str:
-        return content_fingerprint(self.content)
-
-    @property
-    def bytes(self) -> int:
-        return len(self.content.encode("utf-8"))
-
-
-@dataclass(frozen=True, slots=True)
-class LoadedSkillRequiredFile:
-    skill: SkillDefinition
-    file_path: str
-    content: str
 
     @property
     def content_hash(self) -> str:
@@ -66,6 +50,13 @@ class LoadedSkillRequiredFile:
 class SkillCatalog:
     skills: list[SkillDefinition] = field(default_factory=list)
     index_content: str = ""
+
+    def resolved(self) -> "SkillCatalog":
+        """Return the unique effective catalog used by runtime consumers."""
+
+        from firstcoder.skills.catalog import resolve_skill_catalog
+
+        return resolve_skill_catalog(self)
 
     @property
     def fingerprint(self) -> str:
@@ -85,11 +76,3 @@ class SkillCatalog:
                 ],
             }
         )
-
-
-@dataclass(frozen=True, slots=True)
-class SkillRoutingDecision:
-    selected: SkillDefinition | None
-    candidates: list[SkillDefinition] = field(default_factory=list)
-    reason: str = "none"
-    confidence: str = "none"

@@ -30,7 +30,6 @@ from firstcoder.agent.user_input import (
 )
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
-from firstcoder.context.system_prompt import PromptPrefixCache
 from firstcoder.context.token_budget import estimate_chat_request_tokens
 from firstcoder.context.task_boundary import TaskBoundaryService
 from firstcoder.input.attachments import UserAttachment
@@ -38,9 +37,6 @@ from firstcoder.permissions.types import PermissionDecision, PermissionDecisionK
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import ChatMessage, ChatRequest, ChatResponse, ChatStreamEvent, MainRequestOptions, ToolCall
-from firstcoder.skills.loader import SkillLoadError, SkillLoader
-from firstcoder.skills.router import SkillRouter
-from firstcoder.skills.session import append_skill_loaded, append_skill_required_file_loaded, append_skill_selected
 from firstcoder.tools.permission_results import (
     make_permission_denied_result,
     make_prewrite_review_failed_result,
@@ -107,7 +103,6 @@ class AgentLoop:
         self.background_manager = background_manager
         self.background_tool_names = background_tool_names if background_tool_names is not None else DEFAULT_BACKGROUND_TOOL_NAMES
         self.enable_delegate_tool = enable_delegate_tool
-        self._skills_prepared_for_turn: int | None = None
         self._task_plan_reconciliation_attempted = False
         self._tool_rounds_completed = 0
         self.task_boundary_classifier = TaskBoundaryClassifier(
@@ -519,7 +514,6 @@ class AgentLoop:
         self._check_cancelled()
         self._append_pending_guidance()
         self._append_background_notifications()
-        self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         messages = self._request_messages(runtime_instruction=runtime_instruction)
         self._reserve_provider_call()
@@ -563,56 +557,6 @@ class AgentLoop:
                 runtime_instruction=runtime_instruction,
             )
 
-    def _prepare_skills_for_current_turn(self) -> None:
-        current_turn = self.session.current_turn
-        if self._skills_prepared_for_turn == current_turn:
-            return
-        self._skills_prepared_for_turn = current_turn
-        if not self.session.skill_catalog.skills:
-            return
-        user_message = self._current_user_message_content()
-        if not user_message:
-            return
-        decision = SkillRouter().route(
-            user_message,
-            agents_md=self.session.agents_md,
-            catalog=self.session.skill_catalog,
-        )
-        if decision.selected is None or decision.confidence != "high":
-            return
-        append_skill_selected(self.session.writer, decision)
-        loader = SkillLoader()
-        try:
-            loaded = loader.load(decision.selected)
-        except SkillLoadError:
-            return
-        required_files = []
-        for file_path in loaded.required_files:
-            try:
-                required = loader.load_required_file(loaded, file_path)
-            except SkillLoadError:
-                continue
-            required_files.append(required)
-        if required_files:
-            loaded = type(loaded)(
-                skill=loaded.skill,
-                content=loaded.content,
-                required_files=loaded.required_files,
-                required_file_contents=required_files,
-            )
-        self.session.loaded_skills.append(loaded)
-        append_skill_loaded(self.session.writer, loaded)
-        for required in required_files:
-            append_skill_required_file_loaded(self.session.writer, required)
-        self.session.prompt_cache = PromptPrefixCache()
-
-    def _current_user_message_content(self) -> str:
-        for message in reversed(self.session.rebuild_view().messages):
-            if message.role != "user":
-                continue
-            return "\n".join(part.content for part in message.parts if part.kind == "text")
-        return ""
-
     async def _stream_once(
         self,
         *,
@@ -629,7 +573,6 @@ class AgentLoop:
         self._check_cancelled()
         self._append_pending_guidance()
         self._append_background_notifications()
-        self._prepare_skills_for_current_turn()
         definitions = self._provider_tool_definitions()
         messages = self._request_messages(runtime_instruction=runtime_instruction)
         final_response: ChatResponse | None = None

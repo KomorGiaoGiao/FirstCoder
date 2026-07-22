@@ -43,7 +43,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "delegation is allowed only for researcher, reviewer, and tester roles."
     ),
     "task_boundary": ("Report whether the current user message starts a new task. Pass only " "decision and basis_message_id. Do not provide task hashes; the system " "generates and validates them."),
-    "task_create": "Create or append tasks by stable task ID without replacing existing work.",
+    "task_create": (
+        "Create only genuinely new tasks by stable task ID. Call task_list first to avoid duplicates. "
+        "Use task_update for status, owner, or dependency changes and task_revise for wording changes. "
+        "Do not recreate existing tasks with new IDs."
+    ),
     "task_update": "Atomically update status, owner, or dependencies by stable task ID.",
     "task_revise": "Revise task wording by stable ID; do not use it for progress updates.",
     "task_list": "Read the authoritative task-plan revision, snapshot, and derived projection.",

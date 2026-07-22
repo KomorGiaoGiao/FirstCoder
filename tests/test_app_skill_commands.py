@@ -2,6 +2,7 @@ from pathlib import Path
 
 from firstcoder.app.skill_commands import SkillCommandHandler
 from firstcoder.skills.discovery import discover_all_skills
+from firstcoder.skills.models import SkillCatalog
 
 
 def test_skills_command_lists_discovered_skills(tmp_path: Path, monkeypatch) -> None:
@@ -71,16 +72,25 @@ def test_skill_use_command_references_skill_for_input(tmp_path: Path, monkeypatc
     (skills_dir / "brief.md").write_text("# Brief\n", encoding="utf-8")
     handler = SkillCommandHandler(catalog_provider=lambda: discover_all_skills(tmp_path))
 
-    result = handler.handle("/skill-use skills/brief.md")
+    result = handler.handle("/skill-use brief")
 
     assert result.handled is True
-    assert result.output == "Referenced skill: brief skills/brief.md"
+    assert result.output == "Referenced skill: brief"
     assert result.action == {
         "type": "skill_referenced",
         "name": "brief",
         "path": "skills/brief.md",
-        "reference": "请使用 skills/brief.md ",
+        "reference": "请先调用 load_skill(name=brief, args=<你的任务>)，再按照返回的指令继续。",
     }
+
+
+def test_skill_use_command_requires_one_skill_name() -> None:
+    handler = SkillCommandHandler(catalog_provider=SkillCatalog)
+
+    result = handler.handle("/skill-use")
+
+    assert result.handled is True
+    assert result.output == "Usage: /skill-use <name>"
 
 
 def test_exact_skill_slash_command_submits_instruction_to_chat(tmp_path: Path, monkeypatch) -> None:
@@ -99,7 +109,7 @@ def test_exact_skill_slash_command_submits_instruction_to_chat(tmp_path: Path, m
     assert result.output == "Using skill: fetch-tweet"
     assert result.action == {
         "type": "submit_chat",
-        "text": "请使用 .agents/skills/fetch-tweet/SKILL.md 读取 https://x.com/a/status/1",
+        "text": "请先调用 load_skill(name=fetch-tweet, args=读取 https://x.com/a/status/1)，再按照返回的指令继续。",
     }
 
 

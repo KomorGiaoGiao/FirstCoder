@@ -329,15 +329,15 @@ class RecordingCommandHandler:
                     "selected_index": 0,
                 },
             )
-        if text == "/skill-use skills/review.md":
+        if text == "/skill-use review":
             return CommandResult(
                 handled=True,
-                output="Referenced skill: review skills/review.md",
+                output="Referenced skill: review",
                 action={
                     "type": "skill_referenced",
                     "name": "review",
                     "path": "skills/review.md",
-                    "reference": "请使用 skills/review.md ",
+                    "reference": "请先调用 load_skill(name=review, args=<你的任务>)，再按照返回的指令继续。",
                 },
             )
         return CommandResult(handled=False)
@@ -1440,8 +1440,8 @@ async def test_firstcoder_app_skill_picker_references_selected_skill_in_input() 
         await pilot.pause()
         input_widget = app.query_one("#input")
 
-    assert handler.commands == ["/skills", "/skill-use skills/review.md"]
-    assert input_widget.text == "请使用 skills/review.md "
+    assert handler.commands == ["/skills", "/skill-use review"]
+    assert input_widget.text == "请先调用 load_skill(name=review, args=<你的任务>)，再按照返回的指令继续。"
 
 
 @pytest.mark.anyio

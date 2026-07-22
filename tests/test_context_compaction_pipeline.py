@@ -472,6 +472,33 @@ def test_l3_archives_raw_derived_result_when_over_budget(tmp_path: Path) -> None
     assert ToolResultArchive(tmp_path).read("sess_test", part.metadata["archive_id"])[1] == raw_content
 
 
+def test_l3_archives_large_load_skill_result_through_generic_tool_path(tmp_path: Path) -> None:
+    skill_content = "Loaded skill: review\n\n# Review\n\n" + ("Check correctness.\n" * 1_000)
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _tool_call("load_skill_l3", "load_skill", {"name": "review"}),
+            _tool_result("load_skill_l3", "load_skill", content=skill_content),
+        ],
+    )
+
+    result = CompactionPipeline(root=tmp_path).compact(
+        CompactionRequest(
+            view=view,
+            active_task_hash="task_current",
+            target_tokens=1,
+            current_turn=10,
+            enabled_levels=("l3",),
+        )
+    )
+
+    part = result.view.messages[1].parts[0]
+    assert part.metadata["compaction_state"] == "archived"
+    assert part.metadata["tool_name"] == "load_skill"
+    assert ToolResultArchive(tmp_path).read("sess_test", part.metadata["archive_id"])[1] == skill_content
+    validate_tool_call_sequence(result.view.messages)
+
+
 def test_l3_skips_pinned_derived_result(tmp_path: Path) -> None:
     raw_content = "pinned result\n" * 1_000
     view = SessionView(

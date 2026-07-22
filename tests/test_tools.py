@@ -208,7 +208,7 @@ def test_session_registry_adds_four_authoritative_task_plan_tools(tmp_path):
         writer=writer,
     )
 
-    for name in ("task_create", "task_update", "task_revise", "task_list"):
+    for name in ("task_create", "task_update", "task_revise", "task_list", "load_skill"):
         assert name in registry.names()
     descriptions = {definition.name: definition.description for definition in registry.definitions()}
     assert "stable task ID" in descriptions["task_update"]
@@ -217,7 +217,7 @@ def test_session_registry_adds_four_authoritative_task_plan_tools(tmp_path):
 
 @pytest.mark.parametrize(
     "reserved_name",
-    ["task_create", "task_update", "task_revise", "task_list", "retrieve_archive"],
+    ["task_create", "task_update", "task_revise", "task_list", "retrieve_archive", "load_skill"],
 )
 def test_session_registry_rejects_supplied_task_plan_tool_override(
     tmp_path,

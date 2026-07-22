@@ -53,6 +53,12 @@ def test_task_plan_tool_schemas_are_incremental_and_exact(tmp_path) -> None:
         assert "task_plan" not in properties
         assert "ready_nodes" not in properties
 
+    create_description = tools["task_create"].definition.description
+    assert "Call task_list first" in create_description
+    assert "task_update" in create_description
+    assert "task_revise" in create_description
+    assert "Do not recreate existing tasks with new IDs" in create_description
+
 
 def test_task_plan_tools_return_normalized_mutations_and_current_state(tmp_path) -> None:
     tools = _tools(tmp_path)
@@ -135,3 +141,23 @@ def test_validation_errors_are_recoverable_and_do_not_retry(tmp_path, tool_name:
 
     assert result.ok is False
     assert result.error
+
+
+def test_task_create_validation_error_directs_model_to_existing_tasks(tmp_path) -> None:
+    tools = _tools(tmp_path)
+    tools["task_create"].executor(
+        mode="linear",
+        expected_revision=0,
+        tasks=[{"id": "inspect", "content": "Inspect", "status": "in_progress"}],
+    )
+
+    result = tools["task_create"].executor(
+        mode="linear",
+        expected_revision=1,
+        tasks=[{"id": "replacement", "content": "Inspect again", "status": "in_progress"}],
+    )
+
+    assert result.ok is False
+    assert "Existing in-progress task IDs: inspect" in result.content
+    assert "Call task_list" in result.content
+    assert "task_update or task_revise" in result.content

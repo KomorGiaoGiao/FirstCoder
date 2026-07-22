@@ -12,6 +12,8 @@ from firstcoder.context.writer import SessionEventWriter
 from firstcoder.context.task_boundary import TaskBoundaryPolicy, TaskBoundaryService
 from firstcoder.permissions.manager import PermissionManager
 from firstcoder.planning.service import TaskPlanService
+from firstcoder.skills.models import SkillCatalog
+from firstcoder.tools.load_skill import create_load_skill_tool
 from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.retrieve_archive import create_retrieve_archive_tool
 from firstcoder.tools.registry import ToolRegistry
@@ -50,6 +52,7 @@ def create_session_tool_registry(
     current_turn: Callable[[], int] | None = None,
     store: JsonlSessionStore | None = None,
     writer: SessionEventWriter | None = None,
+    skill_catalog: SkillCatalog | None = None,
 ) -> ToolRegistryLike:
     """创建单个会话专用的工具注册表。
 
@@ -70,6 +73,7 @@ def create_session_tool_registry(
         "task_update",
         "task_revise",
         "task_list",
+        "load_skill",
     }
     conflicting = next((tool.name for tool in supplied_tools if tool.name in reserved_names), None)
     if conflicting is not None:
@@ -91,6 +95,7 @@ def create_session_tool_registry(
             create_task_update_tool(service),
             create_task_revise_tool(service),
             create_task_list_tool(service),
+            create_load_skill_tool(skill_catalog or SkillCatalog(), writer),
         ):
             registry.register(tool)
     if archive_root is not None:

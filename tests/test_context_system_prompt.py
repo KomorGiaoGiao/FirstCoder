@@ -74,12 +74,11 @@ def test_skill_catalog_change_invalidates_system_prompt_fingerprint() -> None:
     assert before != after
 
 
-def test_system_prompt_includes_skill_protocol_catalog_and_loaded_skill() -> None:
+def test_system_prompt_includes_skill_protocol_and_catalog_without_loaded_body() -> None:
     entry = SystemPromptBuilder().build(
         _inputs(
             skill_protocol="被路由到 skill 时，必须先加载 skill。",
             skill_catalog_summary=("- project:skills/global-family-office-news-brief.md - 全球家办资讯简报\n" "- global:fetch-tweet/SKILL.md - 读取 X/Twitter 帖子"),
-            loaded_skill_context=("Loaded skill: skills/global-family-office-news-brief.md\n" "# 全球家族办公室资讯简报\n" "必须读取 docs/evidence-policy.md"),
         )
     )
     content = entry.messages[0].content
@@ -89,8 +88,8 @@ def test_system_prompt_includes_skill_protocol_catalog_and_loaded_skill() -> Non
     assert "Available skills" in content
     assert "project:skills/global-family-office-news-brief.md" in content
     assert "global:fetch-tweet/SKILL.md" in content
-    assert "Loaded skills" in content
-    assert "# 全球家族办公室资讯简报" in content
+    assert "Loaded skills" not in content
+    assert "# 全球家族办公室资讯简报" not in content
     assert "unrelated skill body" not in content
 
 
@@ -151,7 +150,7 @@ def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     assert "task_boundary" not in content
 
 
-def test_system_prompt_version_is_v13() -> None:
+def test_system_prompt_version_is_v14() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v13" in entry.messages[0].content
+    assert "prompt_version=v14" in entry.messages[0].content

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from firstcoder.skills.models import LoadedSkill, LoadedSkillRequiredFile, SkillDefinition
+from firstcoder.skills.models import LoadedSkill, SkillDefinition
 
 
 class SkillLoadError(ValueError):
@@ -27,38 +27,12 @@ class SkillLoader:
             required_files=_extract_required_files(content),
         )
 
-    def load_required_file(self, loaded: LoadedSkill, file_path: str) -> LoadedSkillRequiredFile:
-        path = self._resolve_required_file_path(loaded.skill, file_path)
-        if not path.exists() or not path.is_file():
-            raise SkillLoadError(f"required file does not exist: {file_path}")
-        return self.load_required_file_from_content(loaded, file_path, path.read_text(encoding="utf-8"))
-
-    def load_required_file_from_content(
-        self,
-        loaded: LoadedSkill,
-        file_path: str,
-        content: str,
-    ) -> LoadedSkillRequiredFile:
-        return LoadedSkillRequiredFile(
-            skill=loaded.skill,
-            file_path=file_path,
-            content=content,
-        )
-
     def _resolve_path(self, skill: SkillDefinition) -> Path:
         root = Path(skill.root).resolve()
         path = (root / skill.path).resolve()
         if not path.is_relative_to(root):
             raise SkillLoadError(f"skill path escapes root: {skill.path}")
         return path
-
-    def _resolve_required_file_path(self, skill: SkillDefinition, file_path: str) -> Path:
-        root = Path(skill.root).resolve()
-        path = (root / file_path).resolve()
-        if not path.is_relative_to(root):
-            raise SkillLoadError(f"required file path escapes root: {file_path}")
-        return path
-
 
 def _extract_required_files(content: str) -> list[str]:
     required: list[str] = []

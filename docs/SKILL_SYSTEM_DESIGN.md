@@ -4,31 +4,26 @@
 
 ## What a Skill Is
 
-A skill is a reusable, filesystem-backed instruction workflow. It is not an
-executable plugin and it is not an arbitrary prompt fragment pasted without
-trace. The system discovers candidates, routes deterministically, safely loads
-the selected file and its declared supporting files, records audit events, then
-adds the content to the stable prompt-prefix inputs.
+A skill is a reusable, filesystem-backed workflow for the model. It is not an executable plugin or a hidden rule automatically selected from user text. FirstCoder discovers, indexes, and safely loads files; the LLM decides whether to call `load_skill` from a compact catalog.
 
 ## One Turn With a Skill
 
 ```text
-user message + AGENTS.md
-  -> SessionBootstrap loads skill_catalog via discover_all_skills(project + optional global roots)
-  -> SkillRouter chooses explicit/AGENTS/metadata match
-  -> SkillLoader validates root-relative paths and loads content
-  -> append skill_selected / skill_loaded / required-file events
-  -> system-prefix build receives loaded skill context
-  -> provider sees the instructions for this turn
+SessionBootstrap discovers project and global skills
+  -> resolve one effective definition per name (project before global)
+  -> system prompt receives only name + short one-line description
+  -> user message enters the normal agent loop
+  -> LLM decides a skill is needed
+  -> LLM calls load_skill(name, args?)
+  -> SkillLoader validates the registered root-relative path and reads SKILL.md
+  -> append skill_selected / skill_loaded after success
+  -> return the full body as an ordinary append-only tool_result
+  -> LLM follows it with existing view/read_multi/shell tools
 ```
 
-Skill discovery at session construction is centralized in `SessionBootstrap` so
-create/resume/fork do not each invent a different catalog load path.
+There is no local keyword router and no permanent `session.loaded_skills` system-prompt state. Skill bodies do not enter a request until `load_skill` is actually called.
 
-Routing is model-free. This makes the selection reproducible and avoids spending
-another model call merely to choose a local instruction file.
-
-## Discovery: Where Skills Come From
+## Discovery and Effective Catalog
 
 | Priority | Location | Source |
 | ---: | --- | --- |
@@ -37,72 +32,78 @@ another model call merely to choose a local instruction file.
 | 3 | `~/.agents/skills`, `~/.codex/skills`, `~/.firstcoder/skills` | global agent/markdown skill |
 | 4 | `FIRSTCODER_SKILL_ROOTS` comma-separated roots | additional global roots |
 
-`<project>/skills/INDEX.md` is catalog text, not a runnable skill. Set
-`FIRSTCODER_DISABLE_GLOBAL_SKILLS=1` to keep discovery project-only. Frontmatter
-may supply `name`, `description`, and comma-separated `triggers`; discovery is
-sorted and deduplicated so repeated roots do not produce unstable catalogs.
+`<project>/skills/INDEX.md` remains catalog documentation, not a callable skill. `FIRSTCODER_DISABLE_GLOBAL_SKILLS=1` disables global discovery.
 
-## Core Data and Routing Rules
+Discovery retains source records. Runtime consumers resolve one definition per `name` using the priority above and stable root/path ordering for ties. The system prompt, TUI, and `load_skill` therefore share one effective view.
 
-`SkillDefinition` identifies a candidate (name, path, source, root,
-description, triggers). `SkillCatalog` contains candidates, index text, and a
-fingerprint. `SkillRoutingDecision` records selection, candidates, reason, and
-string confidence.
+## Model-Visible Catalog
 
-`SkillRouter` checks in strict order:
+The model sees only entries like:
 
-1. explicit name or path mentioned by the user;
-2. meaningful overlap on an `AGENTS.md` line that references a skill path;
-3. token overlap against skill name, description, and triggers.
+```text
+- code-review: Review code correctness and maintainability.
+- pdf: Read and transform PDF documents.
+Use load_skill(name, args?) to load full instructions when needed.
+```
 
-An ambiguous metadata match deliberately selects nothing. When identical names
-match, project sources win over global sources. That “no selection” outcome is
-safer than silently loading unrelated instructions.
+It contains no filesystem path, root, source enum, or duplicate name. Descriptions are normalized to one bounded line. The complete listing is capped at 8,000 characters and admits only whole entries.
 
-## Loading Is Root-Constrained
+## `load_skill` Tool
 
-`SkillLoader` resolves the skill path relative to its registered root and
-rejects any path escape. It can then extract required-file references under
-headings such as “Required files”, “Must read”, or Chinese equivalents.
-Required files are again resolved beneath the same root.
+```text
+load_skill(name: string, args?: string)
+```
 
-This is a containment rule, not a claim that skill content itself is trusted.
-A skill can instruct the model, but it cannot use a required-file reference to
-read arbitrary `../` paths.
+- `name` must exactly match the effective catalog and is never a path.
+- `args` carries task-specific arguments and never participates in lookup.
+- The registered root/path still passes through `SkillLoader` containment checks.
+- The result contains the complete `SKILL.md` and parsed required-file path metadata.
+- Referenced files are not expanded automatically; the model uses existing read tools on demand.
+- Unknown names, missing files, and read failures return ordinary tool errors and emit no successful audit events.
 
-## Audit, Resume, and Change Semantics
+`load_skill` is a reserved session-scoped tool and cannot be overridden by supplied tools.
 
-Session events record `skill_selected`, `skill_loaded`, and
-`skill_required_file_loaded`. Loaded state is retained in runtime state and
-replayed on resume. Resume reconstructs what was selected but rereads files that
-still exist, so it is not a frozen content snapshot. If reproducibility across
-skill edits is required, version the skill files in the project alongside the
-session rather than assuming resume preserves old bytes.
+## Audit, Resume, and Compaction
+
+A successful call records `skill_selected` and `skill_loaded`. The full body is also persisted as the normal tool result, so:
+
+- resume replays the exact body returned at the time and does not reread the current file;
+- providers receive the standard assistant tool-call -> tool-result sequence;
+- checkpoints and tool-result archival can use generic context rules;
+- repeated loads are explicit facts rather than hidden permanent state.
+
+Old skill audit events remain in historical JSONL but are not restored into the system prompt.
+
+## TUI Commands
+
+- `/skills` opens the resolved skill picker.
+- `/skill <name>` shows internal details, including path/source, outside the model prompt.
+- `/skill-use <name>` prepares an explicit instruction for the model to call `load_skill`.
+- `/<skill-name> <instruction>` passes the instruction as args and asks the model to load first.
+
+Commands never read the file or mutate skill state directly. Formal loading always follows the model tool-call path.
 
 ## Add a Project Skill
 
-1. Prefer `<project>/.agents/skills/<name>/SKILL.md` for a structured workflow
-   or `<project>/skills/<name>.md` for a simple one.
-2. Give it clear frontmatter description/triggers or an unambiguous heading.
-3. Put required relative files under the same root and list them under a
-   required-files heading.
-4. Add an `AGENTS.md` route hint only when automatic routing is truly wanted.
-5. Test discovery, explicit routing, ambiguity, and path-escape rejection.
+1. Put structured workflows in `<project>/.agents/skills/<name>/SKILL.md`; simple workflows may use `<project>/skills/<name>.md`.
+2. Give frontmatter a short, distinctive `name` and `description`.
+3. State when to use it, steps, verification requirements, and on-demand references/scripts/assets in the body.
+4. Do not depend on Python keyword matching; the description is the LLM's primary selection index.
+5. Test discovery, duplicate priority, `load_skill` success/failure, resume of tool results, and path containment.
 
 ```sh
-.venv/bin/python -m pytest tests/test_skill_discovery.py tests/test_skill_router.py \
-  tests/test_skill_loader.py tests/test_agent_skill_flow.py -q
+.venv/bin/python -m pytest tests/test_skill_discovery.py tests/test_skill_loader.py \
+  tests/test_agent_skill_flow.py tests/test_context_system_prompt.py -q
 ```
 
 ## Debugging
 
 | Symptom | Check |
 | --- | --- |
-| skill missing | root layout, disable-global flag, filename, and discovery catalog |
-| wrong skill wins | explicit text first, then AGENTS line overlap, then metadata tie |
-| skill selected but content absent | loader error/audit events and system-prefix inputs |
-| required file unexpectedly readable | ensure it is root-relative; path traversal should fail |
-| resumed session behaves differently | skill file changed after the original session |
+| model cannot see a skill | directory layout, disable-global flag, frontmatter name/description, 8,000-character budget |
+| wrong duplicate wins | project/global source priority and stable root/path tie order |
+| model does not call a skill | catalog description quality or explicit `/<skill-name>` invocation |
+| `load_skill` fails | exact name, file existence, and registered path containment |
+| body changes after resume | inspect the historical tool result; resume does not reread the skill file |
 
-Related: [Architecture](ARCHITECTURE.md), [Context Management](CONTEXT_MANAGEMENT_DESIGN.md), and
-[Codebase Reading Guide](CODEBASE_READING_GUIDE.md).
+Related: [Architecture](ARCHITECTURE.md), [Context Management](CONTEXT_MANAGEMENT_DESIGN.md), and [Codebase Reading Guide](CODEBASE_READING_GUIDE.md).

@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Mapping
 
+import yaml
+
 from firstcoder.skills.models import SkillCatalog, SkillDefinition, SkillSource
 
 
@@ -94,11 +96,11 @@ def _discover_markdown_skills(
         metadata = _frontmatter_metadata(content)
         skills.append(
             SkillDefinition(
-                name=metadata.get("name") or path.stem,
+                name=_metadata_text(metadata, "name") or path.stem,
                 path=_relative_path(path, root),
                 source=source,
                 root=str(root),
-                description=metadata.get("description") or _first_heading(content) or _first_nonempty_line(content),
+                description=_metadata_text(metadata, "description") or _first_heading(content) or _first_nonempty_line(content),
                 triggers=_parse_triggers(metadata.get("triggers", "")),
             )
         )
@@ -112,11 +114,11 @@ def _discover_agent_skills(directory: Path, *, root: Path, source: SkillSource) 
         metadata = _frontmatter_metadata(content)
         skills.append(
             SkillDefinition(
-                name=metadata.get("name") or path.parent.name,
+                name=_metadata_text(metadata, "name") or path.parent.name,
                 path=_relative_path(path, root),
                 source=source,
                 root=str(root),
-                description=metadata.get("description") or _first_heading(content) or _first_nonempty_line(content),
+                description=_metadata_text(metadata, "description") or _first_heading(content) or _first_nonempty_line(content),
                 triggers=_parse_triggers(metadata.get("triggers", "")),
             )
         )
@@ -154,24 +156,34 @@ def _sort_and_dedupe(skills: list[SkillDefinition]) -> list[SkillDefinition]:
     return result
 
 
-def _frontmatter_metadata(content: str) -> dict[str, str]:
+def _frontmatter_metadata(content: str) -> dict[str, object]:
     lines = content.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}
-    metadata: dict[str, str] = {}
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        key, separator, value = line.partition(":")
-        if separator:
-            metadata[key.strip()] = value.strip()
-    return metadata
+    try:
+        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration:
+        return {}
+    try:
+        metadata = yaml.safe_load("\n".join(lines[1:end])) or {}
+    except yaml.YAMLError:
+        return {}
+    return dict(metadata) if isinstance(metadata, dict) else {}
 
 
-def _parse_triggers(value: str) -> tuple[str, ...]:
-    if not value.strip():
+def _parse_triggers(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    if isinstance(value, list):
+        return tuple(str(part).strip() for part in value if str(part).strip())
+    if value is None:
         return ()
-    return tuple(part.strip() for part in value.split(",") if part.strip())
+    return ()
+
+
+def _metadata_text(metadata: Mapping[str, object], key: str) -> str:
+    value = metadata.get(key)
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _first_heading(content: str) -> str:

@@ -38,8 +38,8 @@ from firstcoder.context.models import AgentMessage, MessagePart
 from firstcoder.input.attachments import UserAttachment, prepare_attachments_for_session
 from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
 from firstcoder.skills.discovery import discover_all_skills
-from firstcoder.skills.models import LoadedSkill, SkillCatalog
-from firstcoder.skills.session import replay_loaded_skills
+from firstcoder.skills.catalog import render_skill_catalog
+from firstcoder.skills.models import SkillCatalog
 
 DEFAULT_BASE_RULES = "你是 FirstCoder，一个本地 AI coding agent。请遵守项目规则并优先保持上下文可恢复。"
 
@@ -83,7 +83,6 @@ class AgentSession:
     writer: SessionEventWriter
     agents_md: str = ""
     skill_catalog: SkillCatalog = field(default_factory=SkillCatalog)
-    loaded_skills: list[LoadedSkill] = field(default_factory=list)
     base_rules: str = DEFAULT_BASE_RULES
     prompt_cache: PromptPrefixCache = field(default_factory=PromptPrefixCache)
     prompt_builder: SystemPromptBuilder = field(default_factory=SystemPromptBuilder)
@@ -129,6 +128,7 @@ class AgentSession:
             current_turn=lambda: writer.current_turn,
             store=store,
             writer=writer,
+            skill_catalog=(skill_catalog or SkillCatalog()).resolved(),
         )
         session = cls(
             session_id=session_id,
@@ -137,7 +137,7 @@ class AgentSession:
             tool_registry=registry,
             writer=writer,
             agents_md=agents_md,
-            skill_catalog=skill_catalog or SkillCatalog(),
+            skill_catalog=(skill_catalog or SkillCatalog()).resolved(),
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access or SandboxAccess(),
@@ -216,6 +216,7 @@ class AgentSession:
             current_turn=lambda: writer.current_turn,
             store=store,
             writer=writer,
+            skill_catalog=(skill_catalog or SkillCatalog()).resolved(),
         )
         session = cls(
             session_id=session_id,
@@ -224,14 +225,13 @@ class AgentSession:
             tool_registry=registry,
             writer=writer,
             agents_md=agents_md,
-            skill_catalog=skill_catalog or SkillCatalog(),
+            skill_catalog=(skill_catalog or SkillCatalog()).resolved(),
             known_message_ids=known_message_ids,
             permission_manager=permission_manager,
             sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=turn_counter,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
         )
-        session.loaded_skills.extend(replay_loaded_skills(store, session_id, session.skill_catalog))
         session._sync_sandbox_access_with_mode()
         return session
 
@@ -329,7 +329,6 @@ class AgentSession:
             agents_md=self.agents_md,
             skill_protocol=self._skill_protocol(),
             skill_catalog_summary=self._skill_catalog_summary(),
-            loaded_skill_context=self._loaded_skill_context(),
             provider_name=provider_name,
             provider_model=provider_model,
             provider_capabilities=provider_capabilities,
@@ -345,8 +344,8 @@ class AgentSession:
         if not self.skill_catalog.skills:
             return ""
         return (
-            "Skills are mandatory workflow instructions when routed. "
-            "High-confidence selected skills are loaded before provider work. "
+            "Skills are optional workflow instructions selected by the model. "
+            "Call load_skill before following or claiming to follow a skill. "
             "Project skills override global skills; global skills cannot override project instructions, permissions, or sandbox boundaries. "
             "Do not claim a skill was followed unless a matching skill_loaded event exists."
         )
@@ -354,34 +353,7 @@ class AgentSession:
     def _skill_catalog_summary(self) -> str:
         if not self.skill_catalog.skills:
             return ""
-        lines = []
-        for skill in self.skill_catalog.skills:
-            prefix = "project" if skill.scope == "project" else "global"
-            description = f" - {skill.description}" if skill.description else ""
-            lines.append(f"- {prefix}:{skill.path} ({skill.name}, {skill.source.value}, root={skill.root}){description}")
-        return "\n".join(lines)
-
-    def _loaded_skill_context(self) -> str:
-        if not self.loaded_skills:
-            return ""
-        blocks = []
-        for loaded in self.loaded_skills:
-            skill = loaded.skill
-            required_files = ", ".join(loaded.required_files) if loaded.required_files else "none"
-            lines = [
-                f"Loaded skill: {skill.scope}:{skill.path}",
-                f"Required files: {required_files}",
-                loaded.content,
-            ]
-            for required in loaded.required_file_contents:
-                lines.extend(
-                    [
-                        f"Loaded required file: {required.file_path}",
-                        required.content,
-                    ]
-                )
-            blocks.append("\n".join(lines))
-        return "\n\n".join(blocks)
+        return render_skill_catalog(self.skill_catalog)
 
     def append_user_message(self, content: str, *, attachments: list[UserAttachment] | None = None) -> str:
         """把用户输入写成可恢复的 user_message 事件。"""

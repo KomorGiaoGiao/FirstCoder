@@ -18,6 +18,7 @@ def create_task_create_tool(service: TaskPlanService) -> Tool:
                 expected_revision=expected_revision,
                 tasks=tasks,
             ),
+            command_error_message=lambda error: _create_error_message(service, error),
         )
 
     parameters = object_schema(
@@ -49,8 +50,26 @@ def create_task_create_tool(service: TaskPlanService) -> Tool:
     return Tool(
         definition=ToolDefinition(
             name="task_create",
-            description="Create or append tasks by stable task ID without replacing existing work.",
+            description=(
+                "Create only genuinely new tasks by stable task ID. Call task_list first to avoid duplicates. "
+                "Use task_update for status, owner, or dependency changes and task_revise for wording changes. "
+                "Do not recreate existing tasks with new IDs."
+            ),
             parameters=parameters,
         ),
         executor=task_create,
+    )
+
+
+def _create_error_message(service: TaskPlanService, error: Exception) -> str:
+    plan = service.current()
+    if plan is None:
+        return str(error)
+
+    in_progress_ids = [task.id for task in plan.tasks if task.status == "in_progress"]
+    in_progress = ", ".join(in_progress_ids) if in_progress_ids else "none"
+    return (
+        f"{error}. Existing in-progress task IDs: {in_progress}. "
+        "Call task_list to inspect existing task IDs. Use task_update or task_revise for existing tasks; "
+        "use task_create only for genuinely new work."
     )

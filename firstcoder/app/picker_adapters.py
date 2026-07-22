@@ -29,7 +29,7 @@ def skill_picker_item(item: dict[str, object]) -> TuiPickerItem:
     scope = str(item.get("scope") or "")
     description = str(item.get("description") or "")
     return TuiPickerItem(
-        id=path,
+        id=name,
         label=name or path,
         detail=description,
         meta={"scope": scope, "path": path},

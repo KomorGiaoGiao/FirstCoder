@@ -32,7 +32,6 @@ class SystemPromptInputs:
     permission_policy: dict[str, Any]
     skill_protocol: str = ""
     skill_catalog_summary: str = ""
-    loaded_skill_context: str = ""
     mode: str = "default"
     prompt_version: str = SYSTEM_PROMPT_VERSION
 
@@ -53,7 +52,6 @@ class SystemPromptBuilder:
             "agents_md_hash": content_fingerprint(inputs.agents_md),
             "skill_protocol_hash": content_fingerprint(inputs.skill_protocol),
             "skill_catalog_summary_hash": content_fingerprint(inputs.skill_catalog_summary),
-            "loaded_skill_context_hash": content_fingerprint(inputs.loaded_skill_context),
             "provider_name": inputs.provider_name,
             "provider_capabilities": inputs.provider_capabilities,
             "permission_policy": inputs.permission_policy,
@@ -71,7 +69,6 @@ class SystemPromptBuilder:
                 _format_section("Project instructions", inputs.agents_md),
                 _format_section("Project skill protocol", inputs.skill_protocol),
                 _format_section("Available skills", inputs.skill_catalog_summary),
-                _format_section("Loaded skills", inputs.loaded_skill_context),
                 _format_section("Provider", _format_provider(inputs)),
                 _format_section("Permission policy", _format_json(inputs.permission_policy)),
             ]

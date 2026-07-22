@@ -35,7 +35,7 @@ class SkillCommandHandler:
         return CommandResult(handled=False)
 
     def _list_skills(self) -> CommandResult:
-        catalog = self.catalog_provider()
+        catalog = self.catalog_provider().resolved()
         if not catalog.skills:
             return CommandResult(handled=True, output="No skills.")
         lines = ["Skills:"]
@@ -56,7 +56,7 @@ class SkillCommandHandler:
         if len(args) != 1:
             return "Usage: /skill <name>"
         query = args[0].lower()
-        catalog = self.catalog_provider()
+        catalog = self.catalog_provider().resolved()
         skill = _find_skill(catalog.skills, query)
         if skill is None:
             return f"Skill not found: {args[0]}"
@@ -74,20 +74,20 @@ class SkillCommandHandler:
 
     def _reference_skill(self, args: list[str]) -> CommandResult:
         if len(args) != 1:
-            return CommandResult(handled=True, output="Usage: /skill-use <path>")
+            return CommandResult(handled=True, output="Usage: /skill-use <name>")
         query = args[0].lower()
-        catalog = self.catalog_provider()
+        catalog = self.catalog_provider().resolved()
         skill = _find_skill(catalog.skills, query)
         if skill is None:
             return CommandResult(handled=True, output=f"Skill not found: {args[0]}")
         return CommandResult(
             handled=True,
-            output=f"Referenced skill: {skill.name} {skill.path}",
+            output=f"Referenced skill: {skill.name}",
             action={
                 "type": "skill_referenced",
                 "name": skill.name,
                 "path": skill.path,
-                "reference": f"请使用 {skill.path} ",
+                "reference": f"请先调用 load_skill(name={skill.name}, args=<你的任务>)，再按照返回的指令继续。",
             },
         )
 
@@ -95,7 +95,7 @@ class SkillCommandHandler:
         query = slash_name.removeprefix("/").lower()
         if not query:
             return None
-        catalog = self.catalog_provider()
+        catalog = self.catalog_provider().resolved()
         skill = _find_exact_skill(catalog.skills, query)
         if skill is None:
             return None
@@ -107,7 +107,7 @@ class SkillCommandHandler:
             output=f"Using skill: {skill.name}",
             action={
                 "type": "submit_chat",
-                "text": f"请使用 {skill.path} {instruction}",
+                "text": f"请先调用 load_skill(name={skill.name}, args={instruction})，再按照返回的指令继续。",
             },
         )
 
