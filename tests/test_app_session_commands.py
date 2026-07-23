@@ -7,6 +7,13 @@ from firstcoder.app.session_commands import SessionCommandHandler
 from firstcoder.agent.session import AgentSession
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.token_budget import build_context_budget
+
+
+def _context_budget(view):
+    return build_context_budget(
+        messages=[], tools=[], context_window=32_768, max_output_tokens=4_096
+    )
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.planning.models import Task, TaskPlan
 from firstcoder.session.catalog import SessionCatalog
@@ -277,7 +284,7 @@ def test_composite_handler_routes_context_and_session_commands(tmp_path: Path) -
     router = CompositeCommandHandler(
         [
             SessionCommandHandler(catalog=SessionCatalog(tmp_path), current_session=session),
-            ContextCommandHandler(session=session),
+            ContextCommandHandler(session=session, budget_provider=_context_budget),
         ]
     )
 
@@ -300,7 +307,7 @@ def test_resume_command_updates_context_command_current_session(tmp_path: Path) 
                 resume_service=ResumeService(store=store, project_root=tmp_path),
                 on_resume=state.set_session,
             ),
-            ContextCommandHandler(session=state),
+            ContextCommandHandler(session=state, budget_provider=_context_budget),
         ]
     )
 

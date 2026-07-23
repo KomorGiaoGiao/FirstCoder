@@ -142,6 +142,7 @@ api_key_env = "YURENAPI_API_KEY"
 
 [models."yuren/gpt-5.6-terra"]
 label = "Yuren Terra"
+context_window = 128000
 
 [models."yuren/gpt-5.6-terra".request]
 temperature = 0.2

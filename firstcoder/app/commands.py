@@ -17,6 +17,7 @@ from firstcoder.app.ports import ContextManagerLike
 from firstcoder.context.manager import ContextCompactRequest, ContextCompactResult, ContextWindowTrigger
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
+from firstcoder.context.token_budget import ContextBudget
 
 
 class SessionLike(Protocol):
@@ -25,6 +26,10 @@ class SessionLike(Protocol):
     current_turn: int
 
     def rebuild_view(self) -> SessionView: ...
+
+
+class BudgetProvider(Protocol):
+    def __call__(self, view: SessionView) -> ContextBudget: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +44,7 @@ class ContextCommandHandler:
     """处理 `/context`、`/compact status` 和 `/compact`。"""
 
     session: SessionLike
+    budget_provider: BudgetProvider
     context_manager: ContextManagerLike | None = None
     inspector: ContextInspector = ContextInspector()
 
@@ -62,21 +68,29 @@ class ContextCommandHandler:
         return CommandResult(handled=False)
 
     def _inspect(self) -> ContextInspectionReport:
-        return self.inspector.inspect(self.session.rebuild_view(), self.session.runtime_state)
+        view = self.session.rebuild_view()
+        return self.inspector.inspect(
+            view,
+            self.session.runtime_state,
+            budget=self.budget_provider(view),
+        )
 
     def _manual_compact(self) -> str:
         if self.context_manager is None:
             return "Manual compact unavailable: context manager is not configured"
 
-        report = self._inspect()
+        view = self.session.rebuild_view()
+        budget = self.budget_provider(view)
         result = self.context_manager.compact_if_needed(
             ContextCompactRequest(
-                view=self.session.rebuild_view(),
+                view=view,
                 runtime_state=self.session.runtime_state,
+                budget=budget,
+                estimate_budget=self.budget_provider,
                 trigger=ContextWindowTrigger.MANUAL,
                 mode="manual",
                 current_turn=self.session.current_turn,
-                target_tokens=_manual_target_tokens(report.estimated_tokens),
+                target_tokens=_manual_target_tokens(budget),
             )
         )
         if _is_noop_compact(result):
@@ -87,7 +101,14 @@ class ContextCommandHandler:
 def _render_context_report(report: ContextInspectionReport) -> str:
     lines = [
         f"Session: {report.session_id}",
-        f"Estimated tokens: {report.estimated_tokens}",
+        f"Model window: {report.context_window} ({report.context_window_source})",
+        f"Output reserve: {report.output_reserve}",
+        f"Fixed tokens: {report.fixed_tokens}",
+        f"History tokens: {report.history_tokens}",
+        f"Input tokens: {report.input_tokens}",
+        f"High watermark: {report.high_watermark}",
+        f"Low watermark: {report.low_watermark}",
+        f"Unconsumed tool results: {report.unconsumed_tool_result_count}",
         f"Tail messages: {report.tail_message_count}",
         f"Latest checkpoint: {display_value(report.latest_checkpoint_id)}",
         f"Checkpoint boundary: {report.checkpoint_boundary_status}",
@@ -105,7 +126,7 @@ def _render_compact_status(report: ContextInspectionReport) -> str:
         f"Disabled until: {display_value(report.auto_compact_disabled_until)}",
         f"Last failure: {display_value(report.last_failure_reason)}",
         f"Last input fingerprint: {display_value(report.last_compaction_input_fingerprint)}",
-        f"Estimated tokens: {report.estimated_tokens}",
+        f"Input tokens: {report.input_tokens}",
         f"Tail messages: {report.tail_message_count}",
         f"Latest checkpoint: {display_value(report.latest_checkpoint_id)}",
         "Recent compactions:",
@@ -118,10 +139,12 @@ def _render_compact_status(report: ContextInspectionReport) -> str:
     return "\n".join(lines)
 
 
-def _manual_target_tokens(estimated_tokens: int) -> int | None:
-    if estimated_tokens <= 2_000:
+def _manual_target_tokens(budget: ContextBudget) -> int | None:
+    if budget.input_tokens <= 2_000:
         return None
-    return max(2_000, min(12_000, int(estimated_tokens * 0.6)))
+    proposed = min(budget.low_watermark - 1, int(budget.input_tokens * 0.6))
+    target = max(budget.fixed_tokens + 1, proposed)
+    return target if target < budget.input_tokens else None
 
 
 def _is_noop_compact(result: ContextCompactResult) -> bool:

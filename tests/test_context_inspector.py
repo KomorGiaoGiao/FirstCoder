@@ -2,6 +2,16 @@ from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.inspector import ContextInspector
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import CompactionHistoryEntry, SessionRuntimeState
+from firstcoder.context.token_budget import ContextBudget, build_context_budget
+
+
+def _budget() -> ContextBudget:
+    return build_context_budget(
+        messages=[],
+        tools=[],
+        context_window=32_768,
+        max_output_tokens=4_096,
+    )
 
 
 def _message(
@@ -55,7 +65,7 @@ def test_inspector_reports_runtime_and_context_fields() -> None:
         last_compaction_input_fingerprint="compact_fp",
     )
 
-    report = ContextInspector().inspect(view, runtime)
+    report = ContextInspector().inspect(view, runtime, budget=_budget())
 
     assert report.session_id == "sess_test"
     assert report.active_task_hash == "task_active"
@@ -63,7 +73,7 @@ def test_inspector_reports_runtime_and_context_fields() -> None:
     assert report.system_prompt_fingerprint == "sys_fp"
     assert report.latest_checkpoint_id == "ckpt_latest"
     assert report.tail_message_count == 1
-    assert report.estimated_tokens > 0
+    assert report.input_tokens == 0
     assert report.archive_count == 0
     assert report.last_compaction_input_fingerprint == "compact_fp"
 
@@ -90,7 +100,7 @@ def test_inspector_counts_archived_parts_from_metadata() -> None:
         ],
     )
 
-    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"))
+    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"), budget=_budget())
 
     assert report.archive_count == 2
 
@@ -127,7 +137,7 @@ def test_inspector_uses_latest_checkpoint_sequence_for_tail_count() -> None:
         ],
     )
 
-    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"))
+    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"), budget=_budget())
 
     assert report.latest_checkpoint_id == "ckpt_new"
     assert report.tail_message_count == 1
@@ -140,7 +150,7 @@ def test_inspector_reports_auto_compact_circuit_breaker_status() -> None:
         last_auto_compact_failure_reason="timeout",
     )
 
-    report = ContextInspector().inspect(SessionView(session_id="sess_test"), runtime)
+    report = ContextInspector().inspect(SessionView(session_id="sess_test"), runtime, budget=_budget())
 
     assert report.auto_compact_disabled_until == "2999-06-01T00:30:00Z"
     assert report.last_failure_reason == "timeout"
@@ -154,7 +164,7 @@ def test_inspector_does_not_report_expired_circuit_breaker_as_disabled() -> None
         last_auto_compact_failure_reason="timeout",
     )
 
-    report = ContextInspector().inspect(SessionView(session_id="sess_test"), runtime)
+    report = ContextInspector().inspect(SessionView(session_id="sess_test"), runtime, budget=_budget())
 
     assert report.auto_compact_disabled_until is None
     assert report.auto_compact_status == "failed"
@@ -177,7 +187,7 @@ def test_inspector_reports_missing_checkpoint_tail_boundary() -> None:
         ],
     )
 
-    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"))
+    report = ContextInspector().inspect(view, SessionRuntimeState(session_id="sess_test"), budget=_budget())
 
     assert report.latest_checkpoint_id == "ckpt_bad"
     assert report.checkpoint_boundary_status == "missing_tail"
@@ -202,6 +212,7 @@ def test_inspector_report_can_be_serialized_for_tui_status() -> None:
     report = ContextInspector().inspect(
         SessionView(session_id="sess_test"),
         runtime,
+        budget=_budget(),
     )
 
     assert report.to_dict()["session_id"] == "sess_test"
@@ -213,7 +224,7 @@ def test_inspector_report_can_be_serialized_for_tui_status() -> None:
         "system_prompt_fingerprint",
         "latest_checkpoint_id",
         "tail_message_count",
-        "estimated_tokens",
+        "input_tokens",
         "archive_count",
         "last_compaction_input_fingerprint",
         "auto_compact_disabled_until",
@@ -222,3 +233,41 @@ def test_inspector_report_can_be_serialized_for_tui_status() -> None:
         "checkpoint_boundary_status",
         "recent_compaction_events",
     }
+
+
+def test_inspector_reports_shared_budget_and_unconsumed_count() -> None:
+    runtime = SessionRuntimeState(
+        session_id="sess_test",
+        consumed_tool_result_part_ids={"part_consumed"},
+    )
+    view = SessionView(
+        session_id="sess_test",
+        messages=[
+            _message(
+                "msg_tool",
+                role="tool",
+                kind="tool_result",
+                content="result",
+                metadata={"tool_call_id": "call_1"},
+            )
+        ],
+    )
+    budget = ContextBudget(
+        context_window=128_000,
+        output_reserve=8_192,
+        input_capacity=113_408,
+        fixed_tokens=18_000,
+        history_tokens=42_000,
+        input_tokens=60_000,
+        high_watermark=102_067,
+        low_watermark=81_653,
+        source="configured",
+    )
+
+    report = ContextInspector().inspect(view, runtime, budget=budget)
+
+    assert report.context_window == 128_000
+    assert report.fixed_tokens == 18_000
+    assert report.history_tokens == 42_000
+    assert report.input_tokens == 60_000
+    assert report.unconsumed_tool_result_count == 1

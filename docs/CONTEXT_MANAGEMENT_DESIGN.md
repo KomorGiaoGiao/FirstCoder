@@ -35,15 +35,16 @@ conversation. The stable system prefix is supplied separately by the session.
 
 1. The agent reads a source file and runs a large test command.
 2. Events append the assistant call and tool result; `SessionView` contains both.
-3. `ContextWindowManager` observes token/output pressure.
+3. Before a main provider request, FirstCoder builds one `ContextBudget` from the model window, output reserve, system/tools, and effective history; the manager starts work at the dynamic high watermark.
 4. Deterministic L1–L3 compaction trims/archives eligible old material and
    appends a `compaction_completed` replacement event.
-5. If still too large, L4 asks a summarizer for a coding handoff and appends a
-   `checkpoint_created` event.
+5. If still not below the dynamic low watermark, L4 only generates an in-memory candidate. The manager appends `checkpoint_created` after the candidate has a legal provider projection and is actually below target.
 6. On the next provider call, the builder sends the checkpoint summary plus a
    legal uncompressed tail, not the entire raw log.
 7. Resume replays the same events; it does not depend on a hidden in-memory
    transcript.
+
+A tool result gets a `provider_projection_consumed` event only after a complete synchronous response or streaming `message_completed`. Before that first successful projection, L2/L3/L4 cannot lossy-cover it; provider errors, timeouts, cancellation, and partial streams do not mark it consumed.
 
 ## Non-Negotiable Invariants
 
@@ -127,7 +128,7 @@ is safer than removing the only correct file evidence.
 
 | Trigger | Meaning |
 | --- | --- |
-| `AUTO` | token/tail/output heuristics reach threshold |
+| `AUTO` | checked only before main provider requests; real input reaches the dynamic high watermark |
 | `TASK_HASH_CHANGED` | confirmed task switch; force cleanup of old derived context |
 | `MANUAL` | user asks to compact/inspect |
 | `PROMPT_TOO_LONG` | provider rejected the request; do blocking recovery then bounded retry |
@@ -136,6 +137,10 @@ The manager runs deterministic work first, records its outcome, and only asks
 L4 when required. An automatic-compaction circuit breaker prevents expensive
 repeated automatic failures; manual, task-boundary, and overflow recovery are
 not silently skipped by that breaker.
+
+The default budget uses 95% of the model window, subtracts output reserve for input capacity, then places the high watermark at 90% and the low watermark at 72% of that capacity. A missing model window is explicitly reported as an assumed 32,768, not a second fixed AUTO path.
+
+Provider tokenizers, oversized-artifact externalization, and demand-loaded MCP schemas are not part of the current implementation.
 
 ## Source Map
 

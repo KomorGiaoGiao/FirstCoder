@@ -5,6 +5,22 @@ from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.context.manager import ContextCompactResult
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import CompactionHistoryEntry, SessionRuntimeState
+from firstcoder.context.token_budget import ContextBudget
+
+
+def _budget_provider(view: SessionView) -> ContextBudget:
+    input_tokens = 60_000 if "token " in view.messages[0].parts[0].content else 60_000
+    return ContextBudget(
+        context_window=128_000,
+        output_reserve=8_192,
+        input_capacity=113_408,
+        fixed_tokens=18_000,
+        history_tokens=input_tokens - 18_000,
+        input_tokens=input_tokens,
+        high_watermark=102_067,
+        low_watermark=81_653,
+        source="configured",
+    )
 
 
 class FakeSession:
@@ -47,13 +63,16 @@ class FakeContextManager:
 
 def test_context_command_renders_inspection_report() -> None:
     session = FakeSession()
-    handler = ContextCommandHandler(session=session)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider)
 
     result = handler.handle("/context")
 
     assert result.handled is True
     assert "Session: sess_test" in result.output
-    assert "Estimated tokens:" in result.output
+    assert "Model window: 128000 (configured)" in result.output
+    assert "Fixed tokens: 18000" in result.output
+    assert "History tokens: 42000" in result.output
+    assert "High watermark: 102067" in result.output
     assert "Tail messages: 1" in result.output
 
 
@@ -73,7 +92,7 @@ def test_compact_status_command_renders_recent_compaction_events() -> None:
             created_at="2026-06-02T00:00:00Z",
         )
     )
-    handler = ContextCommandHandler(session=session)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider)
 
     result = handler.handle("/compact status")
 
@@ -87,7 +106,7 @@ def test_compact_status_shows_auto_circuit_breaker() -> None:
     session = FakeSession()
     session.runtime_state.auto_compact_disabled_until = "2999-06-01T00:30:00Z"
     session.runtime_state.last_auto_compact_failure_reason = "provider_error"
-    handler = ContextCommandHandler(session=session)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider)
 
     result = handler.handle("/compact status")
 
@@ -107,7 +126,7 @@ def test_manual_compact_command_calls_context_window_manager() -> None:
         after_tokens=200,
     )
     context_manager = FakeContextManager(compact_result)
-    handler = ContextCommandHandler(session=session, context_manager=context_manager)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider, context_manager=context_manager)
 
     result = handler.handle("/compact")
 
@@ -130,12 +149,12 @@ def test_manual_compact_uses_lower_target_than_current_context() -> None:
         after_tokens=10_000,
     )
     context_manager = FakeContextManager(compact_result)
-    handler = ContextCommandHandler(session=session, context_manager=context_manager)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider, context_manager=context_manager)
 
     result = handler.handle("/compact")
 
     assert result.handled is True
-    assert context_manager.calls[0].target_tokens == 12_000
+    assert context_manager.calls[0].target_tokens == 36_000
 
 
 def test_manual_compact_reports_noop_as_skipped() -> None:
@@ -159,7 +178,7 @@ def test_manual_compact_reports_noop_as_skipped() -> None:
         programmatic_event=noop_event,
     )
     context_manager = FakeContextManager(compact_result)
-    handler = ContextCommandHandler(session=session, context_manager=context_manager)
+    handler = ContextCommandHandler(session=session, budget_provider=_budget_provider, context_manager=context_manager)
 
     result = handler.handle("/compact")
 
@@ -168,7 +187,7 @@ def test_manual_compact_reports_noop_as_skipped() -> None:
 
 
 def test_unknown_slash_command_is_reported() -> None:
-    handler = ContextCommandHandler(session=FakeSession())
+    handler = ContextCommandHandler(session=FakeSession(), budget_provider=_budget_provider)
 
     result = handler.handle("/unknown")
 
@@ -177,7 +196,7 @@ def test_unknown_slash_command_is_reported() -> None:
 
 
 def test_plain_input_is_not_handled_as_command() -> None:
-    handler = ContextCommandHandler(session=FakeSession())
+    handler = ContextCommandHandler(session=FakeSession(), budget_provider=_budget_provider)
 
     result = handler.handle("hello")
 

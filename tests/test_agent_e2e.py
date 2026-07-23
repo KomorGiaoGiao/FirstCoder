@@ -217,11 +217,6 @@ def test_prompt_too_long_e2e_writes_l4_checkpoint_and_retries_with_summary(tmp_p
     )
     context_manager = ContextWindowManager(
         store=store,
-        config=ContextCompactionConfig(
-            auto_compact_threshold=1_000_000,
-            target_tokens=100_000,
-            blocking_target_tokens=100_000,
-        ),
         l4_service=LlmCompactService(
             store=store,
             summarizer=ProviderLlmCompactSummarizer(provider),
@@ -248,20 +243,13 @@ def test_prompt_too_long_e2e_writes_l4_checkpoint_and_retries_with_summary(tmp_p
 
 
 def _compact_manager(store: JsonlSessionStore, provider: ChatProvider, *, reason: str) -> ContextWindowManager:
-    threshold = 1 if reason == "token_threshold" else 1_000_000
-    max_tail_messages = 2 if reason == "tail_message_count" else 1_000
     large_tool_result_tokens = 10 if reason == "large_tool_result" else 1_000_000
     max_turn_tool_result_tokens = 10 if reason == "turn_tool_results" else 1_000_000
-    target_tokens = 10_000 if reason == "large_tool_result" else 1
     return ContextWindowManager(
         store=store,
         config=ContextCompactionConfig(
-            auto_compact_threshold=threshold,
-            target_tokens=target_tokens,
             large_tool_result_tokens=large_tool_result_tokens,
             max_turn_tool_result_tokens=max_turn_tool_result_tokens,
-            max_tail_messages=max_tail_messages,
-            max_tail_tokens=1_000_000,
         ),
         l4_service=LlmCompactService(
             store=store,
@@ -317,19 +305,21 @@ def test_auto_token_threshold_e2e_writes_compaction_and_checkpoint(tmp_path) -> 
         session=session,
         provider=provider,
         context_manager=_compact_manager(store, provider, reason="token_threshold"),
-    ).run_user_turn("触发 token 阈值")
+    ).run_user_turn("触发 token 阈值 " * 8_000)
 
     assert response.content == "完成"
     compact = _compact_events(store, "sess_auto_token")[0]
     assert compact.payload["trigger"] == "auto"
     assert compact.payload["reason"] == "not_reached"
-    assert _llm_compact_events(store, "sess_auto_token")[0].payload["trigger"] == "auto"
-    assert _checkpoint_events(store, "sess_auto_token")
+    l4_event = _llm_compact_events(store, "sess_auto_token")[0]
+    assert l4_event.payload["trigger"] == "auto"
+    assert l4_event.payload["reason"] == "still_over_budget"
+    assert _checkpoint_events(store, "sess_auto_token") == []
     normal_requests = [request for request in provider.requests if request.tools]
-    assert normal_requests[-1].messages[-1].content.endswith("触发 token 阈值")
+    assert normal_requests[-1].messages[-1].content.endswith("触发 token 阈值 ")
 
 
-def test_auto_large_single_tool_result_e2e_writes_auto_compaction(tmp_path) -> None:
+def test_auto_large_single_tool_result_does_not_bypass_dynamic_watermark(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_large_tool", agents_md="")
     provider = FakeProvider(
@@ -353,14 +343,11 @@ def test_auto_large_single_tool_result_e2e_writes_auto_compaction(tmp_path) -> N
     ).run_user_turn("调用大工具")
 
     assert response.content == "完成"
-    skipped = _events(store, "sess_large_tool", "compaction_skipped")
-    assert skipped[-1].payload["trigger"] == "auto"
-    assert skipped[-1].payload["reason"] == "skipped_no_effect"
     assert _compact_events(store, "sess_large_tool") == []
     assert not _checkpoint_events(store, "sess_large_tool")
 
 
-def test_auto_large_turn_tool_results_e2e_writes_auto_compaction(tmp_path) -> None:
+def test_auto_large_turn_tool_results_do_not_bypass_dynamic_watermark(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_turn_tools", agents_md="")
     provider = FakeProvider(
@@ -375,9 +362,7 @@ def test_auto_large_turn_tool_results_e2e_writes_auto_compaction(tmp_path) -> No
                 ],
                 finish_reason="tool_calls",
             ),
-            ChatResponse(provider="fake", model="fake-model", content="turn 摘要"),
             ChatResponse(provider="fake", model="fake-model", content="完成"),
-            ChatResponse(provider="fake", model="fake-model", content="最终 turn 摘要"),
         ]
     )
 
@@ -389,21 +374,18 @@ def test_auto_large_turn_tool_results_e2e_writes_auto_compaction(tmp_path) -> No
     ).run_user_turn("调用两个工具")
 
     assert response.content == "完成"
-    compact = _compact_events(store, "sess_turn_tools")[0]
-    assert compact.payload["trigger"] == "auto"
-    assert compact.payload["reason"] == "not_reached"
-    assert _llm_compact_events(store, "sess_turn_tools")[0].payload["trigger"] == "auto"
-    assert _checkpoint_events(store, "sess_turn_tools")
+    assert _compact_events(store, "sess_turn_tools") == []
+    assert _llm_compact_events(store, "sess_turn_tools") == []
+    assert _checkpoint_events(store, "sess_turn_tools") == []
 
 
-def test_auto_tail_message_count_e2e_writes_auto_compaction(tmp_path) -> None:
+def test_auto_tail_message_count_does_not_bypass_dynamic_watermark(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_tail_count", agents_md="")
     seed = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
     AgentLoop(session=session, provider=seed).run_user_turn("旧问题")
     provider = FakeProvider(
         [
-            ChatResponse(provider="fake", model="fake-model", content="tail 摘要"),
             ChatResponse(provider="fake", model="fake-model", content="完成"),
         ]
     )
@@ -415,11 +397,9 @@ def test_auto_tail_message_count_e2e_writes_auto_compaction(tmp_path) -> None:
     ).run_user_turn("新问题")
 
     assert response.content == "完成"
-    compact = _compact_events(store, "sess_tail_count")[0]
-    assert compact.payload["trigger"] == "auto"
-    assert compact.payload["reason"] == "not_reached"
-    assert _llm_compact_events(store, "sess_tail_count")[0].payload["trigger"] == "auto"
-    assert _checkpoint_events(store, "sess_tail_count")
+    assert _compact_events(store, "sess_tail_count") == []
+    assert _llm_compact_events(store, "sess_tail_count") == []
+    assert _checkpoint_events(store, "sess_tail_count") == []
 
 
 def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None:

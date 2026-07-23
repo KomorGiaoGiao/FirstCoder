@@ -30,6 +30,7 @@ from firstcoder.app.tui_state import TuiTranscriptEntry
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.token_budget import build_context_budget
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.agent.session import AgentSession
 from firstcoder.input.attachments import UserAttachment
@@ -368,8 +369,14 @@ class FakeSession:
         return SessionView(session_id="sess_test")
 
 
+def _context_budget(view):
+    return build_context_budget(
+        messages=[], tools=[], context_window=32_768, max_output_tokens=4_096
+    )
+
+
 def test_firstcoder_app_can_be_created_with_command_handler() -> None:
-    handler = ContextCommandHandler(session=FakeSession())
+    handler = ContextCommandHandler(session=FakeSession(), budget_provider=_context_budget)
 
     app = FirstCoderApp(command_handler=handler, config=FirstCoderTuiConfig(title="TestCoder"))
 
@@ -1039,7 +1046,7 @@ class SubmitChatCommandHandler:
 
 
 def test_firstcoder_app_can_be_created_with_composite_handler_and_chat_runner() -> None:
-    context_handler = ContextCommandHandler(session=FakeSession())
+    context_handler = ContextCommandHandler(session=FakeSession(), budget_provider=_context_budget)
     composite = CompositeCommandHandler(
         [
             SessionCommandHandler(catalog=object()),  # constructor storage only; not used by this test

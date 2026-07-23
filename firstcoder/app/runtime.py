@@ -286,6 +286,10 @@ class AgentChatRunner:
 
         return self.tools_provider() if self.tools_provider is not None else self.tools
 
+    def context_budget(self, view):
+        loop = self.loops[-1] if self.loops else self._create_loop(CancellationToken())
+        return loop.context_budget_for_view(view)
+
     def _create_loop(self, cancellation_token: CancellationToken, *, streaming: bool = False) -> AgentLoop:
         kwargs = {
             "session": self.current_session.session,
