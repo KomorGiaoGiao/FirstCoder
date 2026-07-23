@@ -214,6 +214,7 @@ def create_firstcoder_app(
         limits=AgentLoopLimits.default(),
         use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
         request_options=_main_request_options(selected_profile),
+        context_window=selected_profile.context_window if selected_profile is not None else None,
         background_manager=background_manager,
     )
     model_switcher = RuntimeModelSwitcher(
@@ -321,6 +322,7 @@ class RuntimeModelSwitcher:
         self._chat_runner.set_model(
             provider,
             request_options=_main_request_options(profile),
+            context_window=profile.context_window,
             use_streaming=_should_use_streaming(provider, self._app_config),
         )
         self._compact_summarizer.provider = provider

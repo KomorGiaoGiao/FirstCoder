@@ -79,6 +79,7 @@ class AgentLoop:
         guidance_provider: Callable[[], list[str]] | None = None,
         cancellation_token: CancellationToken | None = None,
         request_options: MainRequestOptions | None = None,
+        context_window: int | None = None,
         background_manager: BackgroundJobManager | None = None,
         background_tool_names: frozenset[str] | None = None,
         enable_delegate_tool: bool = True,
@@ -88,6 +89,7 @@ class AgentLoop:
         self.task_plan_policy = TaskPlanPolicy(session)
         self.provider = provider
         self.request_options = request_options or MainRequestOptions()
+        self.context_window = context_window
         self.context_builder = context_builder or ContextBuilder()
         self.context_manager = context_manager
         self.limits = limits or AgentLoopLimits.default()

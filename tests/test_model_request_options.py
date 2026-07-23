@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.session import AgentSession
 from firstcoder.agent.task_boundary_classifier import TaskBoundaryClassifier
+from firstcoder.app.runtime import AgentChatRunner, CurrentSessionState
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
@@ -15,6 +16,7 @@ from firstcoder.providers.types import (
     ChatStreamEvent,
     MainRequestOptions,
 )
+from firstcoder.runtime.cancellation import CancellationToken
 
 
 @dataclass
@@ -114,3 +116,19 @@ def test_main_request_options_copy_extra_body() -> None:
     kwargs["extra_body"]["nested"]["value"] = 3
 
     assert options.extra_body == {"nested": {"value": 1}}
+
+
+def test_chat_runner_passes_context_window_to_agent_loop(tmp_path) -> None:
+    provider = RecordingProvider()
+    session = _session(tmp_path)
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(session),
+        provider=provider,
+        context_window=128_000,
+        request_options=MainRequestOptions(max_tokens=8_192),
+    )
+
+    loop = runner._create_loop(CancellationToken())
+
+    assert loop.context_window == 128_000
+    assert loop.request_options.max_tokens == 8_192
