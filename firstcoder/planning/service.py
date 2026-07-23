@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-import fcntl
+import portalocker
 
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
@@ -124,12 +124,8 @@ class TaskPlanService:
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_path = lock_dir / f"task-plan-{digest}.lock"
 
-        with thread_lock, lock_path.open("a+b") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        with thread_lock, portalocker.Lock(lock_path, mode="a+b", flags=portalocker.LOCK_EX):
+            yield
 
     def _require_current_plan(self, operation: str) -> TaskPlan:
         plan = self.current()
