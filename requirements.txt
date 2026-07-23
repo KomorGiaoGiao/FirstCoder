@@ -7,3 +7,4 @@ python-dotenv
 pydantic
 PyYAML
 pytest
+portalocker

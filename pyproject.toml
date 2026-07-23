@@ -19,6 +19,7 @@ dependencies = [
     "pydantic",
     "PyYAML",
     "tomlkit",
+    "portalocker",
 ]
 
 [project.optional-dependencies]

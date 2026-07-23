@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import inspect
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, BrokenBarrierError
@@ -10,6 +12,20 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.writer import SessionEventWriter
 from firstcoder.planning.reducer import TaskPlanCommandError, TaskPlanRevisionConflict
 from firstcoder.planning.service import TaskPlanMutation, TaskPlanService
+import firstcoder.planning.service as service_module
+
+
+def test_planning_service_uses_cross_platform_file_lock() -> None:
+    tree = ast.parse(inspect.getsource(service_module))
+    imported_modules = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+
+    assert "portalocker" in imported_modules
+    assert "fcntl" not in imported_modules
 
 
 def _service(tmp_path, *, session_id: str = "sess_plan") -> tuple[
