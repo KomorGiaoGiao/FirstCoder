@@ -1,10 +1,44 @@
 import pytest
 
+from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.context_builder import ContextBuilder
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.tool_sequence import InvalidToolCallSequenceError, validate_tool_call_sequence
 from firstcoder.context.system_prompt import SystemPromptBuilder, SystemPromptInputs
 from firstcoder.providers.types import ChatMessage
+
+
+def _tool_transaction(suffix: str) -> tuple[AgentMessage, AgentMessage]:
+    call_id = f"call_{suffix}"
+    call = AgentMessage(
+        id=f"msg_call_{suffix}",
+        session_id="sess_test",
+        role="assistant",
+        parts=[
+            MessagePart(
+                id=f"part_call_{suffix}",
+                message_id=f"msg_call_{suffix}",
+                kind="tool_call",
+                content="",
+                metadata={"tool_call_id": call_id, "tool_name": "echo", "arguments": {}},
+            )
+        ],
+    )
+    result = AgentMessage(
+        id=f"msg_result_{suffix}",
+        session_id="sess_test",
+        role="tool",
+        parts=[
+            MessagePart(
+                id=f"part_result_{suffix}",
+                message_id=f"msg_result_{suffix}",
+                kind="tool_result",
+                content=suffix,
+                metadata={"tool_call_id": call_id, "tool_name": "echo"},
+            )
+        ],
+    )
+    return call, result
 
 
 def test_context_builder_projects_internal_messages_to_provider_messages() -> None:
@@ -391,3 +425,26 @@ def test_context_builder_does_not_collapse_duplicate_id_when_arguments_differ() 
 
     with pytest.raises(InvalidToolCallSequenceError, match="missing matching tool result"):
         ContextBuilder().build_provider_messages(SessionView(session_id="sess_conflicting_duplicate", messages=messages))
+
+
+def test_projected_tool_result_part_ids_only_include_effective_checkpoint_tail() -> None:
+    old_call, old_result = _tool_transaction("old")
+    tail_call, tail_result = _tool_transaction("tail")
+    view = SessionView(
+        session_id="sess_test",
+        messages=[old_call, old_result, tail_call, tail_result],
+        checkpoints=[
+            Checkpoint(
+                id="ckpt_1",
+                session_id="sess_test",
+                summary="old",
+                tail_start_message_id=tail_call.id,
+                covered_until_message_id=old_result.id,
+                source_fingerprint="fp",
+            )
+        ],
+    )
+
+    part_ids = ContextBuilder().projected_tool_result_part_ids(view)
+
+    assert part_ids == (tail_result.parts[0].id,)

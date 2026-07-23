@@ -91,6 +91,9 @@ class SlowContextBuilder:
         time.sleep(self.delay_seconds)
         return list(system_prefix or [])
 
+    def projected_tool_result_part_ids(self, view):
+        return ()
+
 
 def test_current_session_state_proxies_replaced_session(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)

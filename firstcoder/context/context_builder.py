@@ -63,6 +63,22 @@ class ContextBuilder:
             messages.extend(projected)
         return messages
 
+    def projected_tool_result_part_ids(self, view: SessionView) -> tuple[str, ...]:
+        """Return tool results that are visible in the effective provider tail."""
+
+        checkpoint = CheckpointIndex(view.checkpoints).latest()
+        tail = _collapse_identical_adjacent_duplicate_tool_calls(
+            self._tail_messages(view, checkpoint=checkpoint)
+        )
+        validate_tool_call_sequence(tail)
+        return tuple(
+            part.id
+            for message in tail
+            if message.role == "tool"
+            for part in message.parts
+            if part.kind == "tool_result"
+        )
+
     def _tail_messages(
         self,
         view: SessionView,

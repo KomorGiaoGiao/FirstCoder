@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import anyio
@@ -29,8 +30,9 @@ from firstcoder.agent.user_input import (
     AgentTurnStatus,
 )
 from firstcoder.context.context_builder import ContextBuilder
+from firstcoder.context.identity import new_request_id, stable_json_hash
 from firstcoder.context.manager import ContextCompactRequest, ContextWindowTrigger
-from firstcoder.context.token_budget import estimate_chat_request_tokens
+from firstcoder.context.token_budget import ContextBudget, build_context_budget
 from firstcoder.context.task_boundary import TaskBoundaryService
 from firstcoder.input.attachments import UserAttachment
 from firstcoder.permissions.types import PermissionDecision, PermissionDecisionKind, PermissionRequest
@@ -47,6 +49,14 @@ from firstcoder.agent.subagent import SubagentRunner
 from firstcoder.tools.delegate import create_delegate_tool
 from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.tools.types import Tool, ToolResult
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedMainRequest:
+    request: ChatRequest
+    request_id: str
+    projection_fingerprint: str
+    tool_result_part_ids: tuple[str, ...]
 
 
 class AgentLoop:
@@ -200,9 +210,6 @@ class AgentLoop:
         try:
             if self._initialize_active_task_if_missing(message_id) is None:
                 self._classify_task_boundary(message_id)
-            # 用户消息写入后先给 context manager 一个机会。通常不会压缩；但当上下文已经接近
-            # 阈值时，先整理历史可以避免下一次 provider 请求直接超窗。
-            self._auto_compact()
         except _AgentLoopLimitReached as exc:
             return self._complete_turn(self._limit_response(exc.reason))
         except AgentCancelledError:
@@ -283,7 +290,6 @@ class AgentLoop:
         try:
             if self._initialize_active_task_if_missing(message_id) is None:
                 await self._classify_task_boundary_async(message_id)
-            self._auto_compact()
         except _AgentLoopLimitReached as exc:
             return self._complete_turn(self._limit_response(exc.reason)).response
         except AgentCancelledError:
@@ -448,7 +454,6 @@ class AgentLoop:
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
         self._tool_rounds_completed += 1
-        self._auto_compact()
 
     def _resolve_pending_confirmation(
         self,
@@ -512,16 +517,16 @@ class AgentLoop:
         prompt-too-long 恢复都可以复用同一套上下文构造逻辑。
         """
 
-        self._repair_interrupted_tool_calls_before_provider_request()
-        self._check_cancelled()
-        self._append_pending_guidance()
-        self._append_background_notifications()
-        definitions = self._provider_tool_definitions()
-        messages = self._request_messages(runtime_instruction=runtime_instruction)
+        prepared = self._prepare_main_provider_request(
+            tool_choice=tool_choice,
+            runtime_instruction=runtime_instruction,
+        )
         self._reserve_provider_call()
         self._check_turn_timeout()
         self._check_cancelled()
-        return self.provider.complete(self._main_chat_request(messages, definitions, tool_choice))
+        response = self.provider.complete(prepared.request)
+        self._record_projection_consumed(prepared)
+        return response
 
     def _main_chat_request(self, messages, definitions, tool_choice) -> ChatRequest:
         return ChatRequest(
@@ -551,7 +556,9 @@ class AgentLoop:
         except ProviderError as exc:
             if not exc.requires_compaction:
                 raise
-            result = self._compact_for_prompt_too_long()
+            result = self._compact_for_prompt_too_long(
+                runtime_instruction=runtime_instruction
+            )
             if result is None or result.status != "success":
                 raise
             return self._complete_once(
@@ -571,17 +578,15 @@ class AgentLoop:
         才能执行，因为 OpenAI-compatible 的 tool arguments 可能分散在多个 chunk 中。
         """
 
-        self._repair_interrupted_tool_calls_before_provider_request()
-        self._check_cancelled()
-        self._append_pending_guidance()
-        self._append_background_notifications()
-        definitions = self._provider_tool_definitions()
-        messages = self._request_messages(runtime_instruction=runtime_instruction)
+        prepared = self._prepare_main_provider_request(
+            tool_choice=tool_choice,
+            runtime_instruction=runtime_instruction,
+        )
         final_response: ChatResponse | None = None
         self._reserve_provider_call()
         self._check_turn_timeout()
         self._check_cancelled()
-        async for event in self.provider.astream(self._main_chat_request(messages, definitions, tool_choice)):
+        async for event in self.provider.astream(prepared.request):
             self._check_cancelled()
             self.last_stream_events.append(event)
             if self.stream_event_handler is not None:
@@ -593,6 +598,7 @@ class AgentLoop:
                 ProviderErrorKind.API_ERROR,
                 "provider stream ended without message_completed event",
             )
+        self._record_projection_consumed(prepared)
         return final_response
 
     async def _stream_once_with_recovery(
@@ -619,7 +625,9 @@ class AgentLoop:
                     )
                 if not exc.requires_compaction:
                     raise
-                result = self._compact_for_prompt_too_long()
+                result = self._compact_for_prompt_too_long(
+                    runtime_instruction=runtime_instruction
+                )
                 if result is None or result.status != "success":
                     raise
                 return await self._stream_once_attempt(
@@ -739,7 +747,6 @@ class AgentLoop:
 
     def _complete_turn(self, response: ChatResponse) -> AgentTurnResult:
         self.session.append_assistant_response(response)
-        self._auto_compact()
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
     def _continue_tool_loop_from_response(
@@ -759,7 +766,6 @@ class AgentLoop:
             execution = self.tool_executor.execute_interactive(response.tool_calls)
             if execution.pending_input is not None:
                 return response, execution.pending_input, tool_rounds
-            self._auto_compact()
             if execution.task_hash_changed:
                 self._compact_after_task_hash_changed()
 
@@ -819,7 +825,6 @@ class AgentLoop:
             execution = await self.tool_executor.execute_interactive_async(response.tool_calls)
             if execution.pending_input is not None:
                 return response, execution.pending_input, tool_rounds
-            self._auto_compact()
             if execution.task_hash_changed:
                 self._compact_after_task_hash_changed()
 
@@ -871,7 +876,99 @@ class AgentLoop:
             )
         )
 
-    def _compact_if_needed(self, *, trigger: ContextWindowTrigger):
+    def _prepare_main_provider_request(
+        self,
+        *,
+        tool_choice="auto",
+        runtime_instruction: str | None = None,
+    ) -> PreparedMainRequest:
+        self._repair_interrupted_tool_calls_before_provider_request()
+        self._check_cancelled()
+        self._append_pending_guidance()
+        self._append_background_notifications()
+        definitions = self._provider_tool_definitions()
+        view = self.session.rebuild_view()
+        budget = self._context_budget_for_view(
+            view,
+            runtime_instruction=runtime_instruction,
+            definitions=definitions,
+        )
+        if self.context_manager is not None:
+            result = self.context_manager.compact_if_needed(
+                ContextCompactRequest(
+                    view=view,
+                    runtime_state=self.session.runtime_state,
+                    budget=budget,
+                    estimate_budget=lambda candidate: self._context_budget_for_view(
+                        candidate,
+                        runtime_instruction=runtime_instruction,
+                        definitions=definitions,
+                    ),
+                    trigger=ContextWindowTrigger.AUTO,
+                    current_turn=self.session.current_turn,
+                )
+            )
+            if result.status == "success":
+                view = self.session.rebuild_view()
+
+        messages = self._request_messages(
+            view=view,
+            runtime_instruction=runtime_instruction,
+        )
+        request = self._main_chat_request(messages, definitions, tool_choice)
+        return PreparedMainRequest(
+            request=request,
+            request_id=new_request_id(),
+            projection_fingerprint=stable_json_hash(
+                {
+                    "messages": [asdict(message) for message in messages],
+                    "tools": [asdict(definition) for definition in definitions],
+                },
+                length=24,
+            ),
+            tool_result_part_ids=self.context_builder.projected_tool_result_part_ids(view),
+        )
+
+    def _record_projection_consumed(self, prepared: PreparedMainRequest) -> None:
+        self.session.record_provider_projection_consumed(
+            request_id=prepared.request_id,
+            projection_fingerprint=prepared.projection_fingerprint,
+            part_ids=prepared.tool_result_part_ids,
+            provider=self.provider.name,
+            model=self.provider.model,
+        )
+
+    def _context_budget_for_view(
+        self,
+        view,
+        *,
+        runtime_instruction: str | None,
+        definitions,
+    ) -> ContextBudget:
+        messages = self._request_messages(
+            view=view,
+            runtime_instruction=runtime_instruction,
+        )
+        return build_context_budget(
+            messages=messages,
+            tools=definitions,
+            context_window=self.context_window,
+            max_output_tokens=self.request_options.max_tokens,
+        )
+
+    def context_budget_for_view(self, view) -> ContextBudget:
+        return self._context_budget_for_view(
+            view,
+            runtime_instruction=None,
+            definitions=self._provider_tool_definitions(),
+        )
+
+    def _compact_if_needed(
+        self,
+        *,
+        trigger: ContextWindowTrigger,
+        runtime_instruction: str | None = None,
+    ):
         """把压缩触发交给 context manager。
 
         AgentLoop 不判断 token 细节，也不决定 L1/L2/L3/L4 怎么做；它只在关键时机告诉
@@ -880,41 +977,36 @@ class AgentLoop:
 
         if self.context_manager is None:
             return None
+        definitions = self._provider_tool_definitions()
+        view = self.session.rebuild_view()
+        budget = self._context_budget_for_view(
+            view,
+            runtime_instruction=runtime_instruction,
+            definitions=definitions,
+        )
         return self.context_manager.compact_if_needed(
             ContextCompactRequest(
-                view=self.session.rebuild_view(),
+                view=view,
                 runtime_state=self.session.runtime_state,
+                budget=budget,
+                estimate_budget=lambda candidate: self._context_budget_for_view(
+                    candidate,
+                    runtime_instruction=runtime_instruction,
+                    definitions=definitions,
+                ),
                 trigger=trigger,
                 current_turn=self.session.current_turn,
-                estimate_tokens=self._estimate_provider_request_tokens,
             )
         )
 
-    def _auto_compact(self):
-        return self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
-
-    def _compact_for_prompt_too_long(self):
-        return self._compact_if_needed(trigger=ContextWindowTrigger.PROMPT_TOO_LONG)
+    def _compact_for_prompt_too_long(self, *, runtime_instruction: str | None = None):
+        return self._compact_if_needed(
+            trigger=ContextWindowTrigger.PROMPT_TOO_LONG,
+            runtime_instruction=runtime_instruction,
+        )
 
     def _compact_after_task_hash_changed(self):
-        self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
-        return self._compact_if_needed(trigger=ContextWindowTrigger.AUTO)
-
-    def _estimate_provider_request_tokens(self, view) -> int:
-        definitions = self._provider_tool_definitions()
-        system_prefix = self.session.build_system_prefix(
-            provider_name=self.provider.name,
-            provider_model=self.provider.model,
-            provider_capabilities=getattr(self.provider, "capabilities", None),
-        )
-        messages = self._build_provider_messages(view, system_prefix=system_prefix)
-        config = getattr(self.context_manager, "config", None)
-        reserved_output_tokens = getattr(config, "reserved_output_tokens", 4_096)
-        return estimate_chat_request_tokens(
-            messages=messages,
-            tools=definitions,
-            reserved_output_tokens=reserved_output_tokens,
-        )
+        return self._compact_if_needed(trigger=ContextWindowTrigger.TASK_HASH_CHANGED)
 
     def _build_provider_messages(self, view, *, system_prefix):
         return self.context_builder.build_provider_messages(
@@ -923,7 +1015,7 @@ class AgentLoop:
             store_root=self.session.store.root,
         )
 
-    def _request_messages(self, *, runtime_instruction: str | None = None):
+    def _request_messages(self, *, view=None, runtime_instruction: str | None = None):
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
             provider_model=self.provider.model,
@@ -935,7 +1027,7 @@ class AgentLoop:
                 ChatMessage(role="system", content=runtime_instruction),
             ]
         return self._build_provider_messages(
-            self.session.rebuild_view(),
+            view or self.session.rebuild_view(),
             system_prefix=system_prefix,
         )
 
