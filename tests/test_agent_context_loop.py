@@ -444,9 +444,18 @@ def _echo_tool() -> Tool:
     )
 
 
-def _slow_named_tool(name: str, *, delay: float) -> Tool:
+def _slow_named_tool(
+    name: str,
+    *,
+    delay: float,
+    execution_intervals: dict[str, tuple[float, float]] | None = None,
+) -> Tool:
     def execute(text: str) -> ToolResult:
+        started_at = time.perf_counter()
         time.sleep(delay)
+        finished_at = time.perf_counter()
+        if execution_intervals is not None:
+            execution_intervals[name] = (started_at, finished_at)
         return ToolResult(name=name, ok=True, content=f"{name}:{text}")
 
     return Tool(
@@ -696,19 +705,22 @@ def test_agent_loop_runs_readonly_tool_calls_in_parallel_and_appends_results_in_
         ]
     )
     tool_events: list[ToolExecutionEvent] = []
+    execution_intervals: dict[str, tuple[float, float]] = {}
     loop = AgentLoop(
         session=session,
         provider=provider,
-        tools=[_slow_named_tool("view", delay=0.2), _slow_named_tool("grep", delay=0.2)],
+        tools=[
+            _slow_named_tool("view", delay=0.2, execution_intervals=execution_intervals),
+            _slow_named_tool("grep", delay=0.2, execution_intervals=execution_intervals),
+        ],
         tool_event_handler=tool_events.append,
     )
 
-    started_at = time.perf_counter()
     result = loop.run_user_turn("并发读")
-    elapsed = time.perf_counter() - started_at
 
     assert result.content == "完成"
-    assert elapsed < 0.35
+    assert execution_intervals["view"][0] < execution_intervals["grep"][1]
+    assert execution_intervals["grep"][0] < execution_intervals["view"][1]
     assert [event.kind for event in tool_events] == ["started", "started", "finished", "finished"]
     view = store.rebuild_session_view("sess_parallel_readonly")
     tool_messages = [message for message in view.messages if message.role == "tool"]
@@ -721,11 +733,15 @@ def test_agent_loop_runs_readonly_tool_calls_in_parallel_and_appends_results_in_
 
 def test_agent_loop_runs_bypass_allowed_tool_calls_in_parallel(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
+    execution_intervals: dict[str, tuple[float, float]] = {}
     session = AgentSession.from_project(
         store=store,
         session_id="sess_parallel_bypass",
         project_root=tmp_path,
-        tools=[_slow_named_tool("shell", delay=0.2), _slow_named_tool("python_exec", delay=0.2)],
+        tools=[
+            _slow_named_tool("shell", delay=0.2, execution_intervals=execution_intervals),
+            _slow_named_tool("python_exec", delay=0.2, execution_intervals=execution_intervals),
+        ],
     )
     session.set_permission_mode(PermissionMode.BYPASS)
     provider = FakeProvider(
@@ -750,12 +766,11 @@ def test_agent_loop_runs_bypass_allowed_tool_calls_in_parallel(tmp_path) -> None
         tool_event_handler=tool_events.append,
     )
 
-    started_at = time.perf_counter()
     result = loop.run_user_turn("bypass 并发")
-    elapsed = time.perf_counter() - started_at
 
     assert result.content == "完成"
-    assert elapsed < 0.35
+    assert execution_intervals["shell"][0] < execution_intervals["python_exec"][1]
+    assert execution_intervals["python_exec"][0] < execution_intervals["shell"][1]
     assert [event.kind for event in tool_events] == ["started", "started", "finished", "finished"]
     view = store.rebuild_session_view("sess_parallel_bypass")
     tool_messages = [message for message in view.messages if message.role == "tool"]
@@ -784,18 +799,21 @@ def test_agent_loop_streaming_runs_readonly_tool_calls_in_parallel(tmp_path) -> 
             ChatResponse(provider="fake-stream", model="fake-stream-model", content="完成"),
         ]
     )
+    execution_intervals: dict[str, tuple[float, float]] = {}
     loop = AgentLoop(
         session=session,
         provider=provider,
-        tools=[_slow_named_tool("view", delay=0.2), _slow_named_tool("grep", delay=0.2)],
+        tools=[
+            _slow_named_tool("view", delay=0.2, execution_intervals=execution_intervals),
+            _slow_named_tool("grep", delay=0.2, execution_intervals=execution_intervals),
+        ],
     )
 
-    started_at = time.perf_counter()
     result = loop.run_user_turn_streaming_sync("并发读")
-    elapsed = time.perf_counter() - started_at
 
     assert result.content == "完成"
-    assert elapsed < 0.35
+    assert execution_intervals["view"][0] < execution_intervals["grep"][1]
+    assert execution_intervals["grep"][0] < execution_intervals["view"][1]
     view = store.rebuild_session_view("sess_stream_parallel_readonly")
     tool_messages = [message for message in view.messages if message.role == "tool"]
     assert [message.parts[0].metadata["tool_call_id"] for message in tool_messages] == [
