@@ -57,6 +57,7 @@ def test_system_prompt_guides_incremental_task_plan_updates() -> None:
     assert "Call task_list only when that snapshot is missing or a write reports a revision conflict." in content
     assert "Start with task_list to read the authoritative plan and its revision." not in content
     assert "Use task_create only to create a plan or append new tasks." in content
+    assert "Use start_new_plan=true only for an independent new request after every current task is terminal." in content
     assert "Use task_update to change status, owner, or dependencies by stable task ID." in content
     assert "Use task_revise only when a task's semantic content must change." in content
     assert "Never resend or replace the whole task list just to update one task." in content

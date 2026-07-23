@@ -60,6 +60,7 @@ class TaskPlanService:
         mode: str,
         expected_revision: int,
         tasks: object,
+        start_new_plan: bool = False,
     ) -> TaskPlanMutation:
         with self._mutation_lock():
             current_plan = self.current()
@@ -68,6 +69,7 @@ class TaskPlanService:
                 expected_revision=expected_revision,
                 mode=mode,
                 tasks=tasks,
+                start_new_plan=start_new_plan,
             )
             return self._finish(
                 operation="create",

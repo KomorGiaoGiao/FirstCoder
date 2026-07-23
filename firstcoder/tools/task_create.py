@@ -10,13 +10,20 @@ from firstcoder.utils.schema import object_schema
 
 
 def create_task_create_tool(service: TaskPlanService) -> Tool:
-    def task_create(*, mode: str, expected_revision: int, tasks: object):
+    def task_create(
+        *,
+        mode: str,
+        expected_revision: int,
+        tasks: object,
+        start_new_plan: bool = False,
+    ):
         return execute_task_plan_mutation(
             "task_create",
             lambda: service.create(
                 mode=mode,
                 expected_revision=expected_revision,
                 tasks=tasks,
+                start_new_plan=start_new_plan,
             ),
             command_error_message=lambda error: _create_error_message(service, error),
         )
@@ -25,6 +32,7 @@ def create_task_create_tool(service: TaskPlanService) -> Tool:
         {
             "mode": {"type": "string", "enum": ["linear", "dag"]},
             "expected_revision": {"type": "integer", "minimum": 0},
+            "start_new_plan": {"type": "boolean"},
             "tasks": {
                 "type": "array",
                 "items": {
@@ -53,6 +61,7 @@ def create_task_create_tool(service: TaskPlanService) -> Tool:
             description=(
                 "Create only genuinely new tasks by stable task ID. Call task_list first to avoid duplicates. "
                 "Use task_update for status, owner, or dependency changes and task_revise for wording changes. "
+                "Set start_new_plan=true only for an independent new request after every current task is completed or cancelled. "
                 "Do not recreate existing tasks with new IDs."
             ),
             parameters=parameters,

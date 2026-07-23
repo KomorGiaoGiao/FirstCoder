@@ -57,6 +57,39 @@ def test_create_appends_task_objects_without_replacing_existing_tasks() -> None:
     assert result.changes == ({"id": "test", "content": "Test", "status": "pending", "depends_on": [], "owner": None, "order": 8},)
 
 
+def test_create_starts_new_plan_only_after_current_plan_is_terminal() -> None:
+    terminal = _linear_plan(
+        Task(id="old", content="Old", status="completed"),
+        revision=4,
+    )
+
+    result = create_tasks(
+        current_plan=terminal,
+        expected_revision=4,
+        mode="linear",
+        tasks=[{"id": "new", "content": "New", "status": "in_progress"}],
+        start_new_plan=True,
+    )
+
+    assert result.plan.revision == 5
+    assert [(task.id, task.status, task.order) for task in result.plan.tasks] == [
+        ("new", "in_progress", 0)
+    ]
+
+
+def test_create_rejects_start_new_plan_while_current_plan_is_active() -> None:
+    active = _linear_plan(Task(id="old", content="Old", status="pending"), revision=4)
+
+    with pytest.raises(TaskPlanCommandError, match="unfinished"):
+        create_tasks(
+            current_plan=active,
+            expected_revision=4,
+            mode="linear",
+            tasks=[{"id": "new", "content": "New"}],
+            start_new_plan=True,
+        )
+
+
 def test_create_rejects_mode_switch_and_duplicate_ids() -> None:
     plan = _linear_plan(Task(id="a", content="A"))
 

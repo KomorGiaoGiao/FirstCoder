@@ -67,6 +67,7 @@ def create_tasks(
     expected_revision: int,
     mode: TaskPlanMode | str,
     tasks: object,
+    start_new_plan: bool = False,
 ) -> ReductionResult:
     """Create the first plan or append new tasks to the current plan."""
 
@@ -79,8 +80,13 @@ def create_tasks(
         raise TaskPlanCommandError(f"cannot switch task plan mode from {current_plan.mode} to {normalized_mode}")
     if current_plan is None and not raw_tasks:
         raise TaskPlanCommandError("initial task plan must contain at least one task")
+    if start_new_plan and current_plan is not None:
+        if any(task.status not in {"completed", "cancelled"} for task in current_plan.tasks):
+            raise TaskPlanCommandError("cannot start a new plan while the current plan has unfinished tasks")
+        if not raw_tasks:
+            raise TaskPlanCommandError("new task plan must contain at least one task")
 
-    existing_tasks = current_plan.tasks if current_plan is not None else ()
+    existing_tasks = current_plan.tasks if current_plan is not None and not start_new_plan else ()
     existing_ids = {task.id for task in existing_tasks}
     next_order = max((task.order for task in existing_tasks), default=-1) + 1
     additions: list[Task] = []

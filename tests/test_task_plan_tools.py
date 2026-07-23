@@ -35,6 +35,9 @@ def test_task_plan_tool_schemas_are_incremental_and_exact(tmp_path) -> None:
         "expected_revision",
         "tasks",
     ]
+    assert tools["task_create"].definition.parameters["properties"]["start_new_plan"] == {
+        "type": "boolean"
+    }
     assert tools["task_update"].definition.parameters["required"] == [
         "expected_revision",
         "updates",

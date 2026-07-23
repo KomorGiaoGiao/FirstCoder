@@ -152,7 +152,7 @@ def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     assert "task_boundary" not in content
 
 
-def test_system_prompt_version_is_v15() -> None:
+def test_system_prompt_version_is_v16() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v15" in entry.messages[0].content
+    assert "prompt_version=v16" in entry.messages[0].content
