@@ -5,7 +5,7 @@ from pathlib import Path
 from firstcoder.context.compaction import CompactionEvent, CompactionResult
 from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.events import SessionEvent
-from firstcoder.context.llm_compact import LlmCompactEvent, LlmCompactResult
+from firstcoder.context.llm_compact import LlmCompactCandidate, LlmCompactEvent
 from firstcoder.context.manager import (
     ContextCompactMode,
     ContextCompactRequest,
@@ -32,15 +32,20 @@ class FakePipeline:
 
 
 class FakeL4:
-    def __init__(self, result: LlmCompactResult | list[LlmCompactResult]) -> None:
+    def __init__(self, result: LlmCompactCandidate | list[LlmCompactCandidate]) -> None:
         self.results = list(result) if isinstance(result, list) else [result]
         self.calls = []
 
-    def compact(self, request):
+    def generate_candidate(self, request):
         self.calls.append(request)
         if len(self.results) == 1:
             return self.results[0]
         return self.results.pop(0)
+
+    def commit_candidate(self, candidate, *, runtime_state):
+        if candidate.checkpoint is not None:
+            runtime_state.latest_checkpoint_id = candidate.checkpoint.id
+        return candidate.checkpoint
 
 
 class WritingFakeL4:
@@ -57,7 +62,7 @@ class WritingFakeL4:
         self.tail_start_message_id = tail_start_message_id
         self.covered_until_message_id = covered_until_message_id
 
-    def compact(self, request):
+    def generate_candidate(self, request):
         checkpoint = Checkpoint(
             id="ckpt_test",
             session_id=request.view.session_id,
@@ -66,15 +71,28 @@ class WritingFakeL4:
             covered_until_message_id=self.covered_until_message_id,
             source_fingerprint="fp_l4",
         )
+        return LlmCompactCandidate(
+            checkpoint=checkpoint,
+            event=LlmCompactEvent(
+                status="success",
+                source_fingerprint="fp_l4",
+                checkpoint_id=checkpoint.id,
+            ),
+        )
+
+    def commit_candidate(self, candidate, *, runtime_state):
+        checkpoint = candidate.checkpoint
+        assert checkpoint is not None
         self.store.append_event(
             SessionEvent(
                 id="evt_l4",
-                session_id=request.view.session_id,
+                session_id=checkpoint.session_id,
                 type="checkpoint_created",
                 payload=checkpoint.to_dict(),
             )
         )
-        return _l4_result()
+        runtime_state.latest_checkpoint_id = checkpoint.id
+        return checkpoint
 
 
 def _message(message_id: str, content: str) -> AgentMessage:
@@ -117,9 +135,21 @@ def _programmatic_result(
     )
 
 
-def _l4_result(*, status: str = "success", failure_reason: str | None = None) -> LlmCompactResult:
-    return LlmCompactResult(
-        checkpoint=None,
+def _l4_result(*, status: str = "success", failure_reason: str | None = None) -> LlmCompactCandidate:
+    checkpoint = (
+        Checkpoint(
+            id="ckpt_test",
+            session_id="sess_test",
+            summary="L4 summary",
+            tail_start_message_id="msg_1",
+            covered_until_message_id="msg_0",
+            source_fingerprint="fp_l4",
+        )
+        if status == "success"
+        else None
+    )
+    return LlmCompactCandidate(
+        checkpoint=checkpoint,
         event=LlmCompactEvent(
             status=status,
             source_fingerprint="fp_l4",

@@ -15,7 +15,7 @@ from typing import Protocol, Literal
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest, CompactionEvent, CompactionResult
 from firstcoder.context.fallback import CompactFallbackPolicy, FallbackStep
 from firstcoder.context.identity import session_view_fingerprint
-from firstcoder.context.llm_compact import LlmCompactRequest, LlmCompactService, LlmCompactEvent
+from firstcoder.context.llm_compact import LlmCompactCandidate, LlmCompactRequest, LlmCompactService, LlmCompactEvent
 from firstcoder.context.models import SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState, auto_compact_circuit_is_open
 from firstcoder.context.store import JsonlSessionStore
@@ -43,7 +43,14 @@ class ProgrammaticCompactor(Protocol):
 
 
 class L4Compactor(Protocol):
-    def compact(self, request: LlmCompactRequest): ...
+    def generate_candidate(self, request: LlmCompactRequest) -> LlmCompactCandidate: ...
+
+    def commit_candidate(
+        self,
+        candidate: LlmCompactCandidate,
+        *,
+        runtime_state: SessionRuntimeState,
+    ): ...
 
 
 @dataclass(slots=True)
@@ -240,10 +247,13 @@ class ContextWindowManager:
                 final_failure_reason="l4_service_missing",
             )
 
-        l4_result = self.l4_service.compact(
+        l4_result = self._generate_l4_candidate(
             LlmCompactRequest(
                 view=programmatic.view,
                 runtime_state=request.runtime_state,
+                consumed_tool_result_part_ids=frozenset(
+                    request.runtime_state.consumed_tool_result_part_ids
+                ),
                 mode=mode.value,
             )
         )
@@ -415,10 +425,13 @@ class ContextWindowManager:
                     l4_event=fallback_event,
                     fallback_steps=[step],
                 )
-            retry = self.l4_service.compact(
+            retry = self._generate_l4_candidate(
                 LlmCompactRequest(
                     view=stronger.view,
                     runtime_state=request.runtime_state,
+                    consumed_tool_result_part_ids=frozenset(
+                        request.runtime_state.consumed_tool_result_part_ids
+                    ),
                     mode=mode.value,
                     summary_mode="stronger",
                 )
@@ -459,10 +472,13 @@ class ContextWindowManager:
             )
 
         if action == "retry_l4_stronger_summary":
-            retry = self.l4_service.compact(
+            retry = self._generate_l4_candidate(
                 LlmCompactRequest(
                     view=programmatic.view,
                     runtime_state=request.runtime_state,
+                    consumed_tool_result_part_ids=frozenset(
+                        request.runtime_state.consumed_tool_result_part_ids
+                    ),
                     mode=mode.value,
                     summary_mode="stronger",
                 )
@@ -533,6 +549,15 @@ class ContextWindowManager:
             fallback_steps=[step],
             final_failure_reason=reason,
         )
+
+    def _generate_l4_candidate(self, request: LlmCompactRequest) -> LlmCompactCandidate:
+        candidate = self.l4_service.generate_candidate(request)
+        if candidate.event.status == "success":
+            self.l4_service.commit_candidate(
+                candidate,
+                runtime_state=request.runtime_state,
+            )
+        return candidate
 
     def _record_auto_failure_if_needed(
         self,

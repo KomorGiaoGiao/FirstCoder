@@ -45,6 +45,162 @@ def _message(message_id: str, content: str, *, role: str = "user") -> AgentMessa
     )
 
 
+def _request(
+    *,
+    view: SessionView,
+    runtime_state: SessionRuntimeState,
+    consumed_tool_result_part_ids: frozenset[str] | None = None,
+    **kwargs,
+) -> LlmCompactRequest:
+    if consumed_tool_result_part_ids is None:
+        consumed_tool_result_part_ids = frozenset(
+            part.id
+            for message in view.messages
+            for part in message.parts
+            if part.kind == "tool_result"
+        )
+    return LlmCompactRequest(
+        view=view,
+        runtime_state=runtime_state,
+        consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+        **kwargs,
+    )
+
+
+def _generate_and_commit(
+    service: LlmCompactService,
+    request: LlmCompactRequest,
+):
+    candidate = service.generate_candidate(request)
+    if candidate.event.status == "success":
+        service.commit_candidate(candidate, runtime_state=request.runtime_state)
+    return candidate
+
+
+def _tool_transaction_view() -> SessionView:
+    call = AgentMessage(
+        id="msg_call",
+        session_id="sess_test",
+        role="assistant",
+        parts=[
+            MessagePart(
+                id="part_call",
+                message_id="msg_call",
+                kind="tool_call",
+                content="",
+                metadata={
+                    "tool_call_id": "call_1",
+                    "tool_name": "shell",
+                    "arguments": {"command": "pytest -q"},
+                },
+            )
+        ],
+    )
+    result = AgentMessage(
+        id="msg_tool",
+        session_id="sess_test",
+        role="tool",
+        parts=[
+            MessagePart(
+                id="part_result",
+                message_id="msg_tool",
+                kind="tool_result",
+                content="3 passed",
+                metadata={"tool_call_id": "call_1", "tool_name": "shell", "ok": True},
+            )
+        ],
+    )
+    return SessionView(
+        session_id="sess_test",
+        messages=[call, result, _message("msg_recent", "继续")],
+    )
+
+
+def test_l4_generate_candidate_does_not_write_checkpoint(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    state = SessionRuntimeState(session_id="sess_test")
+    service = LlmCompactService(
+        store=store,
+        summarizer=FakeSummarizer(
+            [
+                LlmCompactSummary(
+                    summary="摘要",
+                    tail_start_message_id="msg_2",
+                    covered_until_message_id="msg_1",
+                )
+            ]
+        ),
+    )
+    request = _request(
+        view=SessionView(
+            session_id="sess_test",
+            messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
+        ),
+        runtime_state=state,
+        consumed_tool_result_part_ids=frozenset(),
+    )
+
+    candidate = service.generate_candidate(request)
+
+    assert candidate.checkpoint is not None
+    assert store.list_events("sess_test") == []
+    assert state.latest_checkpoint_id is None
+
+    committed = service.commit_candidate(candidate, runtime_state=state)
+    assert committed.id == candidate.checkpoint.id
+    assert [event.type for event in store.list_events("sess_test")] == ["checkpoint_created"]
+
+
+def test_l4_candidate_cannot_cover_unconsumed_tool_transaction(tmp_path) -> None:
+    candidate = LlmCompactService(
+        store=JsonlSessionStore(tmp_path),
+        summarizer=FakeSummarizer(
+            [
+                LlmCompactSummary(
+                    summary="摘要",
+                    tail_start_message_id="msg_recent",
+                    covered_until_message_id="msg_tool",
+                )
+            ]
+        ),
+    ).generate_candidate(
+        _request(
+            view=_tool_transaction_view(),
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            consumed_tool_result_part_ids=frozenset(),
+        )
+    )
+
+    assert candidate.checkpoint is None
+    assert candidate.event.status == "failed"
+    assert candidate.event.failure_reason == "unconsumed_boundary"
+
+
+def test_l4_candidate_can_cover_consumed_tool_transaction(tmp_path) -> None:
+    candidate = LlmCompactService(
+        store=JsonlSessionStore(tmp_path),
+        summarizer=FakeSummarizer(
+            [
+                LlmCompactSummary(
+                    summary="摘要",
+                    tail_start_message_id="msg_recent",
+                    covered_until_message_id="msg_tool",
+                )
+            ]
+        ),
+    ).generate_candidate(
+        _request(
+            view=_tool_transaction_view(),
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            consumed_tool_result_part_ids=frozenset({"part_result"}),
+        )
+    )
+
+    assert candidate.event.status == "success"
+    assert candidate.checkpoint is not None
+    assert candidate.checkpoint.tail_start_message_id == "msg_recent"
+
+
 def test_l4_writes_checkpoint_on_success(tmp_path: Path) -> None:
     store = JsonlSessionStore(tmp_path)
     view = SessionView(
@@ -66,7 +222,9 @@ def test_l4_writes_checkpoint_on_success(tmp_path: Path) -> None:
         ]
     )
 
-    result = LlmCompactService(store=store, summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=state, mode="auto"))
+    service = LlmCompactService(store=store, summarizer=summarizer)
+    result = service.generate_candidate(_request(view=view, runtime_state=state, mode="auto"))
+    service.commit_candidate(result, runtime_state=state)
 
     rebuilt = store.rebuild_session_view("sess_test")
     checkpoint = rebuilt.checkpoints[0]
@@ -112,7 +270,7 @@ def test_l4_summary_prompt_scope_excludes_system_prompt_and_tool_schema(tmp_path
         ]
     )
 
-    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).generate_candidate(_request(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
 
     assert summarizer.calls == [["msg_1", "msg_2"]]
 
@@ -148,7 +306,7 @@ def test_l4_input_uses_latest_checkpoint_summary_plus_tail(tmp_path: Path) -> No
         ]
     )
 
-    result = LlmCompactService(store=store, summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+    result = LlmCompactService(store=store, summarizer=summarizer).generate_candidate(_request(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
 
     assert summarizer.calls == [["ckpt_1_summary", "msg_2", "msg_3"]]
     assert result.checkpoint is not None
@@ -171,13 +329,15 @@ def test_same_source_fingerprint_is_not_summarized_twice(tmp_path: Path) -> None
             )
         ]
     )
-    first = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=first_summarizer).compact(LlmCompactRequest(view=view, runtime_state=state))
+    first_service = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=first_summarizer)
+    first = first_service.generate_candidate(_request(view=view, runtime_state=state))
+    first_service.commit_candidate(first, runtime_state=state)
 
     second_summarizer = FakeSummarizer([])
     service = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=second_summarizer)
 
-    result = service.compact(
-        LlmCompactRequest(
+    result = service.generate_candidate(
+        _request(
             view=view,
             runtime_state=state,
         )
@@ -237,7 +397,7 @@ def test_l4_source_fingerprint_includes_latest_checkpoint_boundary(tmp_path: Pat
                 )
             ]
         ),
-    ).compact(LlmCompactRequest(view=first_view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+    ).generate_candidate(_request(view=first_view, runtime_state=SessionRuntimeState(session_id="sess_test")))
     second = LlmCompactService(
         store=JsonlSessionStore(tmp_path / "second"),
         summarizer=FakeSummarizer(
@@ -249,7 +409,7 @@ def test_l4_source_fingerprint_includes_latest_checkpoint_boundary(tmp_path: Pat
                 )
             ]
         ),
-    ).compact(LlmCompactRequest(view=second_view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+    ).generate_candidate(_request(view=second_view, runtime_state=SessionRuntimeState(session_id="sess_test")))
 
     assert first.event.source_fingerprint != second.event.source_fingerprint
 
@@ -284,12 +444,14 @@ def test_new_checkpoint_tail_must_move_forward(tmp_path: Path) -> None:
         ]
     )
 
-    try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
-    except InvalidLlmCheckpointBoundaryError as exc:
-        assert "tail_start_message_id must stay within current L4 input tail" in str(exc)
-    else:
-        raise AssertionError("expected invalid checkpoint tail boundary")
+    result = LlmCompactService(
+        store=JsonlSessionStore(tmp_path),
+        summarizer=summarizer,
+    ).generate_candidate(_request(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+
+    assert result.checkpoint is None
+    assert result.event.status == "failed"
+    assert result.event.failure_reason == "invalid_tool_sequence"
 
 
 def test_new_checkpoint_covered_until_must_be_before_tail_start(tmp_path: Path) -> None:
@@ -311,12 +473,14 @@ def test_new_checkpoint_covered_until_must_be_before_tail_start(tmp_path: Path) 
         ]
     )
 
-    try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
-    except InvalidLlmCheckpointBoundaryError as exc:
-        assert "covered_until_message_id must be before tail_start_message_id" in str(exc)
-    else:
-        raise AssertionError("expected invalid checkpoint covered/tail order")
+    result = LlmCompactService(
+        store=JsonlSessionStore(tmp_path),
+        summarizer=summarizer,
+    ).generate_candidate(_request(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+
+    assert result.checkpoint is None
+    assert result.event.status == "failed"
+    assert result.event.failure_reason == "invalid_tool_sequence"
 
 
 def test_expected_source_fingerprint_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -336,8 +500,8 @@ def test_expected_source_fingerprint_mismatch_is_rejected(tmp_path: Path) -> Non
     )
 
     try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-            LlmCompactRequest(
+        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).generate_candidate(
+            _request(
                 view=view,
                 runtime_state=state,
                 expected_source_fingerprint="fp_old",
@@ -363,8 +527,9 @@ def test_l4_retries_no_summary_once_then_succeeds(tmp_path: Path) -> None:
         ]
     )
 
-    result = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-        LlmCompactRequest(
+    service = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer)
+    result = service.generate_candidate(
+        _request(
             view=SessionView(
                 session_id="sess_test",
                 messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
@@ -376,6 +541,7 @@ def test_l4_retries_no_summary_once_then_succeeds(tmp_path: Path) -> None:
 
     assert result.event.retry_count == 1
     assert len(summarizer.calls) == 2
+    service.commit_candidate(result, runtime_state=state)
     assert state.latest_checkpoint_id == result.checkpoint.id
 
 
@@ -390,8 +556,8 @@ def test_l4_passes_summary_mode_to_summarizer(tmp_path: Path) -> None:
         ]
     )
 
-    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-        LlmCompactRequest(
+    LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).generate_candidate(
+        _request(
             view=SessionView(
                 session_id="sess_test",
                 messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
@@ -404,15 +570,15 @@ def test_l4_passes_summary_mode_to_summarizer(tmp_path: Path) -> None:
     assert summarizer.summary_modes == ["stronger"]
 
 
-def test_auto_compact_failure_opens_circuit_breaker_after_limit(tmp_path: Path) -> None:
+def test_l4_candidate_failures_do_not_mutate_circuit_breaker(tmp_path: Path) -> None:
     state = SessionRuntimeState(session_id="sess_test")
 
     for _ in range(3):
         result = LlmCompactService(
             store=JsonlSessionStore(tmp_path),
             summarizer=FakeSummarizer([NoSummaryError("empty summary"), NoSummaryError("empty summary")]),
-        ).compact(
-            LlmCompactRequest(
+        ).generate_candidate(
+            _request(
                 view=SessionView(
                     session_id="sess_test",
                     messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
@@ -423,9 +589,9 @@ def test_auto_compact_failure_opens_circuit_breaker_after_limit(tmp_path: Path) 
         )
 
     assert result.checkpoint is None
-    assert state.auto_compact_failure_count == 3
-    assert state.auto_compact_disabled_until is not None
-    assert state.last_auto_compact_failure_reason == "no_summary"
+    assert state.auto_compact_failure_count == 0
+    assert state.auto_compact_disabled_until is None
+    assert state.last_auto_compact_failure_reason is None
 
 
 def test_manual_compact_ignores_auto_circuit_breaker(tmp_path: Path) -> None:
@@ -443,8 +609,8 @@ def test_manual_compact_ignores_auto_circuit_breaker(tmp_path: Path) -> None:
         ]
     )
 
-    result = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(
-        LlmCompactRequest(
+    result = LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).generate_candidate(
+        _request(
             view=SessionView(
                 session_id="sess_test",
                 messages=[_message("msg_1", "旧历史"), _message("msg_2", "tail")],
@@ -507,9 +673,11 @@ def test_l4_rejects_checkpoint_tail_that_starts_with_tool_result(tmp_path: Path)
         ]
     )
 
-    try:
-        LlmCompactService(store=JsonlSessionStore(tmp_path), summarizer=summarizer).compact(LlmCompactRequest(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
-    except InvalidLlmCheckpointBoundaryError as exc:
-        assert "tool_call/tool_result sequence" in str(exc)
-    else:
-        raise AssertionError("expected checkpoint tail sequence boundary to be rejected")
+    result = LlmCompactService(
+        store=JsonlSessionStore(tmp_path),
+        summarizer=summarizer,
+    ).generate_candidate(_request(view=view, runtime_state=SessionRuntimeState(session_id="sess_test")))
+
+    assert result.checkpoint is None
+    assert result.event.status == "failed"
+    assert result.event.failure_reason == "invalid_tool_sequence"
