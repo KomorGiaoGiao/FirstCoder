@@ -6,6 +6,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from firstcoder.context.budget_defaults import DEFAULT_CONTEXT_WINDOW, DEFAULT_OUTPUT_RESERVE
+
 
 class ModelCatalogError(ValueError):
     """模型目录配置缺失或不合法。"""
@@ -53,6 +55,7 @@ class ModelProfile:
     label: str
     provider: ProviderProfile
     request: ModelRequestOptions
+    context_window: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +129,26 @@ def _optional_bool(value: Any, field_name: str) -> bool | None:
     return value
 
 
+def _optional_positive_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ModelCatalogError(f"{field_name} 必须是大于 0 的整数")
+    return value
+
+
+def _validate_context_capacity(
+    *,
+    ref: str,
+    context_window: int | None,
+    max_tokens: int | None,
+) -> None:
+    resolved_window = context_window or DEFAULT_CONTEXT_WINDOW
+    resolved_output = max_tokens or DEFAULT_OUTPUT_RESERVE
+    if resolved_output >= int(resolved_window * 0.95):
+        raise ModelCatalogError(f"模型 {ref}.request.max_tokens 必须小于 context_window 的 95% 可用窗口")
+
+
 def _request_options(raw: Any, *, ref: str) -> ModelRequestOptions:
     if raw is None:
         raw = {}
@@ -180,7 +203,27 @@ def build_model_catalog(
         label = raw.get("label", ref)
         if not isinstance(label, str):
             raise ModelCatalogError(f"模型 {ref}.label 必须是字符串")
-        profiles.append(ModelProfile(ref, provider_id, model_id, label, provider, _request_options(raw.get("request"), ref=ref)))
+        request = _request_options(raw.get("request"), ref=ref)
+        context_window = _optional_positive_int(
+            raw.get("context_window"),
+            f"模型 {ref}.context_window",
+        )
+        _validate_context_capacity(
+            ref=ref,
+            context_window=context_window,
+            max_tokens=request.max_tokens,
+        )
+        profiles.append(
+            ModelProfile(
+                ref=ref,
+                provider_id=provider_id,
+                model_id=model_id,
+                label=label,
+                provider=provider,
+                request=request,
+                context_window=context_window,
+            )
+        )
     default_ref = _config_value(project_config, "default_model") or _config_value(global_config, "default_model")
     if default_ref is not None and default_ref not in {profile.ref for profile in profiles}:
         raise ModelCatalogError(f"默认模型未配置：{default_ref}")
