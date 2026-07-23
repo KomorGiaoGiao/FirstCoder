@@ -41,6 +41,7 @@ from firstcoder.app.transcript_view import (
     normalize_stream_text,
 )
 from firstcoder.app import yuren_topbar_themes
+from firstcoder.app.activity_view import compact_tool_arguments, compact_tool_content
 from firstcoder.app.tui_state import TuiEntryKind, TuiTaskPlanPanelState, TuiTranscript, TuiTranscriptEntry
 from firstcoder.app.topbar_view import _provider_name_markup, _provider_model_markup
 from firstcoder.app.tui_view import FirstCoderViewMixin, _entry_renderable
@@ -636,15 +637,40 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         if view.task_plan is not None:
             self._render_task_plan_panel(view.task_plan)
         for message in getattr(view, "messages", []):
-            content = "\n".join(part.content for part in message.parts if getattr(part, "content", ""))
-            if not content:
-                continue
             if message.role == "user":
+                content = "\n".join(part.content for part in message.parts if getattr(part, "content", ""))
+                if not content:
+                    continue
                 self._write_line(f"> {content}", kind=TuiEntryKind.USER)
             elif message.role == "assistant":
-                self._write_markdown_message(content)
+                for part in message.parts:
+                    if part.kind == "text" and part.content:
+                        self._write_markdown_message(part.content)
+                    elif part.kind == "tool_call":
+                        name = str(part.metadata.get("tool_name") or "tool")
+                        arguments = compact_tool_arguments(part.metadata.get("arguments"))
+                        suffix = f" {arguments}" if arguments else ""
+                        self._write_line(
+                            f"正在调用工具：{name}{suffix}",
+                            kind=TuiEntryKind.TOOL,
+                            label=f"tool {name} running",
+                            status="running",
+                        )
             else:
-                self._write_line(content, kind=TuiEntryKind.TOOL)
+                for part in message.parts:
+                    if part.kind != "tool_result":
+                        continue
+                    name = str(part.metadata.get("tool_name") or "tool")
+                    ok = bool(part.metadata.get("ok", True))
+                    status = "success" if ok else "error"
+                    result = compact_tool_content(part.content)
+                    suffix = f"：{result}" if result else ""
+                    self._write_line(
+                        f"工具{'完成' if ok else '失败'}：{name}{suffix}",
+                        kind=TuiEntryKind.TOOL,
+                        label=f"tool {name} {status}",
+                        status=status,
+                    )
         sync_pending = getattr(self.chat_runner, "sync_pending_input_from_current_session", None)
         if sync_pending is not None:
             sync_pending()

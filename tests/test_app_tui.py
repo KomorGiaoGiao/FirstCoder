@@ -1301,6 +1301,14 @@ async def test_firstcoder_app_resume_picker_replays_selected_session_history(tmp
     writer_one.append_session_created(title="第一个")
     writer_one.append_user_message("旧问题")
     writer_one.append_assistant_response(ChatResponse(provider="fake", model="fake", content="旧回答"))
+    tool_call = ToolCall(id="call_resume", name="grep", arguments={"pattern": "needle"})
+    writer_one.append_assistant_response(
+        ChatResponse(provider="fake", model="fake", content="", tool_calls=[tool_call])
+    )
+    writer_one.append_tool_result(
+        tool_call=tool_call,
+        result=ToolResult(name="grep", ok=True, content="result " + "x" * 300),
+    )
     writer_two = SessionEventWriter(store=store, session_id="sess_two")
     writer_two.append_session_created(title="第二个")
     writer_two.append_user_message("新问题")
@@ -1332,6 +1340,9 @@ async def test_firstcoder_app_resume_picker_replays_selected_session_history(tmp
     assert state.session.session_id == "sess_one"
     assert "旧问题" in output_text
     assert any(entry.body == "旧回答" for entry in app.transcript.entries)
+    assert any(entry.label == "tool grep running" for entry in app.transcript.entries)
+    assert any(entry.label == "tool grep success" for entry in app.transcript.entries)
+    assert "x" * 300 not in output_text
     assert markdown_rendered
     assert "Select a session" not in output_text
 
