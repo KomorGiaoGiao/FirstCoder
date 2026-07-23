@@ -9,10 +9,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-from firstcoder.context.checkpoint import Checkpoint, CheckpointIndex, checkpoint_summary_content
-from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.checkpoint import Checkpoint, CheckpointIndex
+from firstcoder.context.models import AgentMessage, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState, active_auto_compact_disabled_until
-from firstcoder.context.token_budget import estimate_text_tokens
+from firstcoder.context.token_budget import ContextBudget
 
 CheckpointBoundaryStatus = Literal["none", "ok", "missing_tail"]
 AutoCompactStatus = Literal["ready", "failed", "disabled"]
@@ -26,7 +26,15 @@ class ContextInspectionReport:
     system_prompt_fingerprint: str | None
     latest_checkpoint_id: str | None
     tail_message_count: int
-    estimated_tokens: int
+    context_window: int
+    context_window_source: str
+    output_reserve: int
+    fixed_tokens: int
+    history_tokens: int
+    input_tokens: int
+    high_watermark: int
+    low_watermark: int
+    unconsumed_tool_result_count: int
     archive_count: int
     last_compaction_input_fingerprint: str | None
     auto_compact_disabled_until: str | None
@@ -52,6 +60,8 @@ class ContextInspector:
         self,
         view: SessionView,
         runtime: SessionRuntimeState,
+        *,
+        budget: ContextBudget,
     ) -> ContextInspectionReport:
         checkpoint = CheckpointIndex(view.checkpoints).latest()
         tail = _inspect_tail_messages(view.messages, checkpoint)
@@ -64,7 +74,18 @@ class ContextInspector:
             system_prompt_fingerprint=runtime.system_prompt_fingerprint,
             latest_checkpoint_id=checkpoint.id if checkpoint else runtime.latest_checkpoint_id,
             tail_message_count=len(tail.messages),
-            estimated_tokens=_estimate_context_tokens(tail.messages, checkpoint),
+            context_window=budget.context_window,
+            context_window_source=budget.source,
+            output_reserve=budget.output_reserve,
+            fixed_tokens=budget.fixed_tokens,
+            history_tokens=budget.history_tokens,
+            input_tokens=budget.input_tokens,
+            high_watermark=budget.high_watermark,
+            low_watermark=budget.low_watermark,
+            unconsumed_tool_result_count=_count_unconsumed_tool_results(
+                tail.messages,
+                consumed=runtime.consumed_tool_result_part_ids,
+            ),
             archive_count=_count_archived_parts(view.messages),
             last_compaction_input_fingerprint=runtime.last_compaction_input_fingerprint,
             auto_compact_disabled_until=auto_compact_disabled_until,
@@ -88,20 +109,18 @@ def _inspect_tail_messages(messages: list[AgentMessage], checkpoint: Checkpoint 
     return TailInspection(messages=[], status="missing_tail")
 
 
-def _estimate_context_tokens(messages: list[AgentMessage], checkpoint: Checkpoint | None) -> int:
-    tokens = 0
-    if checkpoint is not None:
-        tokens += estimate_text_tokens(checkpoint_summary_content(checkpoint))
-
-    for message in messages:
-        if message.role == "system_meta":
-            continue
-        tokens += sum(estimate_text_tokens(part.content) for part in message.parts if _is_visible_part(part))
-    return tokens
-
-
-def _is_visible_part(part: MessagePart) -> bool:
-    return part.kind in {"text", "tool_result", "archive_placeholder", "checkpoint_summary"}
+def _count_unconsumed_tool_results(
+    messages: list[AgentMessage],
+    *,
+    consumed: set[str],
+) -> int:
+    return sum(
+        1
+        for message in messages
+        if message.role == "tool"
+        for part in message.parts
+        if part.kind == "tool_result" and part.id not in consumed
+    )
 
 
 def _count_archived_parts(messages: list[AgentMessage]) -> int:

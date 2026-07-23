@@ -45,6 +45,10 @@ class InvalidLlmCheckpointBoundaryError(ValueError):
     """L4 summarizer 返回的 checkpoint 边界会破坏 resume 投影。"""
 
 
+class UnconsumedLlmCheckpointBoundaryError(InvalidLlmCheckpointBoundaryError):
+    """L4 boundary would hide a tool result before its first successful projection."""
+
+
 class LlmSourceFingerprintMismatchError(ValueError):
     """调用方传入的 expected source fingerprint 与当前 view 不一致。"""
 
@@ -70,6 +74,7 @@ class LlmCompactSummarizer(Protocol):
 class LlmCompactRequest:
     view: SessionView
     runtime_state: SessionRuntimeState
+    consumed_tool_result_part_ids: frozenset[str]
     mode: CompactMode = "auto"
     expected_source_fingerprint: str | None = None
     summary_mode: str = "default"
@@ -87,7 +92,7 @@ class LlmCompactEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class LlmCompactResult:
+class LlmCompactCandidate:
     checkpoint: Checkpoint | None
     event: LlmCompactEvent
 
@@ -99,7 +104,7 @@ class LlmCompactService:
     retry_policy: CompactRetryPolicy = CompactRetryPolicy()
     auto_failure_limit: int = 3
 
-    def compact(self, request: LlmCompactRequest) -> LlmCompactResult:
+    def generate_candidate(self, request: LlmCompactRequest) -> LlmCompactCandidate:
         source = _build_l4_source(request.view)
         source_messages = source.messages
         source_fingerprint = _source_fingerprint(request.view.session_id, source)
@@ -109,7 +114,7 @@ class LlmCompactService:
             )
 
         if request.runtime_state.last_compaction_input_fingerprint == source_fingerprint:
-            return LlmCompactResult(
+            return LlmCompactCandidate(
                 checkpoint=None,
                 event=LlmCompactEvent(
                     status="skipped",
@@ -119,7 +124,7 @@ class LlmCompactService:
             )
 
         if request.mode == "auto" and auto_compact_circuit_is_open(request.runtime_state):
-            return LlmCompactResult(
+            return LlmCompactCandidate(
                 checkpoint=None,
                 event=LlmCompactEvent(
                     status="skipped",
@@ -138,18 +143,19 @@ class LlmCompactService:
                     source_messages,
                     summary_mode=request.summary_mode,
                 )
-                _validate_summary_boundary(summary, source=source)
-                checkpoint = self._write_checkpoint(
+                _validate_summary_boundary(
+                    summary,
+                    source=source,
+                    consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
+                )
+                checkpoint = _candidate_checkpoint(
                     request.view,
                     summary=summary,
                     source=source,
                     source_fingerprint=source_fingerprint,
                     retry_count=retries,
                 )
-                request.runtime_state.latest_checkpoint_id = checkpoint.id
-                request.runtime_state.last_compaction_input_fingerprint = source_fingerprint
-                request.runtime_state.record_auto_compact_success()
-                return LlmCompactResult(
+                return LlmCompactCandidate(
                     checkpoint=checkpoint,
                     event=LlmCompactEvent(
                         status="success",
@@ -158,58 +164,36 @@ class LlmCompactService:
                         checkpoint_id=checkpoint.id,
                     ),
                 )
+            except UnconsumedLlmCheckpointBoundaryError:
+                return _failed_candidate(source_fingerprint, retries, "unconsumed_boundary")
+            except InvalidLlmCheckpointBoundaryError:
+                return _failed_candidate(source_fingerprint, retries, "invalid_tool_sequence")
             except (PromptTooLongError, CompactTimeoutError, NoSummaryError) as error:
                 reason = _failure_reason(error)
                 decision = self.retry_policy.decide(reason, attempt=attempts)
                 if not decision.should_retry:
-                    if request.mode == "auto":
-                        request.runtime_state.record_auto_compact_failure(
-                            reason,
-                            failure_limit=self.auto_failure_limit,
-                        )
-                    return LlmCompactResult(
-                        checkpoint=None,
-                        event=LlmCompactEvent(
-                            status="failed",
-                            source_fingerprint=source_fingerprint,
-                            retry_count=retries,
-                            failure_reason=reason,
-                        ),
-                    )
+                    return _failed_candidate(source_fingerprint, retries, reason)
                 retries += 1
 
-    def _write_checkpoint(
+    def commit_candidate(
         self,
-        view: SessionView,
+        candidate: LlmCompactCandidate,
         *,
-        summary: LlmCompactSummary,
-        source: "L4Source",
-        source_fingerprint: str,
-        retry_count: int,
+        runtime_state: SessionRuntimeState,
     ) -> Checkpoint:
-        checkpoint = Checkpoint(
-            id="",
-            session_id=view.session_id,
-            summary=summary.summary,
-            tail_start_message_id=summary.tail_start_message_id,
-            covered_until_message_id=summary.covered_until_message_id,
-            source_fingerprint=source_fingerprint,
-            metadata={
-                "created_by": "l4_llm_compact",
-                "summary_prompt_scope": "conversation_history_only",
-                "retry_count": retry_count,
-                "base_checkpoint_id": source.base_checkpoint_id,
-                "source_message_ids": [message.id for message in source.messages],
-            },
-        )
+        checkpoint = candidate.checkpoint
+        if checkpoint is None or candidate.event.status != "success":
+            raise ValueError("only successful L4 candidates can be committed")
         self.store.append_event(
             SessionEvent(
                 id=new_event_id(),
-                session_id=view.session_id,
+                session_id=checkpoint.session_id,
                 type="checkpoint_created",
                 payload=checkpoint.to_dict(),
             )
         )
+        runtime_state.latest_checkpoint_id = checkpoint.id
+        runtime_state.last_compaction_input_fingerprint = candidate.event.source_fingerprint
         return checkpoint
 
 
@@ -269,7 +253,12 @@ def _checkpoint_summary_message(session_id: str, checkpoint: Checkpoint) -> Agen
     )
 
 
-def _validate_summary_boundary(summary: LlmCompactSummary, *, source: L4Source) -> None:
+def _validate_summary_boundary(
+    summary: LlmCompactSummary,
+    *,
+    source: L4Source,
+    consumed_tool_result_part_ids: frozenset[str],
+) -> None:
     if source.base_checkpoint_id is None:
         valid_ids = {message.id for message in source.messages}
     else:
@@ -299,6 +288,39 @@ def _validate_summary_boundary(summary: LlmCompactSummary, *, source: L4Source) 
             "checkpoint tail would break assistant tool_call/tool_result sequence",
         ) from error
 
+    earliest_protected = _earliest_unconsumed_transaction_index(
+        tail_messages,
+        consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+    )
+    if earliest_protected is not None and tail_start_index > earliest_protected:
+        raise UnconsumedLlmCheckpointBoundaryError(
+            "checkpoint tail would cover an unconsumed tool transaction",
+        )
+
+
+def _earliest_unconsumed_transaction_index(
+    messages: list[AgentMessage],
+    *,
+    consumed_tool_result_part_ids: frozenset[str],
+) -> int | None:
+    assistant_by_call_id = {
+        str(part.metadata.get("tool_call_id")): index
+        for index, message in enumerate(messages)
+        if message.role == "assistant"
+        for part in message.parts
+        if part.kind == "tool_call" and part.metadata.get("tool_call_id")
+    }
+    earliest: int | None = None
+    for index, message in enumerate(messages):
+        if message.role != "tool":
+            continue
+        for part in message.parts:
+            if part.kind != "tool_result" or part.id in consumed_tool_result_part_ids:
+                continue
+            start = assistant_by_call_id.get(str(part.metadata.get("tool_call_id")), index)
+            earliest = start if earliest is None else min(earliest, start)
+    return earliest
+
 
 def _source_tail_messages(source: L4Source) -> list[AgentMessage]:
     if source.base_checkpoint_id is None:
@@ -317,6 +339,48 @@ def _source_fingerprint(session_id: str, source: L4Source) -> str:
             "messages": [message.to_dict() for message in source.messages],
         },
         length=24,
+    )
+
+
+def _candidate_checkpoint(
+    view: SessionView,
+    *,
+    summary: LlmCompactSummary,
+    source: L4Source,
+    source_fingerprint: str,
+    retry_count: int,
+) -> Checkpoint:
+    return Checkpoint(
+        id="",
+        session_id=view.session_id,
+        summary=summary.summary,
+        tail_start_message_id=summary.tail_start_message_id,
+        covered_until_message_id=summary.covered_until_message_id,
+        source_fingerprint=source_fingerprint,
+        sequence=max((checkpoint.sequence for checkpoint in view.checkpoints), default=0) + 1,
+        metadata={
+            "created_by": "l4_llm_compact",
+            "summary_prompt_scope": "conversation_history_only",
+            "retry_count": retry_count,
+            "base_checkpoint_id": source.base_checkpoint_id,
+            "source_message_ids": [message.id for message in source.messages],
+        },
+    )
+
+
+def _failed_candidate(
+    source_fingerprint: str,
+    retry_count: int,
+    failure_reason: str,
+) -> LlmCompactCandidate:
+    return LlmCompactCandidate(
+        checkpoint=None,
+        event=LlmCompactEvent(
+            status="failed",
+            source_fingerprint=source_fingerprint,
+            retry_count=retry_count,
+            failure_reason=failure_reason,
+        ),
     )
 
 

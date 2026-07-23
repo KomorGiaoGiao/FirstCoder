@@ -18,10 +18,11 @@ def test_auto_compact_skips_when_circuit_breaker_is_open(tmp_path) -> None:
     result = LlmCompactService(
         store=JsonlSessionStore(tmp_path),
         summarizer=ShouldNotBeCalled(),
-    ).compact(
+    ).generate_candidate(
         LlmCompactRequest(
             view=SessionView(session_id="sess_test"),
             runtime_state=state,
+            consumed_tool_result_part_ids=frozenset(),
             mode="auto",
         )
     )
@@ -54,7 +55,7 @@ def test_auto_compact_resumes_when_circuit_breaker_expired(tmp_path) -> None:
     result = LlmCompactService(
         store=JsonlSessionStore(tmp_path),
         summarizer=summarizer,
-    ).compact(
+    ).generate_candidate(
         LlmCompactRequest(
             view=SessionView(
                 session_id="sess_test",
@@ -88,6 +89,7 @@ def test_auto_compact_resumes_when_circuit_breaker_expired(tmp_path) -> None:
                 ],
             ),
             runtime_state=state,
+            consumed_tool_result_part_ids=frozenset(),
             mode="auto",
         )
     )

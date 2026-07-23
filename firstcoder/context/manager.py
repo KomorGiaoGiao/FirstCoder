@@ -1,24 +1,23 @@
-"""上下文窗口压缩触发编排。
-
-`CompactionPipeline` 只负责 L1-L3 怎么压缩，`LlmCompactService` 只负责 L4 checkpoint
-摘要。manager 这一层负责判断什么时候触发、触发原因是什么、程序化压缩不够时是否进入
-L4，以及把压缩事件写回 append-only session 日志。
-"""
+"""上下文窗口压缩触发编排。"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from collections.abc import Callable
-from typing import Protocol, Literal
+from typing import Literal, Protocol
 
-from firstcoder.context.compaction import CompactionPipeline, CompactionRequest, CompactionEvent, CompactionResult
+from firstcoder.context.checkpoint import Checkpoint
+from firstcoder.context.compaction import CompactionEvent, CompactionPipeline, CompactionRequest, CompactionResult
+from firstcoder.context.context_builder import InvalidCheckpointBoundaryError
 from firstcoder.context.fallback import CompactFallbackPolicy, FallbackStep
 from firstcoder.context.identity import session_view_fingerprint
-from firstcoder.context.llm_compact import LlmCompactRequest, LlmCompactService, LlmCompactEvent
-from firstcoder.context.models import SessionView
+from firstcoder.context.llm_compact import LlmCompactCandidate, LlmCompactEvent, LlmCompactRequest
+from firstcoder.context.models import AgentMessage, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState, auto_compact_circuit_is_open
 from firstcoder.context.store import JsonlSessionStore
+from firstcoder.context.token_budget import ContextBudget
+from firstcoder.context.tool_sequence import InvalidToolCallSequenceError
 from firstcoder.context.triggers import ContextCompactionConfig, evaluate_context_triggers
 from firstcoder.context.writer import SessionEventWriter
 
@@ -43,18 +42,26 @@ class ProgrammaticCompactor(Protocol):
 
 
 class L4Compactor(Protocol):
-    def compact(self, request: LlmCompactRequest): ...
+    def generate_candidate(self, request: LlmCompactRequest) -> LlmCompactCandidate: ...
+
+    def commit_candidate(
+        self,
+        candidate: LlmCompactCandidate,
+        *,
+        runtime_state: SessionRuntimeState,
+    ) -> Checkpoint: ...
 
 
 @dataclass(slots=True)
 class ContextCompactRequest:
     view: SessionView
     runtime_state: SessionRuntimeState
+    budget: ContextBudget
+    estimate_budget: Callable[[SessionView], ContextBudget]
     trigger: ContextWindowTrigger | str = ContextWindowTrigger.AUTO
     mode: ContextCompactMode | str = ContextCompactMode.AUTO
     current_turn: int = 0
     target_tokens: int | None = None
-    estimate_tokens: Callable[[SessionView], int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,28 +77,27 @@ class ContextCompactResult:
     final_failure_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateOutcome:
+    candidate: LlmCompactCandidate
+    event: LlmCompactEvent
+    view: SessionView
+    input_tokens: int
+
+
 @dataclass(slots=True)
 class ContextWindowManager:
-    """统一上下文压缩触发入口。"""
+    """用一次 provider-facing budget 编排 L1-L4。"""
 
     store: JsonlSessionStore
     pipeline: ProgrammaticCompactor | None = None
     l4_service: L4Compactor | None = None
     config: ContextCompactionConfig | None = None
     fallback_policy: CompactFallbackPolicy = CompactFallbackPolicy()
-    auto_compact_threshold: int = 32_000
-    target_tokens: int = 24_000
 
     def __post_init__(self) -> None:
         if self.config is None:
-            self.config = ContextCompactionConfig(
-                auto_compact_threshold=self.auto_compact_threshold,
-                target_tokens=self.target_tokens,
-            )
-        else:
-            self.auto_compact_threshold = self.config.auto_compact_threshold
-            self.target_tokens = self.config.target_tokens
-
+            self.config = ContextCompactionConfig()
         if self.pipeline is None:
             self.pipeline = CompactionPipeline(
                 root=self.store.root,
@@ -101,75 +107,66 @@ class ContextWindowManager:
             )
 
     def compact_if_needed(self, request: ContextCompactRequest) -> ContextCompactResult:
-        """根据触发源决定是否 compact，并把压缩事实写回事件日志。
-
-        这个入口既服务自动触发，也服务强制触发：
-
-        - AUTO：先看 token/工具输出/尾部消息数量是否超过阈值。
-        - TASK_HASH_CHANGED：任务切换后强制整理旧任务上下文。
-        - PROMPT_TOO_LONG：provider 已经拒绝请求，必须尝试 blocking compact。
-        - MANUAL：用户主动要求观察压缩效果。
-        """
-
         trigger = ContextWindowTrigger(request.trigger)
         mode = ContextCompactMode(request.mode)
-        trigger_decision = self._trigger_decision(request.view, request)
-        before_tokens = trigger_decision.estimated_tokens
-        auto_failure_count_before = request.runtime_state.auto_compact_failure_count
+        before_tokens = request.budget.input_tokens
         input_fingerprint = session_view_fingerprint(request.view)
+        auto_failure_count_before = request.runtime_state.auto_compact_failure_count
 
-        if not self._should_compact(trigger=trigger, decision=trigger_decision):
-            # AUTO 场景下多数调用都会走到这里。返回 skipped 是有意义的状态，方便
-            # `/compact status` 和测试知道“检查过，但还没到阈值”。
+        decision = evaluate_context_triggers(
+            request.view,
+            self.config,
+            input_tokens=before_tokens,
+            high_watermark=request.budget.high_watermark,
+            low_watermark=request.budget.low_watermark,
+        )
+        if trigger == ContextWindowTrigger.AUTO and not decision.should_compact:
+            return self._unchanged("skipped", "under_threshold", request, before_tokens)
+        if (
+            trigger == ContextWindowTrigger.AUTO
+            and mode == ContextCompactMode.AUTO
+            and auto_compact_circuit_is_open(request.runtime_state)
+        ):
+            return self._unchanged("skipped", "circuit_open", request, before_tokens)
+        if (
+            trigger == ContextWindowTrigger.AUTO
+            and request.runtime_state.last_no_effect_compaction_fingerprint == input_fingerprint
+        ):
+            return self._unchanged("skipped", "skipped_no_effect", request, before_tokens)
+
+        target_tokens = _target_tokens(request, trigger)
+        if request.budget.fixed_tokens >= request.budget.low_watermark:
             return ContextCompactResult(
-                status="skipped",
-                reason=trigger_decision.reason,
+                status="failed",
+                reason="fixed_context_over_budget",
                 view=request.view,
                 before_tokens=before_tokens,
                 after_tokens=before_tokens,
+                final_failure_reason="fixed_context_over_budget",
             )
 
-        if trigger == ContextWindowTrigger.AUTO and mode == ContextCompactMode.AUTO and auto_compact_circuit_is_open(request.runtime_state):
-            # 连续失败后自动压缩会短暂熔断，避免每一轮对话都重复触发昂贵且失败的 L4。
-            # 手动 compact 不受这个限制，方便用户主动排查。
-            return ContextCompactResult(
-                status="skipped",
-                reason="circuit_open",
-                view=request.view,
-                before_tokens=before_tokens,
-                after_tokens=before_tokens,
-            )
-
-        if trigger == ContextWindowTrigger.AUTO and request.runtime_state.last_no_effect_compaction_fingerprint == input_fingerprint:
-            return ContextCompactResult(
-                status="skipped",
-                reason="skipped_no_effect",
-                view=request.view,
-                before_tokens=before_tokens,
-                after_tokens=before_tokens,
-            )
-
-        target_tokens = request.target_tokens or self.config.target_for_trigger(trigger.value)
-        force_route_current_text = _force_route_current_text_for_trigger(trigger)
-        required_levels: tuple[Literal["l1", "l2", "l3"], ...] = ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
-        # 先跑确定性的 L1-L3。它们不依赖模型，成本低、结果可重放；只有仍然超预算时
-        # 才进入 L4 LLM 摘要。
+        required_levels: tuple[Literal["l1", "l2", "l3"], ...] = (
+            ("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else ()
+        )
         programmatic = self.pipeline.compact(
             CompactionRequest(
                 view=request.view,
                 active_task_hash=request.runtime_state.active_task_hash,
                 target_tokens=target_tokens,
                 current_turn=request.current_turn,
+                estimate_tokens=lambda candidate: request.estimate_budget(candidate).input_tokens,
+                consumed_tool_result_part_ids=frozenset(
+                    request.runtime_state.consumed_tool_result_part_ids
+                ),
                 required_levels=required_levels,
                 l2_result_target_tokens=self.config.l2_result_target_tokens,
-                force_route_current_text=force_route_current_text,
+                force_route_current_text=_force_route_current_text_for_trigger(trigger),
                 force_old_task_compaction=trigger == ContextWindowTrigger.TASK_HASH_CHANGED,
             )
         )
-        after_programmatic = self._trigger_decision(programmatic.view, request)
-        after_tokens = after_programmatic.estimated_tokens
+        after_tokens = request.estimate_budget(programmatic.view).input_tokens
 
-        if trigger == ContextWindowTrigger.AUTO and programmatic.event.noop and after_tokens <= target_tokens:
+        if trigger == ContextWindowTrigger.AUTO and programmatic.event.noop and after_tokens < target_tokens:
             request.runtime_state.last_no_effect_compaction_fingerprint = input_fingerprint
             SessionEventWriter(store=self.store, session_id=request.view.session_id).append_compaction_skipped(
                 trigger=trigger.value,
@@ -191,14 +188,11 @@ class ContextWindowManager:
             target_tokens=target_tokens,
             event=programmatic.event,
         )
-
-        if after_tokens <= target_tokens and trigger != ContextWindowTrigger.PROMPT_TOO_LONG:
-            # L1-L3 已经足够时，不需要调用 LLM。这里仍然写入 compaction_completed，
-            # 这样 resume/debug 能看到本次压缩发生过什么。
+        if after_tokens < target_tokens and trigger != ContextWindowTrigger.PROMPT_TOO_LONG:
             self._record_auto_success_if_needed(request=request, mode=mode)
             return ContextCompactResult(
                 status="success",
-                reason=_result_reason(trigger=trigger, auto_reason=trigger_decision.reason),
+                reason=_result_reason(trigger=trigger, auto_reason=decision.reason),
                 view=programmatic.view,
                 before_tokens=before_tokens,
                 after_tokens=after_tokens,
@@ -206,138 +200,124 @@ class ContextWindowManager:
             )
 
         if self.l4_service is None:
-            # manager 可以在没有 L4 service 的测试/最小配置中运行。失败也写成
-            # llm_compaction_completed，方便 runtime replay 恢复失败计数和状态。
-            l4_event = LlmCompactEvent(
-                status="failed",
-                source_fingerprint=programmatic.event.input_fingerprint,
-                failure_reason="l4_service_missing",
-            )
-            self._record_l4_event(
-                session_id=request.view.session_id,
-                trigger=trigger,
-                target_tokens=target_tokens,
-                event=l4_event,
-            )
-            self._record_auto_failure_if_needed(
-                request=request,
-                mode=mode,
-                before_failure_count=auto_failure_count_before,
-                failure_reason="l4_service_missing",
-            )
-            return ContextCompactResult(
-                status="failed",
-                reason="l4_service_missing",
-                view=programmatic.view,
-                before_tokens=before_tokens,
-                after_tokens=after_tokens,
-                programmatic_event=programmatic.event,
-                l4_event=l4_event,
-                final_failure_reason="l4_service_missing",
-            )
-
-        l4_result = self.l4_service.compact(
-            LlmCompactRequest(
-                view=programmatic.view,
-                runtime_state=request.runtime_state,
-                mode=mode.value,
-            )
-        )
-        fallback_steps: list[dict[str, object]] = []
-        if l4_result.event.status != "success":
-            # L4 失败后不在 LlmCompactService 内部做复杂编排，而是在 manager 层统一应用
-            # fallback policy。这样 L4 service 保持“生成 checkpoint”这个窄职责。
-            fallback = self._run_fallback(
+            return self._final_l4_failure(
                 request=request,
                 trigger=trigger,
                 mode=mode,
                 target_tokens=target_tokens,
                 programmatic=programmatic,
-                l4_event=l4_result.event,
-            )
-            if fallback is not None:
-                fallback_steps.extend(fallback.fallback_steps or [])
-                failure_reason = fallback.final_failure_reason or l4_result.event.failure_reason or fallback.reason
-                if fallback.status == "failed":
-                    self._record_auto_failure_if_needed(
-                        request=request,
-                        mode=mode,
-                        before_failure_count=auto_failure_count_before,
-                        failure_reason=failure_reason,
-                    )
-                else:
-                    self._record_auto_success_if_needed(request=request, mode=mode)
-                return fallback
-
-            failure_reason = l4_result.event.failure_reason or l4_result.event.status
-            l4_event = _with_fallback(
-                l4_result.event,
-                fallback_steps=fallback_steps,
-                final_failure_reason=failure_reason,
-            )
-            self._record_l4_event(
-                session_id=request.view.session_id,
-                trigger=trigger,
-                target_tokens=target_tokens,
-                event=l4_event,
-            )
-            self._record_auto_failure_if_needed(
-                request=request,
-                mode=mode,
-                before_failure_count=auto_failure_count_before,
-                failure_reason=failure_reason,
-            )
-            return ContextCompactResult(
-                status="failed",
-                reason=_result_reason(trigger=trigger, auto_reason=trigger_decision.reason),
-                view=programmatic.view,
                 before_tokens=before_tokens,
                 after_tokens=after_tokens,
-                programmatic_event=programmatic.event,
-                l4_event=l4_event,
-                fallback_steps=fallback_steps,
-                final_failure_reason=failure_reason,
+                before_failure_count=auto_failure_count_before,
+                event=LlmCompactEvent(
+                    status="failed",
+                    source_fingerprint=programmatic.event.input_fingerprint,
+                    failure_reason="l4_service_missing",
+                ),
+                reason="l4_service_missing",
+            )
+
+        outcome = self._generate_validate_commit(
+            request=request,
+            l4_request=LlmCompactRequest(
+                view=programmatic.view,
+                runtime_state=request.runtime_state,
+                consumed_tool_result_part_ids=frozenset(
+                    request.runtime_state.consumed_tool_result_part_ids
+                ),
+                mode=mode.value,
+            ),
+            target_tokens=target_tokens,
+        )
+        if outcome.event.status != "success":
+            return self._run_fallback(
+                request=request,
+                trigger=trigger,
+                mode=mode,
+                target_tokens=target_tokens,
+                programmatic=programmatic,
+                outcome=outcome,
+                before_failure_count=auto_failure_count_before,
             )
 
         self._record_l4_event(
             session_id=request.view.session_id,
             trigger=trigger,
             target_tokens=target_tokens,
-            event=l4_result.event,
+            event=outcome.event,
         )
-        rebuilt_view = self.store.rebuild_session_view(request.view.session_id)
-        # checkpoint 写入后必须重新 rebuild，因为当前内存里的 programmatic.view 还不知道
-        # 新 checkpoint 事件。后续 token 估算和 provider 投影都应基于重放后的视图。
-        after_l4 = self._trigger_decision(rebuilt_view, request)
-        if after_l4.estimated_tokens > target_tokens:
-            self._record_auto_failure_if_needed(
-                request=request,
-                mode=mode,
-                before_failure_count=auto_failure_count_before,
-                failure_reason="still_over_budget",
+        self._record_auto_success_if_needed(request=request, mode=mode)
+        return ContextCompactResult(
+            status="success",
+            reason=_result_reason(trigger=trigger, auto_reason=decision.reason),
+            view=outcome.view,
+            before_tokens=before_tokens,
+            after_tokens=outcome.input_tokens,
+            programmatic_event=programmatic.event,
+            l4_event=outcome.event,
+        )
+
+    def _generate_validate_commit(
+        self,
+        *,
+        request: ContextCompactRequest,
+        l4_request: LlmCompactRequest,
+        target_tokens: int,
+    ) -> _CandidateOutcome:
+        candidate = self.l4_service.generate_candidate(l4_request)
+        event = candidate.event
+        if event.status != "success" or candidate.checkpoint is None:
+            reason = event.failure_reason or event.status
+            if reason == "unconsumed_boundary" and request.budget.input_tokens > request.budget.input_capacity:
+                reason = "unconsumed_result_over_budget"
+            failed = replace(event, status="failed", failure_reason=reason, final_failure_reason=reason)
+            return _CandidateOutcome(
+                candidate=candidate,
+                event=failed,
+                view=l4_request.view,
+                input_tokens=request.estimate_budget(l4_request.view).input_tokens,
             )
-            return ContextCompactResult(
+
+        candidate_view = _view_with_checkpoint(l4_request.view, candidate.checkpoint)
+        try:
+            candidate_budget = request.estimate_budget(candidate_view)
+        except (InvalidCheckpointBoundaryError, InvalidToolCallSequenceError):
+            failed = replace(
+                event,
                 status="failed",
-                reason="still_over_budget",
-                view=rebuilt_view,
-                before_tokens=before_tokens,
-                after_tokens=after_l4.estimated_tokens,
-                programmatic_event=programmatic.event,
-                l4_event=l4_result.event,
-                fallback_steps=fallback_steps,
+                failure_reason="invalid_tool_sequence",
+                checkpoint_id=None,
+                final_failure_reason="invalid_tool_sequence",
+            )
+            return _CandidateOutcome(
+                candidate=candidate,
+                event=failed,
+                view=l4_request.view,
+                input_tokens=request.estimate_budget(l4_request.view).input_tokens,
+            )
+        if candidate_budget.input_tokens >= target_tokens:
+            failed = replace(
+                event,
+                status="failed",
+                failure_reason="still_over_budget",
+                checkpoint_id=None,
                 final_failure_reason="still_over_budget",
             )
-        self._record_auto_success_if_needed(request=request, mode=mode)
+            return _CandidateOutcome(
+                candidate=candidate,
+                event=failed,
+                view=l4_request.view,
+                input_tokens=candidate_budget.input_tokens,
+            )
 
-        return ContextCompactResult(
-            status="success" if l4_result.event.status == "success" else l4_result.event.status,
-            reason=_result_reason(trigger=trigger, auto_reason=trigger_decision.reason),
+        self.l4_service.commit_candidate(candidate, runtime_state=request.runtime_state)
+        rebuilt_view = self.store.rebuild_session_view(request.view.session_id)
+        rebuilt_budget = request.estimate_budget(rebuilt_view)
+        return _CandidateOutcome(
+            candidate=candidate,
+            event=event,
             view=rebuilt_view,
-            before_tokens=before_tokens,
-            after_tokens=after_l4.estimated_tokens,
-            programmatic_event=programmatic.event,
-            l4_event=l4_result.event,
-            fallback_steps=fallback_steps,
+            input_tokens=rebuilt_budget.input_tokens,
         )
 
     def _run_fallback(
@@ -348,11 +328,14 @@ class ContextWindowManager:
         mode: ContextCompactMode,
         target_tokens: int,
         programmatic: CompactionResult,
-        l4_event: LlmCompactEvent,
-    ) -> ContextCompactResult | None:
-        reason = l4_event.failure_reason or l4_event.status
+        outcome: _CandidateOutcome,
+        before_failure_count: int,
+    ) -> ContextCompactResult:
+        reason = outcome.event.failure_reason or outcome.event.status
         action = self.fallback_policy.action_for(reason)
-        before_tokens = self._trigger_decision(programmatic.view, request).estimated_tokens
+        steps: list[dict[str, object]] = []
+        current_programmatic = programmatic
+        before_tokens = request.budget.input_tokens
 
         if action == "stronger_programmatic":
             stronger = self.pipeline.compact(
@@ -361,6 +344,10 @@ class ContextWindowManager:
                     active_task_hash=request.runtime_state.active_task_hash,
                     target_tokens=target_tokens,
                     current_turn=request.current_turn,
+                    estimate_tokens=lambda candidate: request.estimate_budget(candidate).input_tokens,
+                    consumed_tool_result_part_ids=frozenset(
+                        request.runtime_state.consumed_tool_result_part_ids
+                    ),
                     enabled_levels=("l1", "l2", "l3"),
                     required_levels=("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else (),
                     l2_result_target_tokens=self.config.l2_result_target_tokens,
@@ -374,157 +361,171 @@ class ContextWindowManager:
                 target_tokens=target_tokens,
                 event=stronger.event,
             )
-            after_decision = self._trigger_decision(stronger.view, request)
-            status = "success" if after_decision.estimated_tokens <= target_tokens else "failed"
-            step = FallbackStep(
-                step=1,
-                reason=reason,
-                action=action,
-                before_tokens=before_tokens,
-                after_tokens=after_decision.estimated_tokens,
-                status=status,
-                error=None if status == "success" else "still_over_budget",
-            ).to_dict()
-            if status == "success":
-                fallback_event = _with_fallback(
-                    replace(l4_event, status="success", failure_reason="fallback_success"),
-                    fallback_steps=[step],
+            stronger_tokens = request.estimate_budget(stronger.view).input_tokens
+            stronger_status = "success" if stronger_tokens < target_tokens else "failed"
+            steps.append(
+                FallbackStep(
+                    step=1,
+                    reason=reason,
+                    action=action,
+                    before_tokens=outcome.input_tokens,
+                    after_tokens=stronger_tokens,
+                    status=stronger_status,
+                    error=None if stronger_status == "success" else "still_over_budget",
+                ).to_dict()
+            )
+            current_programmatic = stronger
+            if stronger_status == "success":
+                event = _with_fallback(
+                    replace(outcome.event, status="success", failure_reason="fallback_success"),
+                    fallback_steps=steps,
                     final_failure_reason=None,
                 )
                 self._record_l4_event(
                     session_id=request.view.session_id,
                     trigger=trigger,
                     target_tokens=target_tokens,
-                    event=fallback_event,
+                    event=event,
                 )
+                self._record_auto_success_if_needed(request=request, mode=mode)
                 return ContextCompactResult(
                     status="success",
                     reason=_result_reason(trigger=trigger, auto_reason=reason),
                     view=stronger.view,
                     before_tokens=before_tokens,
-                    after_tokens=after_decision.estimated_tokens,
+                    after_tokens=stronger_tokens,
                     programmatic_event=stronger.event,
-                    l4_event=fallback_event,
-                    fallback_steps=[step],
+                    l4_event=event,
+                    fallback_steps=steps,
                 )
-            retry = self.l4_service.compact(
-                LlmCompactRequest(
-                    view=stronger.view,
+
+        if action in {"stronger_programmatic", "retry_l4_stronger_summary"}:
+            retry = self._generate_validate_commit(
+                request=request,
+                l4_request=LlmCompactRequest(
+                    view=current_programmatic.view,
                     runtime_state=request.runtime_state,
+                    consumed_tool_result_part_ids=frozenset(
+                        request.runtime_state.consumed_tool_result_part_ids
+                    ),
                     mode=mode.value,
                     summary_mode="stronger",
-                )
+                ),
+                target_tokens=target_tokens,
             )
-            rebuilt_view = self.store.rebuild_session_view(request.view.session_id)
-            after_retry = self._trigger_decision(rebuilt_view, request)
-            retry_status = "success" if retry.event.status == "success" else "failed"
-            retry_step = FallbackStep(
-                step=2,
-                reason=retry.event.failure_reason or retry.event.status,
-                action="retry_l4_stronger_summary",
-                before_tokens=after_decision.estimated_tokens,
-                after_tokens=after_retry.estimated_tokens,
-                status=retry_status,
-                error=retry.event.failure_reason,
-            ).to_dict()
-            retry_event = _with_fallback(
-                retry.event,
-                fallback_steps=[step, retry_step],
-                final_failure_reason=None if retry_status == "success" else retry.event.failure_reason,
+            steps.append(
+                FallbackStep(
+                    step=len(steps) + 1,
+                    reason=retry.event.failure_reason or retry.event.status,
+                    action="retry_l4_stronger_summary",
+                    before_tokens=request.estimate_budget(current_programmatic.view).input_tokens,
+                    after_tokens=retry.input_tokens,
+                    status="success" if retry.event.status == "success" else "failed",
+                    error=retry.event.failure_reason if retry.event.status != "success" else None,
+                ).to_dict()
             )
+            final_reason = None if retry.event.status == "success" else retry.event.failure_reason
+            event = _with_fallback(retry.event, fallback_steps=steps, final_failure_reason=final_reason)
             self._record_l4_event(
                 session_id=request.view.session_id,
                 trigger=trigger,
                 target_tokens=target_tokens,
-                event=retry_event,
+                event=event,
             )
+            if retry.event.status == "success":
+                self._record_auto_success_if_needed(request=request, mode=mode)
+            else:
+                self._record_auto_failure_if_needed(
+                    request=request,
+                    mode=mode,
+                    before_failure_count=before_failure_count,
+                    failure_reason=final_reason or "failed",
+                )
             return ContextCompactResult(
-                status=retry_status,
+                status="success" if retry.event.status == "success" else "failed",
                 reason=_result_reason(trigger=trigger, auto_reason=reason),
-                view=rebuilt_view,
+                view=retry.view,
                 before_tokens=before_tokens,
-                after_tokens=after_retry.estimated_tokens,
-                programmatic_event=stronger.event,
-                l4_event=retry_event,
-                fallback_steps=[step, retry_step],
-                final_failure_reason=None if retry_status == "success" else retry.event.failure_reason,
+                after_tokens=retry.input_tokens,
+                programmatic_event=current_programmatic.event,
+                l4_event=event,
+                fallback_steps=steps,
+                final_failure_reason=final_reason,
             )
 
-        if action == "retry_l4_stronger_summary":
-            retry = self.l4_service.compact(
-                LlmCompactRequest(
-                    view=programmatic.view,
-                    runtime_state=request.runtime_state,
-                    mode=mode.value,
-                    summary_mode="stronger",
-                )
-            )
-            rebuilt_view = self.store.rebuild_session_view(request.view.session_id)
-            after_retry = self._trigger_decision(rebuilt_view, request)
-            status = "success" if retry.event.status == "success" else "failed"
-            step = FallbackStep(
+        steps.append(
+            FallbackStep(
                 step=1,
                 reason=reason,
                 action=action,
-                before_tokens=before_tokens,
-                after_tokens=after_retry.estimated_tokens,
-                status=status,
-                error=retry.event.failure_reason,
+                before_tokens=outcome.input_tokens,
+                after_tokens=outcome.input_tokens,
+                status="failed",
+                error=reason,
             ).to_dict()
-            retry_event = _with_fallback(
-                retry.event,
-                fallback_steps=[step],
-                final_failure_reason=None if status == "success" else retry.event.failure_reason,
-            )
-            self._record_l4_event(
-                session_id=request.view.session_id,
-                trigger=trigger,
-                target_tokens=target_tokens,
-                event=retry_event,
-            )
-            return ContextCompactResult(
-                status=status,
-                reason=_result_reason(trigger=trigger, auto_reason=reason),
-                view=rebuilt_view,
-                before_tokens=before_tokens,
-                after_tokens=after_retry.estimated_tokens,
-                programmatic_event=programmatic.event,
-                l4_event=retry_event,
-                fallback_steps=[step],
-                final_failure_reason=None if status == "success" else retry.event.failure_reason,
-            )
-
-        step = FallbackStep(
-            step=1,
-            reason=reason,
-            action=action,
-            before_tokens=before_tokens,
-            after_tokens=before_tokens,
-            status="failed",
-            error=reason,
-        ).to_dict()
-        l4_event = _with_fallback(
-            l4_event,
-            fallback_steps=[step],
-            final_failure_reason=reason,
         )
+        return self._final_l4_failure(
+            request=request,
+            trigger=trigger,
+            mode=mode,
+            target_tokens=target_tokens,
+            programmatic=programmatic,
+            before_tokens=before_tokens,
+            after_tokens=outcome.input_tokens,
+            before_failure_count=before_failure_count,
+            event=_with_fallback(outcome.event, fallback_steps=steps, final_failure_reason=reason),
+            reason=reason,
+            fallback_steps=steps,
+        )
+
+    def _final_l4_failure(
+        self,
+        *,
+        request: ContextCompactRequest,
+        trigger: ContextWindowTrigger,
+        mode: ContextCompactMode,
+        target_tokens: int,
+        programmatic: CompactionResult,
+        before_tokens: int,
+        after_tokens: int,
+        before_failure_count: int,
+        event: LlmCompactEvent,
+        reason: str,
+        fallback_steps: list[dict[str, object]] | None = None,
+    ) -> ContextCompactResult:
+        event = replace(event, final_failure_reason=reason)
         self._record_l4_event(
             session_id=request.view.session_id,
             trigger=trigger,
             target_tokens=target_tokens,
-            event=l4_event,
+            event=event,
+        )
+        self._record_auto_failure_if_needed(
+            request=request,
+            mode=mode,
+            before_failure_count=before_failure_count,
+            failure_reason=reason,
         )
         return ContextCompactResult(
             status="failed",
-            reason=_result_reason(trigger=trigger, auto_reason=reason),
+            reason=reason,
             view=programmatic.view,
             before_tokens=before_tokens,
-            after_tokens=before_tokens,
+            after_tokens=after_tokens,
             programmatic_event=programmatic.event,
-            l4_event=l4_event,
-            fallback_steps=[step],
+            l4_event=event,
+            fallback_steps=fallback_steps,
             final_failure_reason=reason,
         )
+
+    def _unchanged(
+        self,
+        status: ManagerStatus,
+        reason: str,
+        request: ContextCompactRequest,
+        tokens: int,
+    ) -> ContextCompactResult:
+        return ContextCompactResult(status, reason, request.view, tokens, tokens)
 
     def _record_auto_failure_if_needed(
         self,
@@ -548,21 +549,6 @@ class ContextWindowManager:
     ) -> None:
         if mode == ContextCompactMode.AUTO:
             request.runtime_state.record_auto_compact_success()
-
-    def _should_compact(self, *, trigger: ContextWindowTrigger, decision) -> bool:
-        """区分“阈值触发”和“语义/错误强制触发”。"""
-
-        if trigger in {
-            ContextWindowTrigger.MANUAL,
-            ContextWindowTrigger.TASK_HASH_CHANGED,
-            ContextWindowTrigger.PROMPT_TOO_LONG,
-        }:
-            return True
-        return decision.should_compact
-
-    def _trigger_decision(self, view: SessionView, request: ContextCompactRequest):
-        estimate = request.estimate_tokens(view) if request.estimate_tokens is not None else None
-        return evaluate_context_triggers(view, self.config, estimated_tokens_override=estimate)
 
     def _record_programmatic_event(
         self,
@@ -593,10 +579,26 @@ class ContextWindowManager:
         )
 
 
+def _target_tokens(request: ContextCompactRequest, trigger: ContextWindowTrigger) -> int:
+    if request.target_tokens is not None:
+        return request.target_tokens
+    if trigger == ContextWindowTrigger.TASK_HASH_CHANGED:
+        return max(1, request.budget.low_watermark * 2 // 3)
+    return request.budget.low_watermark
+
+
+def _view_with_checkpoint(view: SessionView, checkpoint: Checkpoint) -> SessionView:
+    return SessionView(
+        session_id=view.session_id,
+        messages=[AgentMessage.from_dict(message.to_dict()) for message in view.messages],
+        checkpoints=[*view.checkpoints, Checkpoint.from_dict(checkpoint.to_dict())],
+        metadata=dict(view.metadata),
+        task_plan=view.task_plan,
+    )
+
+
 def _result_reason(*, trigger: ContextWindowTrigger, auto_reason: str) -> str:
-    if trigger == ContextWindowTrigger.AUTO:
-        return auto_reason
-    return trigger.value
+    return auto_reason if trigger == ContextWindowTrigger.AUTO else trigger.value
 
 
 def _force_route_current_text_for_trigger(trigger: ContextWindowTrigger) -> bool:

@@ -941,6 +941,41 @@ def test_agent_loop_streaming_incomplete_message_does_not_persist_assistant(tmp_
     assert exc_info.value.kind == ProviderErrorKind.API_ERROR
     view = store.rebuild_session_view("sess_stream_incomplete")
     assert [message.role for message in view.messages] == ["user"]
+    assert session.runtime_state.consumed_tool_result_part_ids == set()
+    assert all(
+        event.type != "provider_projection_consumed"
+        for event in store.list_events("sess_stream_incomplete")
+    )
+
+
+def test_streaming_success_records_projected_tool_result_as_consumed(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_stream_consumed", agents_md="")
+    session.append_user_message("继续")
+    tool_call = ToolCall(id="call_existing", name="echo", arguments={"text": "hello"})
+    session.append_assistant_response(
+        ChatResponse(
+            provider="fake-stream",
+            model="fake-stream-model",
+            content="",
+            tool_calls=[tool_call],
+            finish_reason="tool_calls",
+        )
+    )
+    session.append_tool_result(
+        tool_call=tool_call,
+        result=ToolResult(name="echo", ok=True, content="echo:hello"),
+    )
+    provider = StreamingProvider(
+        [ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok")]
+    )
+
+    asyncio.run(AgentLoop(session=session, provider=provider)._stream_once())
+
+    assert len(session.runtime_state.consumed_tool_result_part_ids) == 1
+    assert [event.type for event in store.list_events(session.session_id)].count(
+        "provider_projection_consumed"
+    ) == 1
 
 
 def test_agent_loop_streaming_retries_once_after_prompt_too_long_compaction(tmp_path) -> None:
@@ -1311,6 +1346,7 @@ def test_agent_loop_prompt_too_long_retries_only_once(tmp_path) -> None:
     assert [call.trigger for call in context_manager.calls] == [
         ContextWindowTrigger.AUTO,
         ContextWindowTrigger.PROMPT_TOO_LONG,
+        ContextWindowTrigger.AUTO,
     ]
     assert [message.role for message in store.rebuild_session_view("sess_retry_once").messages] == ["user"]
 
@@ -2635,7 +2671,7 @@ def test_agent_loop_runs_compact_when_task_boundary_confirms_change(tmp_path) ->
     assert ContextWindowTrigger.TASK_HASH_CHANGED in triggers
 
 
-def test_agent_loop_runs_auto_compact_after_large_tool_result(tmp_path) -> None:
+def test_agent_loop_runs_auto_once_before_each_main_provider_request(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = FakeProvider(
@@ -2651,28 +2687,56 @@ def test_agent_loop_runs_auto_compact_after_large_tool_result(tmp_path) -> None:
         ]
     )
 
-    def large_echo(text: str) -> ToolResult:
-        return ToolResult(name="echo", ok=True, content="large output\n" * 400)
-
-    tool = Tool(
-        definition=ToolDefinition(
-            name="echo",
-            description="大输出",
-            parameters={"type": "object", "properties": {"text": {"type": "string"}}},
-        ),
-        executor=large_echo,
-    )
     context_manager = FakeContextManager()
 
     AgentLoop(
         session=session,
         provider=provider,
-        tools=[tool],
+        tools=[_echo_tool()],
         context_manager=context_manager,
     ).run_user_turn("调用大工具")
 
-    triggers = [call.trigger for call in context_manager.calls]
-    assert ContextWindowTrigger.AUTO in triggers
+    auto_calls = [
+        call
+        for call in context_manager.calls
+        if call.trigger == ContextWindowTrigger.AUTO
+    ]
+    assert len(auto_calls) == 2
+    assert len(provider.requests) == 2
+
+
+def test_sync_main_request_records_projected_tool_result_as_consumed(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path / "session")
+    session = AgentSession.create(store=store, session_id="sess_consumed", agents_md="")
+    session.append_user_message("继续")
+    tool_call = ToolCall(id="call_existing", name="echo", arguments={"text": "hello"})
+    session.append_assistant_response(
+        ChatResponse(
+            provider="fake",
+            model="fake-model",
+            content="",
+            tool_calls=[tool_call],
+            finish_reason="tool_calls",
+        )
+    )
+    session.append_tool_result(
+        tool_call=tool_call,
+        result=ToolResult(name="echo", ok=True, content="echo:hello"),
+    )
+    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
+
+    AgentLoop(session=session, provider=provider, tools=[_echo_tool()])._complete_once()
+
+    tool_part = next(
+        part
+        for message in session.rebuild_view().messages
+        for part in message.parts
+        if part.kind == "tool_result"
+    )
+    assert tool_part.id in session.runtime_state.consumed_tool_result_part_ids
+    assert [event.type for event in store.list_events(session.session_id)].count(
+        "provider_projection_consumed"
+    ) == 1
 
 
 def test_agent_loop_interactive_pauses_on_ask_user(tmp_path) -> None:

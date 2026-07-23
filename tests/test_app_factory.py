@@ -266,8 +266,8 @@ def _catalog_config(*, default_model: str | None = "yuren/main") -> AppConfig:
             },
         },
         "models": {
-            "yuren/main": {"request": {"temperature": 0.2}},
-            "mimo/pro": {},
+            "yuren/main": {"context_window": 128_000, "request": {"temperature": 0.2}},
+            "mimo/pro": {"context_window": 200_000},
         },
     }
     if default_model is not None:
@@ -291,6 +291,7 @@ def test_factory_catalog_startup_honors_model_spec_over_default(tmp_path: Path) 
 
     assert app.chat_runner.provider.name == "mimo"
     assert app.chat_runner.provider.model == "pro"
+    assert app.chat_runner.context_window == 200_000
 
 
 def test_factory_catalog_startup_honors_default_over_saved_state(tmp_path: Path) -> None:
@@ -306,6 +307,7 @@ def test_factory_catalog_startup_honors_default_over_saved_state(tmp_path: Path)
 
     assert app.chat_runner.provider.name == "yuren"
     assert app.chat_runner.provider.model == "main"
+    assert app.chat_runner.context_window == 128_000
 
 
 def test_factory_catalog_startup_falls_back_from_stale_saved_state(tmp_path: Path) -> None:
@@ -337,6 +339,7 @@ def test_catalog_model_switch_records_selection_and_request_options(tmp_path: Pa
 
     assert result.output == "Model switched: mimo/pro"
     assert app.chat_runner.request_options.temperature is None
+    assert app.chat_runner.context_window == 200_000
     assert ModelStateStore(tmp_path / ".firstcoder" / "model_state.json").load().last_selected == "mimo/pro"
 
 

@@ -201,7 +201,6 @@ def create_firstcoder_app(
         store=store,
         on_resume=current.set_session,
     )
-    context_handler = ContextCommandHandler(session=current, context_manager=context_manager)
     permission_handler = PermissionCommandHandler(session=current)
     skill_catalog_provider = lambda: discover_all_skills(project_path)
     skill_handler = SkillCommandHandler(catalog_provider=skill_catalog_provider)
@@ -214,7 +213,13 @@ def create_firstcoder_app(
         limits=AgentLoopLimits.default(),
         use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
         request_options=_main_request_options(selected_profile),
+        context_window=selected_profile.context_window if selected_profile is not None else None,
         background_manager=background_manager,
+    )
+    context_handler = ContextCommandHandler(
+        session=current,
+        context_manager=context_manager,
+        budget_provider=chat_runner.context_budget,
     )
     model_switcher = RuntimeModelSwitcher(
         app_config=resolved_app_config,
@@ -321,6 +326,7 @@ class RuntimeModelSwitcher:
         self._chat_runner.set_model(
             provider,
             request_options=_main_request_options(profile),
+            context_window=profile.context_window,
             use_streaming=_should_use_streaming(provider, self._app_config),
         )
         self._compact_summarizer.provider = provider

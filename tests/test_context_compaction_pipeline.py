@@ -5,6 +5,7 @@ from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
 from firstcoder.context.identity import session_view_fingerprint
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
+from firstcoder.context.token_budget import estimate_text_tokens
 from firstcoder.context.tool_sequence import validate_tool_call_sequence
 
 
@@ -95,6 +96,128 @@ def _tool_result(
     )
 
 
+def _request(
+    *,
+    view: SessionView,
+    active_task_hash: str | None,
+    target_tokens: int,
+    current_turn: int,
+    estimate_tokens=None,
+    consumed_tool_result_part_ids: frozenset[str] | None = None,
+    **kwargs,
+) -> CompactionRequest:
+    if estimate_tokens is None:
+        estimate_tokens = lambda candidate: sum(
+            estimate_text_tokens(part.content)
+            for message in candidate.messages
+            for part in message.parts
+        )
+    if consumed_tool_result_part_ids is None:
+        consumed_tool_result_part_ids = frozenset(
+            part.id
+            for message in view.messages
+            for part in message.parts
+            if part.kind == "tool_result"
+        )
+    return CompactionRequest(
+        view=view,
+        active_task_hash=active_task_hash,
+        target_tokens=target_tokens,
+        current_turn=current_turn,
+        estimate_tokens=estimate_tokens,
+        consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+        **kwargs,
+    )
+
+
+def _derived_tool_result_view(*, content: str) -> tuple[SessionView, MessagePart]:
+    result_message = _tool_result(
+        "consumption_guard",
+        "shell",
+        content=content,
+        data={"command": "pytest -q", "exit_code": 1},
+    )
+    return (
+        SessionView(
+            session_id="sess_test",
+            messages=[
+                _tool_call("consumption_guard", "shell", {"command": "pytest -q"}),
+                result_message,
+            ],
+        ),
+        result_message.parts[0],
+    )
+
+
+def test_pipeline_uses_request_estimator_instead_of_raw_ledger(tmp_path) -> None:
+    view = SessionView(
+        session_id="sess_test",
+        messages=[_message("msg_old", content="x" * 40_000), _message("msg_tail", content="tail")],
+        checkpoints=[
+            Checkpoint(
+                id="ckpt_1",
+                session_id="sess_test",
+                summary="short",
+                tail_start_message_id="msg_tail",
+                covered_until_message_id="msg_old",
+                source_fingerprint="fp_1",
+            )
+        ],
+    )
+    estimates = []
+
+    result = CompactionPipeline(root=tmp_path).compact(
+        _request(
+            view=view,
+            active_task_hash=None,
+            target_tokens=100,
+            current_turn=1,
+            estimate_tokens=lambda candidate: estimates.append(candidate) or 5,
+            consumed_tool_result_part_ids=frozenset(),
+        )
+    )
+
+    assert result.event.noop is True
+    assert result.event.before_tokens == 5
+    assert estimates
+
+
+def test_unconsumed_derived_result_is_not_l2_or_l3_candidate(tmp_path) -> None:
+    view, part = _derived_tool_result_view(content="FAILED\n" + "x" * 8_000)
+
+    def estimate(candidate: SessionView) -> int:
+        return sum(
+            estimate_text_tokens(item.content)
+            for message in candidate.messages
+            for item in message.parts
+        )
+
+    protected = CompactionPipeline(root=tmp_path).compact(
+        _request(
+            view=view,
+            active_task_hash=None,
+            target_tokens=1,
+            current_turn=10,
+            estimate_tokens=estimate,
+            consumed_tool_result_part_ids=frozenset(),
+        )
+    )
+    consumed = CompactionPipeline(root=tmp_path).compact(
+        _request(
+            view=view,
+            active_task_hash=None,
+            target_tokens=1,
+            current_turn=10,
+            estimate_tokens=estimate,
+            consumed_tool_result_part_ids=frozenset({part.id}),
+        )
+    )
+
+    assert protected.event.changed_parts == 0
+    assert consumed.event.changed_parts > 0
+    assert consumed.event.archive_ids
+
+
 def test_session_view_fingerprint_tracks_persisted_message_content() -> None:
     original = SessionView(session_id="sess_test", messages=[_message("msg_1", content="original")])
     same = SessionView(session_id="sess_test", messages=[_message("msg_1", content="original")])
@@ -115,7 +238,7 @@ def test_l1_skips_current_task_content(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -144,7 +267,7 @@ def test_compaction_event_records_full_schema(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -176,7 +299,7 @@ def test_l2_routes_derived_search_and_stores_raw_backing(tmp_path: Path) -> None
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -218,7 +341,7 @@ def test_l2_never_routes_fresh_source_and_does_not_create_backing(tmp_path: Path
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -243,7 +366,7 @@ def test_l2_skips_when_router_has_no_strictly_smaller_candidate(tmp_path: Path) 
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -290,7 +413,7 @@ def test_l2_routes_build_and_diff_derived_results_with_raw_backing(tmp_path: Pat
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -320,7 +443,7 @@ def test_l2_then_l3_uses_existing_raw_backing_and_is_idempotent(tmp_path: Path) 
         ],
     )
     pipeline = CompactionPipeline(root=tmp_path)
-    request = CompactionRequest(
+    request = _request(
         view=view,
         active_task_hash="task_current",
         target_tokens=1,
@@ -332,7 +455,7 @@ def test_l2_then_l3_uses_existing_raw_backing_and_is_idempotent(tmp_path: Path) 
     first = pipeline.compact(request)
     archived = first.view.messages[1].parts[0]
     second = pipeline.compact(
-        CompactionRequest(
+        _request(
             view=first.view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -362,7 +485,7 @@ def test_per_result_pressure_runs_l2_then_l3_below_total_budget(tmp_path: Path) 
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -402,7 +525,7 @@ def test_per_result_pressure_does_not_bypass_fresh_source_noop(tmp_path: Path) -
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -429,7 +552,7 @@ def test_per_result_pressure_archives_raw_derived_below_total_budget(tmp_path: P
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -456,7 +579,7 @@ def test_l3_archives_raw_derived_result_when_over_budget(tmp_path: Path) -> None
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -483,7 +606,7 @@ def test_l3_archives_large_load_skill_result_through_generic_tool_path(tmp_path:
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -515,7 +638,7 @@ def test_l3_skips_pinned_derived_result(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -556,7 +679,7 @@ def test_l3_never_routes_text_even_when_force_flag_is_set(tmp_path: Path) -> Non
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -589,7 +712,7 @@ def test_pipeline_stops_after_budget_target_is_met(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1000,
@@ -619,7 +742,7 @@ def test_pipeline_does_nothing_when_already_within_budget(tmp_path: Path) -> Non
     )
 
     result = CompactionPipeline(root=tmp_path, large_tool_result_tokens=20).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=10_000,
@@ -641,7 +764,7 @@ def test_already_within_budget_noop_is_deduped(tmp_path: Path) -> None:
         messages=[_message("msg_current", content="short", task_hash="task_current")],
     )
     pipeline = CompactionPipeline(root=tmp_path)
-    request = CompactionRequest(
+    request = _request(
         view=view,
         active_task_hash="task_current",
         target_tokens=10_000,
@@ -692,7 +815,7 @@ def test_l1_does_not_compact_old_task_tool_call_or_tool_result_chain(tmp_path: P
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -739,7 +862,7 @@ def test_l1_task_switch_immediately_trims_old_dialogue_but_never_latest_user_or_
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_new",
             target_tokens=1,
@@ -766,7 +889,7 @@ def test_l1_auto_waits_for_old_task_cold_turn_distance(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path, cold_turn_distance=5).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -785,7 +908,7 @@ def test_noop_compaction_is_recorded_and_deduped(tmp_path: Path) -> None:
         messages=[_message("msg_current", content="short", task_hash="task_current")],
     )
     pipeline = CompactionPipeline(root=tmp_path)
-    request = CompactionRequest(
+    request = _request(
         view=view,
         active_task_hash="task_current",
         target_tokens=1,
@@ -814,7 +937,7 @@ def test_pipeline_does_not_replace_part_when_compaction_would_increase_tokens(tm
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -848,7 +971,7 @@ def test_l1_l3_skip_checkpoint_covered_history(tmp_path: Path) -> None:
     )
 
     result = CompactionPipeline(root=tmp_path, cold_turn_distance=5).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -880,7 +1003,7 @@ def test_l3_keeps_fresh_large_view_and_structured_tool_call_byte_identical(tmp_p
     )
 
     compacted = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=SessionView(session_id="sess_test", messages=[call, result]),
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -921,7 +1044,7 @@ def test_l3_archives_stale_view_and_keeps_raw_backing(tmp_path: Path) -> None:
     )
 
     compacted = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -966,7 +1089,7 @@ def test_l3_archives_superseded_view_after_later_covering_view(tmp_path: Path) -
     )
 
     compacted = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -999,7 +1122,7 @@ def test_l3_archives_duplicate_derived_results_under_the_same_content_addressed_
     )
 
     compacted = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -1034,7 +1157,7 @@ def test_l3_skips_current_turn_protected_archive_retrieval_duplicate(tmp_path: P
     )
 
     compacted = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -1066,7 +1189,7 @@ def test_required_l3_runs_below_budget_and_repeat_is_idempotent(tmp_path: Path) 
         ],
     )
     pipeline = CompactionPipeline(root=tmp_path)
-    request = CompactionRequest(
+    request = _request(
         view=source_view,
         active_task_hash="task_current",
         target_tokens=100_000,
@@ -1077,7 +1200,7 @@ def test_required_l3_runs_below_budget_and_repeat_is_idempotent(tmp_path: Path) 
 
     first = pipeline.compact(request)
     second = pipeline.compact(
-        CompactionRequest(
+        _request(
             view=first.view,
             active_task_hash="task_current",
             target_tokens=100_000,
@@ -1124,7 +1247,7 @@ def test_task_switch_compaction_saves_context_without_breaking_tool_transaction(
     )
 
     result = CompactionPipeline(root=tmp_path).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,

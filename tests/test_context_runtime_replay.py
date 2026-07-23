@@ -34,6 +34,32 @@ def test_replay_restores_active_task_hash_from_confirmed_task_boundary(tmp_path)
     assert state.task_hash_stable_count == 0
 
 
+def test_replay_unions_consumed_tool_result_part_ids(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    for event_id, part_ids in (
+        ("evt_1", ["part_a", "part_b"]),
+        ("evt_2", ["part_b", "part_c"]),
+    ):
+        store.append_event(
+            SessionEvent(
+                id=event_id,
+                session_id="sess_test",
+                type="provider_projection_consumed",
+                payload={
+                    "request_id": f"req_{event_id}",
+                    "projection_fingerprint": f"fp_{event_id}",
+                    "part_ids": part_ids,
+                    "provider": "fake",
+                    "model": "fake-model",
+                },
+            )
+        )
+
+    state = replay_runtime_state(store, "sess_test")
+
+    assert state.consumed_tool_result_part_ids == {"part_a", "part_b", "part_c"}
+
+
 def test_replay_restores_candidate_hash_window(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     service = TaskBoundaryService()

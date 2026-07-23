@@ -27,11 +27,13 @@ append-only JSONL event
 
 1. agent 读了源码，并运行一条很长的测试命令。
 2. assistant 调用和 tool result 都追加为 event，`SessionView` 同时拥有两者。
-3. `ContextWindowManager` 发现 token/输出压力。
+3. 主 provider 请求前，用模型 `context_window`、输出预留、system/tools 和有效历史计算一次 `ContextBudget`；输入达到动态高水位时，`ContextWindowManager` 开始处理。
 4. 确定性的 L1–L3 裁剪/归档旧材料，并追加 `compaction_completed` replacement event。
-5. 若仍超预算，L4 请求模型生成 coding handoff，追加 `checkpoint_created`。
+5. 若仍未压到动态低水位以下，L4 只生成内存 candidate；manager 验证 provider 投影合法且确实低于目标后，才追加 `checkpoint_created`。
 6. 下一次请求中，builder 发 checkpoint 摘要加一段合法的未压缩 tail，而非全量 raw log。
 7. resume 重新 replay 同一批 event，不依赖内存里一份神秘 transcript。
+
+tool result 在首次完整同步响应或 streaming `message_completed` 后追加 `provider_projection_consumed`。首次成功投影前，L2/L3/L4 都不能有损覆盖它；provider error、超时、取消和半截 stream 不会误记为已消费。
 
 ## 不可违反的约束
 
@@ -93,12 +95,16 @@ L3 用有界 placeholder 替换选中的 tool result，绝不移除整个 tool t
 
 | Trigger | 含义 |
 | --- | --- |
-| `AUTO` | token/tail/output heuristic 到阈值 |
+| `AUTO` | 只在主 provider 请求前检查；真实输入达到模型窗口动态高水位 |
 | `TASK_HASH_CHANGED` | 确认任务切换，强制清理旧 derived context |
 | `MANUAL` | 用户主动 compact/inspect |
 | `PROMPT_TOO_LONG` | provider 拒绝请求，阻塞式恢复后做有界 retry |
 
 manager 先跑确定性层，记录结果，必要时才调用 L4。自动压缩 circuit breaker 会防止昂贵失败反复触发；manual、task-boundary、overflow recovery 不会被它静默跳过。
+
+默认预算以模型窗口 95% 为可用窗口，扣除输出预留后得到输入容量；高水位为输入容量的 90%，低水位为 72%。未配置模型窗口时明确使用 assumed 32,768，而不是暗藏另一套固定 AUTO 路径。
+
+当前实现不包含 provider tokenizer、oversized artifact 外置或 MCP schema 按需暴露；这些能力不能当作现有压缩保障。
 
 ## 源码地图
 

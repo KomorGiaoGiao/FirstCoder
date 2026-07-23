@@ -120,6 +120,61 @@ def test_render_default_config_uses_api_key_env_not_plain_secret():
     assert "parallel_tool_calls = true" in content
 
 
+def test_model_catalog_reads_context_window() -> None:
+    config = AppConfig(
+        provider_name="custom",
+        env={},
+        project_config={
+            "providers": {"custom": {"type": "openai-compatible"}},
+            "models": {
+                "custom/model": {
+                    "context_window": 128_000,
+                    "request": {"max_tokens": 8_192},
+                }
+            },
+        },
+    )
+
+    profile = config.model_catalog().require("custom/model")
+
+    assert profile.context_window == 128_000
+    assert profile.request.max_tokens == 8_192
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "128000"])
+def test_model_catalog_rejects_invalid_context_window(value) -> None:
+    config = AppConfig(
+        provider_name="custom",
+        env={},
+        project_config={
+            "providers": {"custom": {"type": "openai-compatible"}},
+            "models": {"custom/model": {"context_window": value}},
+        },
+    )
+
+    with pytest.raises(ModelCatalogError, match="context_window"):
+        config.model_catalog()
+
+
+def test_model_catalog_rejects_output_reserve_that_exhausts_window() -> None:
+    config = AppConfig(
+        provider_name="custom",
+        env={},
+        project_config={
+            "providers": {"custom": {"type": "openai-compatible"}},
+            "models": {
+                "custom/model": {
+                    "context_window": 1_000,
+                    "request": {"max_tokens": 950},
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ModelCatalogError, match="max_tokens.*context_window"):
+        config.model_catalog()
+
+
 def test_default_global_config_path_respects_xdg_config_home(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 

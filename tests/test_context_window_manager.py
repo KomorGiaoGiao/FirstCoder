@@ -5,7 +5,7 @@ from pathlib import Path
 from firstcoder.context.compaction import CompactionEvent, CompactionResult
 from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.events import SessionEvent
-from firstcoder.context.llm_compact import LlmCompactEvent, LlmCompactResult
+from firstcoder.context.llm_compact import LlmCompactCandidate, LlmCompactEvent
 from firstcoder.context.manager import (
     ContextCompactMode,
     ContextCompactRequest,
@@ -15,7 +15,8 @@ from firstcoder.context.manager import (
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
-from firstcoder.context.triggers import ContextCompactionConfig, evaluate_context_triggers
+from firstcoder.context.token_budget import ContextBudget
+from firstcoder.context.triggers import ContextCompactionConfig
 from firstcoder.context.writer import SessionEventWriter
 
 
@@ -32,15 +33,22 @@ class FakePipeline:
 
 
 class FakeL4:
-    def __init__(self, result: LlmCompactResult | list[LlmCompactResult]) -> None:
+    def __init__(self, result: LlmCompactCandidate | list[LlmCompactCandidate]) -> None:
         self.results = list(result) if isinstance(result, list) else [result]
         self.calls = []
+        self.commit_calls = []
 
-    def compact(self, request):
+    def generate_candidate(self, request):
         self.calls.append(request)
         if len(self.results) == 1:
             return self.results[0]
         return self.results.pop(0)
+
+    def commit_candidate(self, candidate, *, runtime_state):
+        self.commit_calls.append(candidate)
+        if candidate.checkpoint is not None:
+            runtime_state.latest_checkpoint_id = candidate.checkpoint.id
+        return candidate.checkpoint
 
 
 class WritingFakeL4:
@@ -56,8 +64,9 @@ class WritingFakeL4:
         self.summary = summary
         self.tail_start_message_id = tail_start_message_id
         self.covered_until_message_id = covered_until_message_id
+        self.commit_calls = []
 
-    def compact(self, request):
+    def generate_candidate(self, request):
         checkpoint = Checkpoint(
             id="ckpt_test",
             session_id=request.view.session_id,
@@ -66,15 +75,29 @@ class WritingFakeL4:
             covered_until_message_id=self.covered_until_message_id,
             source_fingerprint="fp_l4",
         )
+        return LlmCompactCandidate(
+            checkpoint=checkpoint,
+            event=LlmCompactEvent(
+                status="success",
+                source_fingerprint="fp_l4",
+                checkpoint_id=checkpoint.id,
+            ),
+        )
+
+    def commit_candidate(self, candidate, *, runtime_state):
+        self.commit_calls.append(candidate)
+        checkpoint = candidate.checkpoint
+        assert checkpoint is not None
         self.store.append_event(
             SessionEvent(
                 id="evt_l4",
-                session_id=request.view.session_id,
+                session_id=checkpoint.session_id,
                 type="checkpoint_created",
                 payload=checkpoint.to_dict(),
             )
         )
-        return _l4_result()
+        runtime_state.latest_checkpoint_id = checkpoint.id
+        return checkpoint
 
 
 def _message(message_id: str, content: str) -> AgentMessage:
@@ -97,6 +120,143 @@ def _view(*messages: AgentMessage) -> SessionView:
     return SessionView(session_id="sess_test", messages=list(messages))
 
 
+def _budget(*, input_tokens: int, fixed_tokens: int = 10) -> ContextBudget:
+    return ContextBudget(
+        context_window=32_768,
+        output_reserve=4_096,
+        input_capacity=27_033,
+        fixed_tokens=fixed_tokens,
+        history_tokens=max(0, input_tokens - fixed_tokens),
+        input_tokens=input_tokens,
+        high_watermark=100,
+        low_watermark=60,
+        source="configured",
+    )
+
+
+def _compact_request(
+    *,
+    view: SessionView,
+    runtime_state: SessionRuntimeState,
+    trigger: ContextWindowTrigger | str = ContextWindowTrigger.AUTO,
+    mode: ContextCompactMode | str = ContextCompactMode.AUTO,
+    current_turn: int = 0,
+    target_tokens: int | None = None,
+    input_tokens: int = 1_000,
+    estimated_tokens: int | None = None,
+    budget: ContextBudget | None = None,
+    estimate_budget=None,
+    estimate_tokens=None,
+) -> ContextCompactRequest:
+    if estimate_budget is None:
+        if estimate_tokens is not None:
+            estimate_budget = lambda candidate: _budget(
+                input_tokens=estimate_tokens(candidate)
+            )
+        else:
+            estimate_budget = lambda candidate: _budget(
+                input_tokens=(
+                    estimated_tokens
+                    if estimated_tokens is not None
+                    else 30
+                    if candidate.checkpoints
+                    or any(
+                        part.content == "short"
+                        for message in candidate.messages
+                        for part in message.parts
+                    )
+                    else 100
+                )
+            )
+    return ContextCompactRequest(
+        view=view,
+        runtime_state=runtime_state,
+        budget=budget or _budget(input_tokens=input_tokens),
+        estimate_budget=estimate_budget,
+        trigger=trigger,
+        mode=mode,
+        current_turn=current_turn,
+        target_tokens=target_tokens,
+    )
+
+
+def test_manager_uses_high_watermark_for_auto_and_low_for_target(tmp_path) -> None:
+    view = _view(_message("msg_1", "content"))
+    pipeline = FakePipeline(_programmatic_result(view, before_tokens=101, after_tokens=50))
+    manager = ContextWindowManager(
+        store=JsonlSessionStore(tmp_path),
+        pipeline=pipeline,
+        l4_service=None,
+    )
+
+    result = manager.compact_if_needed(
+        _compact_request(
+            view=view,
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            trigger=ContextWindowTrigger.AUTO,
+            current_turn=1,
+            budget=_budget(input_tokens=101),
+            estimate_budget=lambda candidate: _budget(input_tokens=50),
+        )
+    )
+
+    assert result.status == "success"
+    assert pipeline.calls[0].target_tokens == 60
+
+
+def test_manager_fails_without_l4_when_fixed_context_exceeds_low_watermark(tmp_path) -> None:
+    pipeline = FakePipeline([])
+    manager = ContextWindowManager(store=JsonlSessionStore(tmp_path), pipeline=pipeline)
+
+    result = manager.compact_if_needed(
+        _compact_request(
+            view=SessionView(session_id="sess_test"),
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            trigger=ContextWindowTrigger.AUTO,
+            current_turn=0,
+            budget=_budget(input_tokens=120, fixed_tokens=70),
+            estimate_budget=lambda candidate: _budget(input_tokens=120, fixed_tokens=70),
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "fixed_context_over_budget"
+    assert pipeline.calls == []
+
+
+def test_manager_reports_unconsumed_result_when_input_exceeds_capacity(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    view = _view(_message("msg_1", "content"))
+    l4 = FakeL4(
+        _l4_result(status="failed", failure_reason="unconsumed_boundary")
+    )
+    manager = ContextWindowManager(
+        store=store,
+        pipeline=FakePipeline(
+            _programmatic_result(view, before_tokens=30_000, after_tokens=28_000)
+        ),
+        l4_service=l4,
+    )
+    over_capacity = _budget(input_tokens=28_000)
+
+    result = manager.compact_if_needed(
+        _compact_request(
+            view=view,
+            runtime_state=SessionRuntimeState(session_id="sess_test"),
+            trigger=ContextWindowTrigger.PROMPT_TOO_LONG,
+            budget=over_capacity,
+            estimate_budget=lambda candidate: over_capacity,
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "unconsumed_result_over_budget"
+    assert result.final_failure_reason == "unconsumed_result_over_budget"
+    assert result.l4_event is not None
+    assert result.l4_event.final_failure_reason == "unconsumed_result_over_budget"
+    assert l4.commit_calls == []
+
+
 def _programmatic_result(
     view: SessionView,
     *,
@@ -117,9 +277,21 @@ def _programmatic_result(
     )
 
 
-def _l4_result(*, status: str = "success", failure_reason: str | None = None) -> LlmCompactResult:
-    return LlmCompactResult(
-        checkpoint=None,
+def _l4_result(*, status: str = "success", failure_reason: str | None = None) -> LlmCompactCandidate:
+    checkpoint = (
+        Checkpoint(
+            id="ckpt_test",
+            session_id="sess_test",
+            summary="L4 summary",
+            tail_start_message_id="msg_1",
+            covered_until_message_id="msg_0",
+            source_fingerprint="fp_l4",
+        )
+        if status == "success"
+        else None
+    )
+    return LlmCompactCandidate(
+        checkpoint=checkpoint,
         event=LlmCompactEvent(
             status=status,
             source_fingerprint="fp_l4",
@@ -139,15 +311,14 @@ def test_manager_skips_compact_when_under_threshold(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=100,
-        target_tokens=80,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
+            input_tokens=50,
         )
     )
 
@@ -168,12 +339,26 @@ def test_manager_skips_repeated_auto_noop_without_persisting_a_second_completion
         store=store,
         pipeline=FakePipeline(noop),
         l4_service=FakeL4(_l4_result()),
-        config=ContextCompactionConfig(auto_compact_threshold=1, target_tokens=10_000),
+        config=ContextCompactionConfig(),
     )
 
     state = SessionRuntimeState(session_id="sess_test")
-    first = manager.compact_if_needed(ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO))
-    second = manager.compact_if_needed(ContextCompactRequest(view=view, runtime_state=state, trigger=ContextWindowTrigger.AUTO))
+    first = manager.compact_if_needed(
+        _compact_request(
+            view=view,
+            runtime_state=state,
+            trigger=ContextWindowTrigger.AUTO,
+            estimated_tokens=20,
+        )
+    )
+    second = manager.compact_if_needed(
+        _compact_request(
+            view=view,
+            runtime_state=state,
+            trigger=ContextWindowTrigger.AUTO,
+            estimated_tokens=20,
+        )
+    )
 
     assert first.status == "skipped"
     assert second.status == "skipped"
@@ -192,11 +377,11 @@ def test_manager_reports_still_over_budget_after_successful_l4_checkpoint(tmp_pa
         store=store,
         pipeline=pipeline,
         l4_service=WritingFakeL4(store, tail_start_message_id=message_id, covered_until_message_id=message_id),
-        config=ContextCompactionConfig(auto_compact_threshold=1, target_tokens=10),
+        config=ContextCompactionConfig(),
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -207,7 +392,13 @@ def test_manager_reports_still_over_budget_after_successful_l4_checkpoint(tmp_pa
     assert result.status == "failed"
     assert result.reason == "still_over_budget"
     assert result.l4_event is not None
-    assert result.l4_event.status == "success"
+    assert result.l4_event.status == "failed"
+    assert manager.l4_service.commit_calls == []
+    assert [event.type for event in store.list_events("sess_test")] == [
+        "user_message",
+        "compaction_completed",
+        "llm_compaction_completed",
+    ]
     assert result.final_failure_reason == "still_over_budget"
 
 
@@ -220,12 +411,10 @@ def test_manager_runs_pipeline_when_task_hash_changed(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=FakeL4(_l4_result()),
-        auto_compact_threshold=10_000,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test", active_task_hash="task_new"),
             trigger=ContextWindowTrigger.TASK_HASH_CHANGED,
@@ -237,7 +426,7 @@ def test_manager_runs_pipeline_when_task_hash_changed(tmp_path: Path) -> None:
     assert result.programmatic_event == pipeline_result.event
     assert len(pipeline.calls) == 1
     assert pipeline.calls[0].active_task_hash == "task_new"
-    assert pipeline.calls[0].target_tokens == 133
+    assert pipeline.calls[0].target_tokens == 40
     assert pipeline.calls[0].required_levels == ("l2", "l3")
     assert pipeline.calls[0].l2_result_target_tokens == 800
     assert pipeline.calls[0].force_route_current_text is False
@@ -254,23 +443,21 @@ def test_task_switch_uses_explicit_lower_target_and_requires_l2_l3_below_budget(
         pipeline=pipeline,
         l4_service=FakeL4(_l4_result()),
         config=ContextCompactionConfig(
-            auto_compact_threshold=10_000,
-            target_tokens=900,
-            task_switch_target_tokens=600,
             l2_result_target_tokens=77,
         ),
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test", active_task_hash="task_new"),
             trigger=ContextWindowTrigger.TASK_HASH_CHANGED,
+            target_tokens=50,
         )
     )
 
     assert result.status == "success"
-    assert pipeline.calls[0].target_tokens == 600
+    assert pipeline.calls[0].target_tokens == 50
     assert pipeline.calls[0].required_levels == ("l2", "l3")
     assert pipeline.calls[0].l2_result_target_tokens == 77
     assert pipeline.calls[0].force_old_task_compaction is True
@@ -289,20 +476,18 @@ def test_manual_and_prompt_too_long_enable_forced_route_compaction(tmp_path: Pat
             ]
         ),
         l4_service=FakeL4(_l4_result()),
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
     state = SessionRuntimeState(session_id="sess_test")
 
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=state,
             trigger=ContextWindowTrigger.AUTO,
         )
     )
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=state,
             trigger=ContextWindowTrigger.MANUAL,
@@ -310,7 +495,7 @@ def test_manual_and_prompt_too_long_enable_forced_route_compaction(tmp_path: Pat
         )
     )
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=state,
             trigger=ContextWindowTrigger.PROMPT_TOO_LONG,
@@ -338,15 +523,14 @@ def test_manager_runs_l4_only_after_l1_l3_fail_target(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
+            estimate_tokens=lambda candidate: 30 if candidate.checkpoints else 100,
         )
     )
 
@@ -375,13 +559,11 @@ def test_manager_persists_l4_missing_failure_for_replay(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=None,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
     runtime_state = SessionRuntimeState(session_id="sess_test")
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=runtime_state,
             trigger=ContextWindowTrigger.AUTO,
@@ -434,14 +616,12 @@ def test_manager_uses_effective_tokens_after_programmatic_compaction(tmp_path: P
         store=store,
         l4_service=l4,
         config=ContextCompactionConfig(
-            auto_compact_threshold=10_000,
-            target_tokens=1_000,
             large_tool_result_tokens=20,
         ),
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -474,16 +654,14 @@ def test_manager_returns_rebuilt_view_after_l4_writes_checkpoint(tmp_path: Path)
         store=store,
         pipeline=FakePipeline(_programmatic_result(view, after_tokens=900, stopped_at="not_reached")),
         l4_service=WritingFakeL4(store),
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
-            estimate_tokens=lambda candidate: 100 if candidate.checkpoints else 1_000,
+            estimate_tokens=lambda candidate: 30 if candidate.checkpoints else 1_000,
         )
     )
 
@@ -509,7 +687,7 @@ def test_manager_reports_effective_tokens_after_l4_rebuild(tmp_path: Path) -> No
                 },
             )
         )
-    config = ContextCompactionConfig(auto_compact_threshold=10, target_tokens=200)
+    config = ContextCompactionConfig()
     manager = ContextWindowManager(
         store=store,
         pipeline=FakePipeline(_programmatic_result(view, after_tokens=5_001, stopped_at="not_reached")),
@@ -523,14 +701,14 @@ def test_manager_reports_effective_tokens_after_l4_rebuild(tmp_path: Path) -> No
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
         )
     )
 
-    rebuilt_tokens = evaluate_context_triggers(result.view, config).estimated_tokens
+    rebuilt_tokens = _budget(input_tokens=result.after_tokens).input_tokens
     assert result.status == "success"
     assert result.after_tokens == rebuilt_tokens
     assert result.after_tokens < 5_001
@@ -544,12 +722,10 @@ def test_manual_compact_ignores_auto_circuit_breaker(tmp_path: Path) -> None:
         store=store,
         pipeline=FakePipeline(_programmatic_result(view, after_tokens=900, stopped_at="not_reached")),
         l4_service=l4,
-        auto_compact_threshold=10_000,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(
                 session_id="sess_test",
@@ -573,12 +749,10 @@ def test_task_hash_changed_ignores_auto_circuit_breaker(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=FakeL4(_l4_result()),
-        auto_compact_threshold=10_000,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(
                 session_id="sess_test",
@@ -603,22 +777,20 @@ def test_manual_compact_honors_explicit_lower_target(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10_000,
-        target_tokens=2_000,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.MANUAL,
             mode=ContextCompactMode.MANUAL,
-            target_tokens=800,
+            target_tokens=40,
         )
     )
 
     assert result.status == "success"
-    assert pipeline.calls[0].target_tokens == 800
+    assert pipeline.calls[0].target_tokens == 40
     assert len(l4.calls) == 1
 
 
@@ -630,12 +802,10 @@ def test_manager_handles_prompt_too_long_as_blocking_trigger(tmp_path: Path) -> 
         store=store,
         pipeline=pipeline,
         l4_service=FakeL4(_l4_result()),
-        auto_compact_threshold=10_000,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.PROMPT_TOO_LONG,
@@ -644,7 +814,7 @@ def test_manager_handles_prompt_too_long_as_blocking_trigger(tmp_path: Path) -> 
 
     assert result.status == "success"
     assert result.reason == "prompt_too_long"
-    assert pipeline.calls[0].target_tokens == 200
+    assert pipeline.calls[0].target_tokens == 60
 
 
 def test_manager_runs_stronger_programmatic_fallback_after_prompt_too_long_l4_failure(tmp_path: Path) -> None:
@@ -664,12 +834,10 @@ def test_manager_runs_stronger_programmatic_fallback_after_prompt_too_long_l4_fa
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -694,12 +862,10 @@ def test_programmatic_fallback_success_records_successful_l4_event_for_replay(tm
         store=store,
         pipeline=FakePipeline([first_programmatic, stronger_programmatic]),
         l4_service=FakeL4(_l4_result(status="failed", failure_reason="prompt_too_long")),
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -728,12 +894,10 @@ def test_prompt_too_long_fallback_retries_l4_when_still_over_budget(tmp_path: Pa
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -769,12 +933,10 @@ def test_prompt_too_long_retry_records_one_l4_event_with_fallback_steps(tmp_path
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -801,12 +963,10 @@ def test_manager_retries_l4_once_after_no_summary_with_stronger_summary_mode(tmp
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -834,12 +994,10 @@ def test_manager_records_fallback_steps_in_l4_event_payload(tmp_path: Path) -> N
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.AUTO,
@@ -866,12 +1024,10 @@ def test_manual_compact_reports_fallback_failure_reason(tmp_path: Path) -> None:
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=SessionRuntimeState(session_id="sess_test"),
             trigger=ContextWindowTrigger.MANUAL,
@@ -894,12 +1050,10 @@ def test_auto_compact_failure_after_fallback_updates_circuit_breaker(tmp_path: P
         store=store,
         pipeline=pipeline,
         l4_service=l4,
-        auto_compact_threshold=10,
-        target_tokens=200,
     )
 
     result = manager.compact_if_needed(
-        ContextCompactRequest(
+        _compact_request(
             view=view,
             runtime_state=state,
             trigger=ContextWindowTrigger.AUTO,
