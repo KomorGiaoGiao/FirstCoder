@@ -305,6 +305,7 @@ def test_auto_token_threshold_e2e_writes_compaction_and_checkpoint(tmp_path) -> 
         session=session,
         provider=provider,
         context_manager=_compact_manager(store, provider, reason="token_threshold"),
+        context_window=32_768,
     ).run_user_turn("触发 token 阈值 " * 8_000)
 
     assert response.content == "完成"

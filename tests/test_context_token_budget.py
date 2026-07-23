@@ -1,6 +1,7 @@
 import pytest
 
 from firstcoder.context.token_budget import build_context_budget
+from firstcoder.context.budget_defaults import DEFAULT_CONTEXT_WINDOW
 from firstcoder.providers.types import ChatMessage, ContentPart, ToolDefinition
 
 
@@ -59,6 +60,7 @@ def test_budget_counts_image_once_without_counting_base64_bytes() -> None:
     )
 
     assert budget.source == "assumed"
+    assert budget.context_window == DEFAULT_CONTEXT_WINDOW == 200_000
     assert budget.history_tokens < 2_000
 
 
