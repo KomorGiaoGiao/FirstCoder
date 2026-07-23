@@ -74,6 +74,29 @@ class SessionEventWriter:
             },
         )
 
+    def append_provider_projection_consumed(
+        self,
+        *,
+        request_id: str,
+        projection_fingerprint: str,
+        part_ids: list[str],
+        provider: str,
+        model: str,
+    ) -> None:
+        normalized = sorted({part_id for part_id in part_ids if part_id})
+        if not normalized:
+            return
+        self.append_event(
+            "provider_projection_consumed",
+            {
+                "request_id": request_id,
+                "projection_fingerprint": projection_fingerprint,
+                "part_ids": normalized,
+                "provider": provider,
+                "model": model,
+            },
+        )
+
     def append_user_message(
         self,
         content: str,

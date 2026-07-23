@@ -1,5 +1,6 @@
 import pytest
 
+from firstcoder.agent.session import AgentSession
 from firstcoder.context.runtime_state import SessionRuntimeState
 from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.task_boundary import TaskBoundaryDecision, TaskBoundaryService
@@ -117,6 +118,48 @@ def test_writer_applies_a_consistent_event_envelope(tmp_path) -> None:
     assert event.session_id == "sess_event"
     assert event.type == "session_metadata_updated"
     assert event.payload == {"title": "Demo"}
+
+
+def test_writer_appends_projection_consumed_event(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    writer = SessionEventWriter(store=store, session_id="sess_test")
+
+    writer.append_provider_projection_consumed(
+        request_id="req_1",
+        projection_fingerprint="fp_1",
+        part_ids=["part_b", "part_a", "part_a"],
+        provider="fake",
+        model="fake-model",
+    )
+
+    event = store.list_events("sess_test")[-1]
+    assert event.type == "provider_projection_consumed"
+    assert event.payload["part_ids"] == ["part_a", "part_b"]
+
+
+def test_session_records_only_new_consumed_part_ids(tmp_path) -> None:
+    session = AgentSession.create(
+        store=JsonlSessionStore(tmp_path),
+        session_id="sess_test",
+        agents_md="",
+    )
+
+    for request_id in ("req_1", "req_2"):
+        session.record_provider_projection_consumed(
+            request_id=request_id,
+            projection_fingerprint=f"fp_{request_id}",
+            part_ids=("part_a", "part_b"),
+            provider="fake",
+            model="fake-model",
+        )
+
+    events = [
+        event
+        for event in session.store.list_events("sess_test")
+        if event.type == "provider_projection_consumed"
+    ]
+    assert len(events) == 1
+    assert session.runtime_state.consumed_tool_result_part_ids == {"part_a", "part_b"}
 
 
 def test_writer_appends_task_boundary_observation_event(tmp_path) -> None:

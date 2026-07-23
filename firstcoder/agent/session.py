@@ -396,6 +396,27 @@ class AgentSession:
         self.known_message_ids.add(assistant_message_id)
         return assistant_message_id
 
+    def record_provider_projection_consumed(
+        self,
+        *,
+        request_id: str,
+        projection_fingerprint: str,
+        part_ids: tuple[str, ...],
+        provider: str,
+        model: str,
+    ) -> None:
+        new_ids = sorted(set(part_ids) - self.runtime_state.consumed_tool_result_part_ids)
+        if not new_ids:
+            return
+        self.writer.append_provider_projection_consumed(
+            request_id=request_id,
+            projection_fingerprint=projection_fingerprint,
+            part_ids=new_ids,
+            provider=provider,
+            model=model,
+        )
+        self.runtime_state.consumed_tool_result_part_ids.update(new_ids)
+
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """通过当前 session 的工具注册表执行一次模型请求的工具调用。"""
 
