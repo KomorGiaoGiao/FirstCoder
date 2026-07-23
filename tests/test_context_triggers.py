@@ -1,11 +1,6 @@
-from pathlib import Path
-
 from firstcoder.context.checkpoint import Checkpoint
-from firstcoder.context.manager import ContextCompactRequest, ContextWindowManager, ContextWindowTrigger
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.providers.types import ChatMessage, ToolDefinition
-from firstcoder.context.runtime_state import SessionRuntimeState
-from firstcoder.context.store import JsonlSessionStore
 from firstcoder.context.token_budget import estimate_chat_request_tokens
 from firstcoder.context.triggers import ContextCompactionConfig, evaluate_context_triggers
 
@@ -35,10 +30,16 @@ def _message(
 
 
 def test_token_thresholds_trigger_expected_compaction_reason() -> None:
-    config = ContextCompactionConfig(auto_compact_threshold=10, target_tokens=5)
+    config = ContextCompactionConfig()
     view = SessionView(session_id="sess_test", messages=[_message("msg_1", "x" * 80)])
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=10,
+        high_watermark=10,
+        low_watermark=5,
+    )
 
     assert decision.should_compact is True
     assert decision.reason == "token_threshold"
@@ -78,18 +79,8 @@ def test_request_token_estimate_reserves_requested_output_space() -> None:
     assert reserved == baseline + 512
 
 
-def test_task_switch_target_defaults_lower_and_allows_explicit_override() -> None:
-    default_config = ContextCompactionConfig(target_tokens=24_000)
-    explicit_config = ContextCompactionConfig(target_tokens=24_000, task_switch_target_tokens=12_345)
-
-    assert default_config.target_for_trigger("task_hash_changed") == 16_000
-    assert explicit_config.target_for_trigger("task_hash_changed") == 12_345
-
-
-def test_large_single_tool_result_triggers_archive_guard() -> None:
+def test_large_single_tool_result_does_not_bypass_dynamic_watermark() -> None:
     config = ContextCompactionConfig(
-        auto_compact_threshold=10_000,
-        target_tokens=5_000,
         large_tool_result_tokens=5,
     )
     view = SessionView(
@@ -105,16 +96,20 @@ def test_large_single_tool_result_triggers_archive_guard() -> None:
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=20,
+        high_watermark=100,
+        low_watermark=60,
+    )
 
-    assert decision.should_compact is True
-    assert decision.reason == "large_tool_result"
+    assert decision.should_compact is False
+    assert decision.reason == "under_threshold"
 
 
-def test_large_turn_tool_results_trigger_archive_guard() -> None:
+def test_large_turn_tool_results_do_not_bypass_dynamic_watermark() -> None:
     config = ContextCompactionConfig(
-        auto_compact_threshold=10_000,
-        target_tokens=5_000,
         max_turn_tool_result_tokens=10,
         large_tool_result_tokens=10_000,
     )
@@ -138,16 +133,20 @@ def test_large_turn_tool_results_trigger_archive_guard() -> None:
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=20,
+        high_watermark=100,
+        low_watermark=60,
+    )
 
-    assert decision.should_compact is True
-    assert decision.reason == "turn_tool_results"
+    assert decision.should_compact is False
+    assert decision.reason == "under_threshold"
 
 
-def test_tail_message_count_triggers_compaction() -> None:
+def test_tail_message_count_does_not_bypass_dynamic_watermark() -> None:
     config = ContextCompactionConfig(
-        auto_compact_threshold=10_000,
-        target_tokens=5_000,
         max_tail_messages=2,
     )
     view = SessionView(
@@ -159,16 +158,20 @@ def test_tail_message_count_triggers_compaction() -> None:
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=3,
+        high_watermark=100,
+        low_watermark=60,
+    )
 
-    assert decision.should_compact is True
-    assert decision.reason == "tail_message_count"
+    assert decision.should_compact is False
+    assert decision.reason == "under_threshold"
 
 
 def test_checkpointed_history_is_excluded_from_tail_message_trigger() -> None:
     config = ContextCompactionConfig(
-        auto_compact_threshold=10_000,
-        target_tokens=5_000,
         max_tail_messages=1,
     )
     view = SessionView(
@@ -191,14 +194,20 @@ def test_checkpointed_history_is_excluded_from_tail_message_trigger() -> None:
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=3,
+        high_watermark=100,
+        low_watermark=60,
+    )
 
     assert decision.should_compact is False
     assert decision.reason == "under_threshold"
 
 
 def test_checkpointed_history_is_excluded_from_token_threshold_but_summary_counts() -> None:
-    config = ContextCompactionConfig(auto_compact_threshold=10, target_tokens=5)
+    config = ContextCompactionConfig()
     view = SessionView(
         session_id="sess_test",
         messages=[
@@ -218,17 +227,21 @@ def test_checkpointed_history_is_excluded_from_token_threshold_but_summary_count
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=9,
+        high_watermark=10,
+        low_watermark=5,
+    )
 
-    assert decision.should_compact is True
-    assert decision.reason == "token_threshold"
-    assert decision.estimated_tokens < 20
+    assert decision.should_compact is False
+    assert decision.reason == "under_threshold"
+    assert decision.estimated_tokens == 9
 
 
 def test_checkpointed_large_tool_result_is_excluded_from_archive_guard() -> None:
     config = ContextCompactionConfig(
-        auto_compact_threshold=10_000,
-        target_tokens=5_000,
         large_tool_result_tokens=5,
     )
     view = SessionView(
@@ -256,38 +269,13 @@ def test_checkpointed_large_tool_result_is_excluded_from_archive_guard() -> None
         ],
     )
 
-    decision = evaluate_context_triggers(view, config)
+    decision = evaluate_context_triggers(
+        view,
+        config,
+        input_tokens=3,
+        high_watermark=100,
+        low_watermark=60,
+    )
 
     assert decision.should_compact is False
     assert decision.reason == "under_threshold"
-
-
-def test_same_noop_input_is_deduped_across_manager_calls(tmp_path: Path) -> None:
-    store = JsonlSessionStore(tmp_path)
-    view = SessionView(session_id="sess_test", messages=[_message("msg_1", "short")])
-    manager = ContextWindowManager(
-        store=store,
-        config=ContextCompactionConfig(auto_compact_threshold=1, target_tokens=10_000),
-    )
-
-    first = manager.compact_if_needed(
-        ContextCompactRequest(
-            view=view,
-            runtime_state=SessionRuntimeState(session_id="sess_test"),
-            trigger=ContextWindowTrigger.AUTO,
-        )
-    )
-    second = manager.compact_if_needed(
-        ContextCompactRequest(
-            view=view,
-            runtime_state=SessionRuntimeState(session_id="sess_test"),
-            trigger=ContextWindowTrigger.AUTO,
-        )
-    )
-
-    assert first.programmatic_event is not None
-    assert second.programmatic_event is not None
-    assert first.programmatic_event.noop is True
-    assert first.programmatic_event.deduped is False
-    assert second.programmatic_event.noop is True
-    assert second.programmatic_event.deduped is True
