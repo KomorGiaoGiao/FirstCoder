@@ -16,7 +16,7 @@ from firstcoder.agent.ports import ContextManagerLike
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
 from firstcoder.agent.task_boundary_classifier import TaskBoundaryClassifier
-from firstcoder.agent.task_plan_policy import TaskPlanPolicy
+from firstcoder.agent.task_plan_policy import TaskPlanPolicy, render_current_task_plan_snapshot
 from firstcoder.agent.tool_execution import ToolExecutionEvent, ToolExecutor
 from firstcoder.agent.tool_settlement import ToolCallSettlement
 from firstcoder.agent.background import (
@@ -1016,6 +1016,7 @@ class AgentLoop:
         )
 
     def _request_messages(self, *, view=None, runtime_instruction: str | None = None):
+        resolved_view = view or self.session.rebuild_view()
         system_prefix = self.session.build_system_prefix(
             provider_name=self.provider.name,
             provider_model=self.provider.model,
@@ -1026,8 +1027,16 @@ class AgentLoop:
                 *system_prefix,
                 ChatMessage(role="system", content=runtime_instruction),
             ]
+        if resolved_view.task_plan is not None:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(
+                    role="system",
+                    content=render_current_task_plan_snapshot(resolved_view.task_plan),
+                ),
+            ]
         return self._build_provider_messages(
-            view or self.session.rebuild_view(),
+            resolved_view,
             system_prefix=system_prefix,
         )
 

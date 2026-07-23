@@ -53,7 +53,9 @@ def test_system_prompt_guides_incremental_task_plan_updates() -> None:
     )
     content = SystemPromptBuilder().build(inputs).messages[0].content
 
-    assert "Start with task_list to read the authoritative plan and its revision." in content
+    assert "Use the Current TaskPlan snapshot attached to each main request" in content
+    assert "Call task_list only when that snapshot is missing or a write reports a revision conflict." in content
+    assert "Start with task_list to read the authoritative plan and its revision." not in content
     assert "Use task_create only to create a plan or append new tasks." in content
     assert "Use task_update to change status, owner, or dependencies by stable task ID." in content
     assert "Use task_revise only when a task's semantic content must change." in content

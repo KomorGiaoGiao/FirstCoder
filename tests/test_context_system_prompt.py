@@ -137,7 +137,9 @@ def test_system_prompt_loads_one_unified_agent_prompt() -> None:
     assert "The runtime classifies every real user turn before this request" in content
     assert "Never invent, guess, or display task hashes" in content
     assert "Use a TaskPlan for multi-step coding tasks" in content
-    assert "Start with task_list to read the authoritative plan and its revision" in content
+    assert "Use the Current TaskPlan snapshot attached to each main request" in content
+    assert "Call task_list only when that snapshot is missing or a write reports a revision conflict" in content
+    assert "Start with task_list to read the authoritative plan and its revision" not in content
     assert "Never resend or replace the whole task list just to update one task" in content
 
 
@@ -150,7 +152,7 @@ def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     assert "task_boundary" not in content
 
 
-def test_system_prompt_version_is_v14() -> None:
+def test_system_prompt_version_is_v15() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v14" in entry.messages[0].content
+    assert "prompt_version=v15" in entry.messages[0].content

@@ -1480,6 +1480,103 @@ def test_task_plan_tool_writes_one_native_state_event_without_session_inference(
     assert session.rebuild_view().task_plan.revision == 1
 
 
+def test_main_provider_request_includes_latest_task_plan_snapshot_without_task_list(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_plan_provider_snapshot")
+    create = ToolCall(
+        id="call_plan_create",
+        name="task_create",
+        arguments={
+            "mode": "linear",
+            "expected_revision": 0,
+            "tasks": [
+                {"id": "inspect", "content": "读代码", "status": "completed"},
+                {"id": "implement", "content": "写实现", "status": "in_progress"},
+                {"id": "verify", "content": "跑测试", "status": "pending"},
+            ],
+        },
+    )
+    result = session.execute_tool_call(create)
+    assert result.ok is True
+    provider = FakeProvider(
+        [
+            ChatResponse(provider="fake", model="fake-model", content="继续"),
+            ChatResponse(provider="fake", model="fake-model", content="继续执行未完成任务"),
+        ]
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("继续执行")
+
+    snapshots = [
+        message.content
+        for message in provider.requests[0].messages
+        if message.role == "system" and message.content.startswith("Current TaskPlan snapshot")
+    ]
+    assert snapshots == [
+        "Current TaskPlan snapshot (authoritative for this request):\n"
+        "revision=1 mode=linear\n"
+        "- inspect [completed]: 读代码\n"
+        "- implement [in_progress]: 写实现\n"
+        "- verify [pending]: 跑测试\n"
+        "ready=none\n"
+        "blocked=verify"
+    ]
+    assert all(message.role != "tool" for message in provider.requests[0].messages)
+
+
+def test_main_provider_request_refreshes_task_plan_snapshot_after_update(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_task_plan_snapshot_refresh")
+    create = ToolCall(
+        id="call_plan_create",
+        name="task_create",
+        arguments={
+            "mode": "linear",
+            "expected_revision": 0,
+            "tasks": [{"id": "implement", "content": "写实现", "status": "in_progress"}],
+        },
+    )
+    assert session.execute_tool_call(create).ok is True
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_plan_update",
+                        name="task_update",
+                        arguments={
+                            "expected_revision": 1,
+                            "updates": [{"id": "implement", "status": "completed"}],
+                        },
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="完成"),
+        ]
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("继续执行")
+
+    first_snapshot = next(
+        message.content
+        for message in provider.requests[0].messages
+        if message.role == "system" and message.content.startswith("Current TaskPlan snapshot")
+    )
+    second_snapshot = next(
+        message.content
+        for message in provider.requests[1].messages
+        if message.role == "system" and message.content.startswith("Current TaskPlan snapshot")
+    )
+    assert "revision=1 mode=linear" in first_snapshot
+    assert "- implement [in_progress]: 写实现" in first_snapshot
+    assert "revision=2 mode=linear" in second_snapshot
+    assert "- implement [completed]: 写实现" in second_snapshot
+
+
 def test_task_plan_noop_update_does_not_write_an_event(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_task_plan_noop")

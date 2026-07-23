@@ -3,9 +3,41 @@
 from __future__ import annotations
 
 from firstcoder.agent.session import AgentSession
+from firstcoder.planning.models import TaskPlan
 from firstcoder.planning.projection import ordered_tasks, project_plan
 
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled"})
+
+
+def render_current_task_plan_snapshot(plan: TaskPlan) -> str:
+    """Render the latest plan as ephemeral provider context."""
+
+    projection = project_plan(plan)
+    lines = [
+        "Current TaskPlan snapshot (authoritative for this request):",
+        f"revision={plan.revision} mode={plan.mode}",
+    ]
+    for task in ordered_tasks(plan):
+        details: list[str] = []
+        if task.owner:
+            details.append(f"owner={task.owner}")
+        if task.depends_on:
+            details.append(f"depends_on={','.join(task.depends_on)}")
+        suffix = f" ({'; '.join(details)})" if details else ""
+        lines.append(f"- {task.id} [{task.status}]: {task.content}{suffix}")
+    lines.extend(
+        [
+            f"ready={_format_task_ids(projection['ready_task_ids'])}",
+            f"blocked={_format_task_ids(projection['blocked_task_ids'])}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_task_ids(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ",".join(str(task_id) for task_id in value)
 
 
 class TaskPlanPolicy:
