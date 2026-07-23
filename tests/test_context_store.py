@@ -7,8 +7,37 @@ from firstcoder.context.compaction import CompactionPipeline, CompactionRequest
 from firstcoder.context.events import SessionEvent
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.context.store import JsonlSessionStore, SessionStoreCorruptError
+from firstcoder.context.token_budget import estimate_text_tokens
 from firstcoder.context.versions import CONTEXT_EVENT_SCHEMA_VERSION
 from firstcoder.context.writer import SessionEventWriter
+
+
+def _request(
+    *,
+    view: SessionView,
+    active_task_hash: str | None,
+    target_tokens: int,
+    current_turn: int,
+    **kwargs,
+) -> CompactionRequest:
+    return CompactionRequest(
+        view=view,
+        active_task_hash=active_task_hash,
+        target_tokens=target_tokens,
+        current_turn=current_turn,
+        estimate_tokens=lambda candidate: sum(
+            estimate_text_tokens(part.content)
+            for message in candidate.messages
+            for part in message.parts
+        ),
+        consumed_tool_result_part_ids=frozenset(
+            part.id
+            for message in view.messages
+            for part in message.parts
+            if part.kind == "tool_result"
+        ),
+        **kwargs,
+    )
 
 
 def test_jsonl_store_rebuilds_session_view_from_events(tmp_path: Path) -> None:
@@ -146,7 +175,7 @@ def test_programmatic_compaction_rebuilds_replaced_parts(tmp_path: Path) -> None
         )
     )
     view = SessionView(session_id=session_id, messages=[message, latest_message])
-    result = CompactionPipeline(root=tmp_path).compact(CompactionRequest(view=view, active_task_hash="task_current", target_tokens=1, current_turn=10))
+    result = CompactionPipeline(root=tmp_path).compact(_request(view=view, active_task_hash="task_current", target_tokens=1, current_turn=10))
     SessionEventWriter(store=store, session_id=session_id).append_compaction_completed(
         trigger="manual",
         target_tokens=1,
@@ -186,7 +215,7 @@ def test_l2_route_result_with_raw_backing_survives_rebuild_without_l4(tmp_path: 
     )
     view = SessionView(session_id=session_id, messages=[message])
     result = CompactionPipeline(root=tmp_path, large_tool_result_tokens=20).compact(
-        CompactionRequest(
+        _request(
             view=view,
             active_task_hash="task_current",
             target_tokens=1,
@@ -236,7 +265,7 @@ def test_store_and_compaction_pipeline_share_data_root(tmp_path: Path) -> None:
         )
     )
     result = CompactionPipeline(root=store.root, large_tool_result_tokens=20).compact(
-        CompactionRequest(
+        _request(
             view=SessionView(session_id=session_id, messages=[message]),
             active_task_hash="task_current",
             target_tokens=1,

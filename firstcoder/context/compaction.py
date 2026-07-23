@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -39,6 +40,8 @@ class CompactionRequest:
     active_task_hash: str | None
     target_tokens: int
     current_turn: int
+    estimate_tokens: Callable[[SessionView], int]
+    consumed_tool_result_part_ids: frozenset[str]
     enabled_levels: tuple[CompactionLevel, ...] = ("l1", "l2", "l3")
     required_levels: tuple[CompactionLevel, ...] = ()
     l2_result_target_tokens: int | None = None
@@ -90,7 +93,7 @@ class CompactionPipeline:
     def compact(self, request: CompactionRequest) -> CompactionResult:
         view = _clone_view(request.view)
         input_fingerprint = session_view_fingerprint(request.view)
-        before_tokens = _estimate_view_tokens(view)
+        before_tokens = request.estimate_tokens(view)
         lifecycle_records = index_tool_result_lifecycles(
             _effective_tail_messages(view),
             current_turn=request.current_turn,
@@ -106,12 +109,14 @@ class CompactionPipeline:
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
             current_turn=request.current_turn,
+            consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
         has_l3_per_result_pressure = _has_l3_per_result_pressure(
             _effective_tail_messages(view),
             lifecycle_records=lifecycle_records,
             current_turn=request.current_turn,
             per_result_target=per_result_target,
+            consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
 
         if (
@@ -147,7 +152,7 @@ class CompactionPipeline:
 
         for level_index, level in enumerate(request.enabled_levels):
             levels_attempted.append(level)
-            before_level_tokens = _estimate_view_tokens(view)
+            before_level_tokens = request.estimate_tokens(view)
             level_replacements = self._apply_level(
                 view,
                 request=request,
@@ -155,7 +160,7 @@ class CompactionPipeline:
                 lifecycle_records=lifecycle_records,
             )
             replacements.extend(level_replacements)
-            after_level_tokens = _estimate_view_tokens(view)
+            after_level_tokens = request.estimate_tokens(view)
             level_metrics[level] = {
                 "before_tokens": before_level_tokens,
                 "after_tokens": after_level_tokens,
@@ -173,12 +178,14 @@ class CompactionPipeline:
                             _effective_tail_messages(view),
                             lifecycle_records=lifecycle_records,
                             current_turn=request.current_turn,
+                            consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
                         )
                         or _has_l3_per_result_pressure(
                             _effective_tail_messages(view),
                             lifecycle_records=lifecycle_records,
                             current_turn=request.current_turn,
                             per_result_target=per_result_target,
+                            consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
                         )
                     )
                 )
@@ -186,7 +193,7 @@ class CompactionPipeline:
                 stopped_at = level
                 break
 
-        after_tokens = _estimate_view_tokens(view)
+        after_tokens = request.estimate_tokens(view)
         changed_parts = len(replacements)
         noop = changed_parts == 0
         deduped = noop and input_fingerprint in self._seen_noop_fingerprints
@@ -302,6 +309,7 @@ class CompactionPipeline:
                     part,
                     lifecycle=lifecycle,
                     current_turn=request.current_turn,
+                    consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
                 ):
                     continue
 
@@ -353,9 +361,10 @@ class CompactionPipeline:
                 request.l2_result_target_tokens,
                 fallback=self.large_tool_result_tokens,
             ),
+            consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
         )
         for candidate in candidates:
-            if not candidate.mandatory and not candidate.over_per_result_target and _estimate_view_tokens(view) <= request.target_tokens:
+            if not candidate.mandatory and not candidate.over_per_result_target and request.estimate_tokens(view) <= request.target_tokens:
                 break
 
             part = candidate.message.parts[candidate.part_index]
@@ -365,6 +374,7 @@ class CompactionPipeline:
                 part,
                 lifecycle=candidate.lifecycle,
                 current_turn=current_turn,
+                consumed_tool_result_part_ids=request.consumed_tool_result_part_ids,
             ):
                 continue
             try:
@@ -396,10 +406,6 @@ class CompactionPipeline:
                     )
                 )
         return changed
-
-
-def _estimate_view_tokens(view: SessionView) -> int:
-    return sum(estimate_text_tokens(part.content) for message in view.messages for part in message.parts)
 
 
 def _clone_view(view: SessionView) -> SessionView:
@@ -522,8 +528,14 @@ def _should_route_compact_l2_part(
     *,
     lifecycle: ToolResultLifecycleRecord | None,
     current_turn: int,
+    consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
-    if part.kind != "tool_result" or lifecycle is None or is_already_compacted(part):
+    if not _is_consumed_tool_result(
+        part,
+        consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+    ):
+        return False
+    if lifecycle is None or is_already_compacted(part):
         return False
     if _is_retrieval_protected(part, current_turn=current_turn):
         return False
@@ -570,6 +582,7 @@ def _has_l3_mandatory_candidates(
     *,
     lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     current_turn: int,
+    consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
     for message in messages:
         for part in message.parts:
@@ -578,6 +591,7 @@ def _has_l3_mandatory_candidates(
                 part,
                 lifecycle=lifecycle,
                 current_turn=current_turn,
+                consumed_tool_result_part_ids=consumed_tool_result_part_ids,
             ):
                 return True
     return False
@@ -589,6 +603,7 @@ def _has_l3_per_result_pressure(
     lifecycle_records: dict[tuple[str, str], ToolResultLifecycleRecord],
     current_turn: int,
     per_result_target: int | None,
+    consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
     """Whether an eligible derived result needs an L2/L3 pass below budget."""
 
@@ -600,7 +615,12 @@ def _has_l3_per_result_pressure(
             if (
                 lifecycle is not None
                 and lifecycle.lifecycle is ToolResultLifecycle.DERIVED
-                and _can_archive_l3_part(part, lifecycle=lifecycle, current_turn=current_turn)
+                and _can_archive_l3_part(
+                    part,
+                    lifecycle=lifecycle,
+                    current_turn=current_turn,
+                    consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+                )
                 and estimate_text_tokens(part.content) > per_result_target
             ):
                 return True
@@ -624,6 +644,7 @@ def _l3_candidates(
     current_turn: int,
     target_tokens: int,
     per_result_target: int | None,
+    consumed_tool_result_part_ids: frozenset[str],
 ) -> list[_L3Candidate]:
     """Return deterministic tool-result-only L3 candidates.
 
@@ -642,6 +663,7 @@ def _l3_candidates(
                 part,
                 lifecycle=lifecycle,
                 current_turn=current_turn,
+                consumed_tool_result_part_ids=consumed_tool_result_part_ids,
             ):
                 tail_index += 1
                 continue
@@ -691,8 +713,14 @@ def _can_archive_l3_part(
     *,
     lifecycle: ToolResultLifecycleRecord | None,
     current_turn: int,
+    consumed_tool_result_part_ids: frozenset[str],
 ) -> bool:
-    if part.kind != "tool_result" or lifecycle is None:
+    if not _is_consumed_tool_result(
+        part,
+        consumed_tool_result_part_ids=consumed_tool_result_part_ids,
+    ):
+        return False
+    if lifecycle is None:
         return False
     # L3 may turn a raw result or its L2 projection into a placeholder.  It
     # must not consume a pinned/retrieved result or replay a legacy/terminal
@@ -708,6 +736,14 @@ def _can_archive_l3_part(
         ToolResultLifecycle.DUPLICATE,
         ToolResultLifecycle.DERIVED,
     }
+
+
+def _is_consumed_tool_result(
+    part: MessagePart,
+    *,
+    consumed_tool_result_part_ids: frozenset[str],
+) -> bool:
+    return part.kind == "tool_result" and part.id in consumed_tool_result_part_ids
 
 
 def _is_l3_mandatory(lifecycle: ToolResultLifecycleRecord | None) -> bool:

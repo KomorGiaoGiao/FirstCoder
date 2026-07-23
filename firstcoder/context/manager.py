@@ -160,6 +160,10 @@ class ContextWindowManager:
                 active_task_hash=request.runtime_state.active_task_hash,
                 target_tokens=target_tokens,
                 current_turn=request.current_turn,
+                estimate_tokens=lambda candidate: self._trigger_decision(candidate, request).estimated_tokens,
+                consumed_tool_result_part_ids=frozenset(
+                    request.runtime_state.consumed_tool_result_part_ids
+                ),
                 required_levels=required_levels,
                 l2_result_target_tokens=self.config.l2_result_target_tokens,
                 force_route_current_text=force_route_current_text,
@@ -361,6 +365,10 @@ class ContextWindowManager:
                     active_task_hash=request.runtime_state.active_task_hash,
                     target_tokens=target_tokens,
                     current_turn=request.current_turn,
+                    estimate_tokens=lambda candidate: self._trigger_decision(candidate, request).estimated_tokens,
+                    consumed_tool_result_part_ids=frozenset(
+                        request.runtime_state.consumed_tool_result_part_ids
+                    ),
                     enabled_levels=("l1", "l2", "l3"),
                     required_levels=("l2", "l3") if trigger == ContextWindowTrigger.TASK_HASH_CHANGED else (),
                     l2_result_target_tokens=self.config.l2_result_target_tokens,
