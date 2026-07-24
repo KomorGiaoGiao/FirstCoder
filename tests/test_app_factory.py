@@ -83,6 +83,11 @@ def test_factory_connects_mcp_once_and_merges_discovered_tools(tmp_path: Path) -
     assert manager.connect_calls == 1
     assert "write" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
     assert "mcp__demo__ping" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+    assert "mcp_tool_search" in app.current_session.session.tool_registry.names()
+    search = app.current_session.session.tool_registry.get("mcp_tool_search")
+    assert search is not None
+    result = search.executor(query="ping demo")
+    assert result.data["mcp_tool_search"]["activated_tools"] == ["mcp__demo__ping"]
     assert "/mcp list" in app.command_handler.handle("/help").output
 
 
@@ -97,6 +102,7 @@ def test_factory_keeps_builtin_tools_when_mcp_connection_fails(tmp_path: Path) -
 
     assert "write" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
     assert "mcp__demo__ping" not in [tool.name for tool in app.current_session.session.tool_registry.tools()]
+    assert "mcp_tool_search" not in app.current_session.session.tool_registry.names()
 
 
 def test_factory_custom_tools_mode_does_not_append_mcp_tools(tmp_path: Path) -> None:
@@ -112,6 +118,7 @@ def test_factory_custom_tools_mode_does_not_append_mcp_tools(tmp_path: Path) -> 
     )
 
     assert "mcp__demo__ping" not in app.current_session.session.tool_registry.names()
+    assert "mcp_tool_search" not in app.current_session.session.tool_registry.names()
 
 
 def test_app_unmount_closes_mcp_manager_once(tmp_path: Path) -> None:

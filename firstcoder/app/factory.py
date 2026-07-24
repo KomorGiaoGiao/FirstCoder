@@ -28,6 +28,7 @@ from firstcoder.mcp.adapter import adapt_mcp_tool
 from firstcoder.mcp.config import load_mcp_configs
 from firstcoder.mcp.manager import McpManager
 from firstcoder.mcp.models import McpServerStatus, McpToolDescription
+from firstcoder.mcp.search import McpSearchEntry, create_mcp_tool_search
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import (
     ProviderConfigError,
@@ -81,6 +82,7 @@ class McpToolProvider:
         if not self._include_mcp:
             return tools
         names = {tool.name for tool in tools}
+        entries: list[McpSearchEntry] = []
         try:
             catalog = self._manager.tools()
         except Exception:
@@ -92,6 +94,15 @@ class McpToolProvider:
                 continue
             tools.append(tool)
             names.add(tool.name)
+            entries.append(
+                McpSearchEntry(
+                    server=server,
+                    tool=discovered_tool.name,
+                    definition=tool.definition,
+                )
+            )
+        if entries and "mcp_tool_search" not in names:
+            tools.append(create_mcp_tool_search(tuple(entries)))
         return tools
 
 
