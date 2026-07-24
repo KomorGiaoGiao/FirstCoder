@@ -26,10 +26,10 @@ MODEL_GLOW_PALETTES: dict[str, tuple[str, ...]] = {
     "grok-4.5": ("#f0e7ff", "#d2b4ff", "#b57bff", "#8b5cf6", "#5ce1ff"),
     "fable-5": ("#ffe9bf", "#ffc857", "#f0a05a", "#e07850", "#c7a0ff"),
     # Opus / Sonnet warm family
-    "opus-4-7": ("#ffe0d1", "#ffb899", "#ff8f6b", "#e86a4a", "#f4c27a"),
-    "opus-4-8": ("#ffd6e0", "#ff9aa8", "#ff6f61", "#d94848", "#ffc36b"),
-    "sonnet-5": ("#fff0d8", "#ffd29a", "#f0b36a", "#d7925a", "#e8c4a2"),
-    "sonnet-4-6": ("#ffe8ef", "#ffc2d1", "#f0a18c", "#d9896c", "#f2d0a8"),
+    "claude-opus-4-7": ("#ffe0d1", "#ffb899", "#ff8f6b", "#e86a4a", "#f4c27a"),
+    "claude-opus-4-8": ("#ffd6e0", "#ff9aa8", "#ff6f61", "#d94848", "#ffc36b"),
+    "claude-sonnet-5": ("#fff0d8", "#ffd29a", "#f0b36a", "#d7925a", "#e8c4a2"),
+    "claude-sonnet-4-6": ("#ffe8ef", "#ffc2d1", "#f0a18c", "#d9896c", "#f2d0a8"),
 }
 
 

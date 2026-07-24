@@ -447,10 +447,10 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
         ("gpt-5.4-mini", "#9be7c8"),
         ("grok-4.5", "#b57bff"),
         ("fable-5", "#f0a05a"),
-        ("opus-4-7", "#ff8f6b"),
-        ("opus-4-8", "#ff6f61"),
-        ("sonnet-5", "#f0b36a"),
-        ("sonnet-4-6", "#f0a18c"),
+        ("claude-opus-4-7", "#ff8f6b"),
+        ("claude-opus-4-8", "#ff6f61"),
+        ("claude-sonnet-5", "#f0b36a"),
+        ("claude-sonnet-4-6", "#f0a18c"),
     ],
 )
 def test_supported_yuren_models_use_distinct_moving_colour_bands(model: str, colour: str) -> None:
