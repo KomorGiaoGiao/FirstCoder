@@ -48,7 +48,7 @@ from firstcoder.tools.background import create_background_cancel_tool, create_ba
 from firstcoder.agent.subagent import SubagentRunner
 from firstcoder.tools.delegate import create_delegate_tool
 from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
-from firstcoder.tools.types import Tool, ToolResult
+from firstcoder.tools.types import Tool, ToolResult, make_error_result
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +127,18 @@ class AgentLoop:
             check_turn_timeout=self._check_turn_timeout,
             tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
         )
+        # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
+        # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
+        if tools:
+            for tool in tools:
+                if tool.name not in self.session.tool_registry.names():
+                    self.session.tool_registry.register(tool)
+        self._mcp_tool_names = {
+            name
+            for name in self.session.tool_registry.names()
+            if name.startswith("mcp__")
+        }
+        self._active_mcp_tool_names: set[str] = set()
         self.tool_executor = ToolExecutor(
             session=session,
             settlement=self.tool_settlement,
@@ -135,15 +147,11 @@ class AgentLoop:
             cancellation_token=self.cancellation_token,
             tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
             emit_settlements=self._emit_settlements,
+            validate_tool_call=self._validate_mcp_tool_call,
+            observe_tool_result=self._observe_mcp_search_result,
             background_manager=self.background_manager,
             background_tool_names=self.background_tool_names,
         )
-        # session 创建时通常已经注册了 session-scoped 工具。这里允许调用方再传入一批
-        # 测试或临时工具，但避免重复注册同名工具导致模型 schema 不稳定。
-        if tools:
-            for tool in tools:
-                if tool.name not in self.session.tool_registry.names():
-                    self.session.tool_registry.register(tool)
         self._ensure_background_control_tools()
         self._ensure_delegate_tool()
 
@@ -1046,7 +1054,17 @@ class AgentLoop:
         capabilities = getattr(self.provider, "capabilities", None)
         if capabilities is not None and not capabilities.supports_tools:
             return []
-        return [self._augment_tool_definition(definition) for definition in self.session.tool_registry.definitions() if definition.name not in HIDDEN_TOOL_STATUS_NAMES]
+        definitions = []
+        for definition in self.session.tool_registry.definitions():
+            if definition.name in HIDDEN_TOOL_STATUS_NAMES:
+                continue
+            if (
+                definition.name in self._mcp_tool_names
+                and definition.name not in self._active_mcp_tool_names
+            ):
+                continue
+            definitions.append(self._augment_tool_definition(definition))
+        return definitions
 
     def _augment_tool_definition(self, definition):
         """给后台可用工具的 schema 附加 run_in_background/background_label 控制字段。
@@ -1103,10 +1121,41 @@ class AgentLoop:
 
     def _begin_turn(self, *, new_user_turn: bool = True) -> None:
         if new_user_turn:
+            self._active_mcp_tool_names.clear()
             self.provider_call_count = 0
             self.turn_started_at = self.clock()
             self._task_plan_reconciliation_attempted = False
             self._tool_rounds_completed = 0
+
+    def _validate_mcp_tool_call(self, tool_call: ToolCall) -> ToolResult | None:
+        if tool_call.name not in self._mcp_tool_names:
+            return None
+        if tool_call.name in self._active_mcp_tool_names:
+            return None
+        return make_error_result(
+            tool_call.name,
+            "MCP tool is not active for this user turn. Call mcp_tool_search first.",
+            mcp_activation_required=True,
+        )
+
+    def _observe_mcp_search_result(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> None:
+        if tool_call.name != "mcp_tool_search" or not result.ok:
+            return
+        payload = result.data.get("mcp_tool_search")
+        if not isinstance(payload, dict):
+            return
+        activated = payload.get("activated_tools")
+        if not isinstance(activated, list):
+            return
+        self._active_mcp_tool_names.update(
+            name
+            for name in activated
+            if isinstance(name, str) and name in self._mcp_tool_names
+        )
 
     def _append_pending_guidance(self) -> None:
         if self.guidance_provider is None:

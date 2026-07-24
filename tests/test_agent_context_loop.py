@@ -19,6 +19,9 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.input.attachments import attach_path
 from firstcoder.runtime.cancellation import CancellationToken
 from firstcoder.permissions.types import PermissionMode
+from firstcoder.mcp.adapter import adapt_mcp_tool
+from firstcoder.mcp.models import McpToolDescription
+from firstcoder.mcp.search import McpSearchEntry, create_mcp_tool_search
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.errors import ProviderError, ProviderErrorKind
 from firstcoder.providers.types import (
@@ -193,6 +196,43 @@ class FakeClock:
         if not self.values:
             return 999.0
         return self.values.pop(0)
+
+
+class RecordingMcpCaller:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def call_tool(self, server: str, tool: str, arguments: dict[str, object]) -> object:
+        self.calls.append((server, tool, arguments))
+        return {"content": [{"type": "text", "text": "issue result"}]}
+
+
+def _mcp_tools(caller: RecordingMcpCaller) -> list[Tool]:
+    issue = adapt_mcp_tool(
+        caller,
+        "github",
+        McpToolDescription(
+            "get_issue",
+            "Read one issue.",
+            {"type": "object", "properties": {}},
+        ),
+    )
+    create = adapt_mcp_tool(
+        caller,
+        "github",
+        McpToolDescription(
+            "create_issue",
+            "Create an issue.",
+            {"type": "object", "properties": {}},
+        ),
+    )
+    search = create_mcp_tool_search(
+        (
+            McpSearchEntry("github", "get_issue", issue.definition),
+            McpSearchEntry("github", "create_issue", create.definition),
+        )
+    )
+    return [issue, create, search]
 
 
 @dataclass
@@ -1186,6 +1226,245 @@ def test_agent_loop_sends_tool_schema_only_via_request_tools(tmp_path) -> None:
     assert "echo" not in system_message
     assert "回显文本" not in system_message
     assert '"text": {"type": "string"}' not in system_message
+
+
+def test_agent_loop_exposes_only_searched_mcp_schemas_for_current_turn(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    caller = RecordingMcpCaller()
+    tools = _mcp_tools(caller)
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_mcp_visibility",
+        agents_md="",
+        tools=tools,
+    )
+    session.set_permission_mode(PermissionMode.BYPASS)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_search",
+                        name="mcp_tool_search",
+                        arguments={"query": "get"},
+                    )
+                ],
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_issue",
+                        name="mcp__github__get_issue",
+                        arguments={},
+                    )
+                ],
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="done"),
+        ]
+    )
+
+    result = AgentLoop(session=session, provider=provider).run_user_turn("Read issue 12")
+
+    first_names = {tool.name for tool in provider.requests[0].tools}
+    second_names = {tool.name for tool in provider.requests[1].tools}
+    assert "mcp_tool_search" in first_names
+    assert not any(name.startswith("mcp__") for name in first_names)
+    assert "mcp__github__get_issue" in second_names
+    assert "mcp__github__create_issue" not in second_names
+    assert caller.calls == [("github", "get_issue", {})]
+    assert result.content == "done"
+
+
+def test_agent_loop_clears_mcp_activation_on_next_user_turn(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    caller = RecordingMcpCaller()
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_mcp_turn_boundary",
+        agents_md="",
+        tools=_mcp_tools(caller),
+    )
+    session.set_permission_mode(PermissionMode.BYPASS)
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_search",
+                        name="mcp_tool_search",
+                        arguments={"query": "read github issue"},
+                    )
+                ],
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="first done"),
+            ChatResponse(provider="fake", model="fake-model", content="second done"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    loop.run_user_turn("Read issue 12")
+    loop.run_user_turn("Explain this local function")
+
+    next_turn_names = {tool.name for tool in provider.requests[-1].tools}
+    assert "mcp_tool_search" in next_turn_names
+    assert not any(name.startswith("mcp__") for name in next_turn_names)
+
+
+def test_agent_loop_rejects_guessed_mcp_tool_before_permission_or_transport(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    caller = RecordingMcpCaller()
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_mcp_guard",
+        agents_md="",
+        tools=_mcp_tools(caller),
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_guessed_issue",
+                        name="mcp__github__get_issue",
+                        arguments={},
+                    )
+                ],
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="not active"),
+        ]
+    )
+
+    AgentLoop(session=session, provider=provider).run_user_turn("Read issue 12")
+
+    assert caller.calls == []
+    tool_part = next(
+        part
+        for message in session.rebuild_view().messages
+        for part in message.parts
+        if part.kind == "tool_result" and part.metadata["tool_name"] == "mcp__github__get_issue"
+    )
+    assert tool_part.metadata["ok"] is False
+    assert tool_part.metadata["data"]["mcp_activation_required"] is True
+    assert session.pending_permission_execution is None
+
+
+def test_agent_loop_streaming_keeps_same_mcp_visibility_rules(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    caller = RecordingMcpCaller()
+    session = AgentSession.create(
+        store=store,
+        session_id="sess_mcp_streaming_visibility",
+        agents_md="",
+        tools=_mcp_tools(caller),
+    )
+    session.set_permission_mode(PermissionMode.BYPASS)
+    provider = StreamingProvider(
+        [
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_search_stream",
+                        name="mcp_tool_search",
+                        arguments={"query": "get"},
+                    )
+                ],
+            ),
+            ChatResponse(
+                provider="fake-stream",
+                model="fake-stream-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_issue_stream",
+                        name="mcp__github__get_issue",
+                        arguments={},
+                    )
+                ],
+            ),
+            ChatResponse(provider="fake-stream", model="fake-stream-model", content="done"),
+        ]
+    )
+
+    result = AgentLoop(session=session, provider=provider).run_user_turn_streaming_sync("Read issue")
+
+    first_names = {tool.name for tool in provider.requests[0].tools}
+    second_names = {tool.name for tool in provider.requests[1].tools}
+    assert not any(name.startswith("mcp__") for name in first_names)
+    assert "mcp__github__get_issue" in second_names
+    assert "mcp__github__create_issue" not in second_names
+    assert caller.calls == [("github", "get_issue", {})]
+    assert result.content == "done"
+
+
+def test_agent_loop_permission_resume_keeps_mcp_schema_active(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    caller = RecordingMcpCaller()
+    session = AgentSession.from_project(
+        store=store,
+        session_id="sess_mcp_permission_resume",
+        project_root=tmp_path,
+        tools=_mcp_tools(caller),
+    )
+    provider = FakeProvider(
+        [
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_search_permission",
+                        name="mcp_tool_search",
+                        arguments={"query": "get"},
+                    )
+                ],
+            ),
+            ChatResponse(
+                provider="fake",
+                model="fake-model",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_issue_permission",
+                        name="mcp__github__get_issue",
+                        arguments={},
+                    )
+                ],
+            ),
+            ChatResponse(provider="fake", model="fake-model", content="done"),
+        ]
+    )
+    loop = AgentLoop(session=session, provider=provider)
+
+    waiting = loop.run_user_turn_interactive("Read issue")
+
+    assert waiting.pending_input is not None
+    assert "mcp__github__get_issue" in {
+        tool.name for tool in provider.requests[1].tools
+    }
+    result = loop.resume_with_user_input(waiting.pending_input.id, "allow_once")
+
+    assert result.response is not None
+    assert result.response.content == "done"
+    assert "mcp__github__get_issue" in {
+        tool.name for tool in provider.requests[2].tools
+    }
+    assert caller.calls == [("github", "get_issue", {})]
 
 
 def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> None:
