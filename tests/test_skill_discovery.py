@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from firstcoder.skills.catalog import render_skill_catalog
+from firstcoder.skills.catalog import (
+    SKILL_CATALOG_MAX_CHARS,
+    SKILL_DESCRIPTION_MAX_CHARS,
+    SKILL_LOAD_INSTRUCTION,
+    render_skill_catalog,
+)
 from firstcoder.skills.discovery import discover_all_skills, discover_project_skills
 from firstcoder.skills.models import SkillCatalog, SkillDefinition, SkillSource
 
@@ -202,5 +207,62 @@ def test_render_skill_catalog_hides_filesystem_metadata_and_bounds_whole_lines()
     assert "global_agent_skill" not in rendered
     assert "\nextra whitespace" not in rendered
     assert rendered.splitlines()[0].startswith("- skill-000: A long description")
-    assert rendered.splitlines()[-1] == "Use load_skill(name, args?) to load full instructions when needed."
+    assert rendered.splitlines()[-1] == SKILL_LOAD_INSTRUCTION
     assert all(line.startswith("- skill-") for line in rendered.splitlines()[:-1])
+
+
+def test_render_skill_catalog_keeps_every_skill_name_within_budget() -> None:
+    skills = [
+        SkillDefinition(
+            name=f"skill-{index:03d}",
+            path=f"skill-{index:03d}/SKILL.md",
+            source=SkillSource.GLOBAL_AGENT_SKILL,
+            root="/global",
+            description="A deliberately long description. " * 40,
+        )
+        for index in range(100)
+    ]
+
+    rendered = render_skill_catalog(SkillCatalog(skills=skills))
+
+    assert len(rendered) <= SKILL_CATALOG_MAX_CHARS
+    assert rendered.splitlines()[-1] == SKILL_LOAD_INSTRUCTION
+    for skill in skills:
+        assert f"- {skill.name}:" in rendered
+
+
+def test_render_skill_catalog_keeps_full_description_budget_for_small_catalog() -> None:
+    description = "x" * (SKILL_DESCRIPTION_MAX_CHARS + 20)
+    skill = SkillDefinition(
+        name="review",
+        path="review/SKILL.md",
+        source=SkillSource.GLOBAL_AGENT_SKILL,
+        root="/global",
+        description=description,
+    )
+
+    line = render_skill_catalog(SkillCatalog(skills=[skill])).splitlines()[0]
+
+    assert line == f"- review: {'x' * (SKILL_DESCRIPTION_MAX_CHARS - 3)}..."
+
+
+def test_render_skill_catalog_extreme_name_overflow_keeps_whole_lines_and_warning() -> None:
+    skills = [
+        SkillDefinition(
+            name=f"skill-{index:03d}-" + "n" * 400,
+            path=f"skill-{index:03d}/SKILL.md",
+            source=SkillSource.GLOBAL_AGENT_SKILL,
+            root="/global",
+            description="description must not steal name budget",
+        )
+        for index in range(30)
+    ]
+
+    rendered = render_skill_catalog(SkillCatalog(skills=skills))
+    lines = rendered.splitlines()
+
+    assert len(rendered) <= SKILL_CATALOG_MAX_CHARS
+    assert lines[-1] == SKILL_LOAD_INSTRUCTION
+    assert "Skill catalog truncated:" in lines[-2]
+    assert all(line.endswith(":") for line in lines[:-2])
+    assert all(line in {f"- {skill.name}:" for skill in skills} for line in lines[:-2])
