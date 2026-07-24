@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from threading import RLock
 
 from firstcoder.agent.prompt_inputs import (
     DEFAULT_PERMISSION_POLICY,
@@ -34,7 +35,7 @@ from firstcoder.tools.permission_registry import PermissionAwareToolRegistry
 from firstcoder.tools.review import PrewriteReview, build_prewrite_review, supports_prewrite_review
 from firstcoder.tools.session_registry import ToolRegistryLike, create_session_tool_registry
 from firstcoder.tools.types import Tool, ToolResult, make_error_result
-from firstcoder.context.models import AgentMessage, MessagePart
+from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.input.attachments import UserAttachment, prepare_attachments_for_session
 from firstcoder.utils.sandbox_access import SandboxAccess, SandboxAccessMode
 from firstcoder.skills.discovery import discover_all_skills
@@ -95,6 +96,8 @@ class AgentSession:
     mode: str = "default"
     require_prewrite_review: bool = True
     pending_permission_execution: PendingPermissionExecution | None = None
+    _tool_result_lock: RLock = field(default_factory=RLock, repr=False)
+    _tool_result_message_ids: dict[str, str] = field(default_factory=dict, repr=False)
 
     @classmethod
     def create(
@@ -231,6 +234,7 @@ class AgentSession:
             sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=turn_counter,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
+            _tool_result_message_ids=_tool_result_message_ids_from_view(view),
         )
         session._sync_sandbox_access_with_mode()
         return session
@@ -484,37 +488,44 @@ class AgentSession:
         工具输出生成后续回答。工具结果不直接替代 assistant 回复。
         """
 
-        message_id = new_message_id()
-        part = tool_result_to_part(message_id=message_id, tool_call=tool_call, result=result)
-        self._attach_current_context_metadata([part])
-        tool_message_id = self.writer.append_tool_result_part(
-            part,
-            message_id=message_id,
-        )
-        self.known_message_ids.add(tool_message_id)
-        self._append_task_boundary_observation_if_present(tool_call=tool_call, result=result)
-        return tool_message_id
+        with self._tool_result_lock:
+            existing_message_id = self._tool_result_message_ids.get(tool_call.id)
+            if existing_message_id is not None:
+                return existing_message_id
+
+            message_id = new_message_id()
+            part = tool_result_to_part(message_id=message_id, tool_call=tool_call, result=result)
+            self._attach_current_context_metadata([part])
+            tool_message_id = self.writer.append_tool_result_part(
+                part,
+                message_id=message_id,
+            )
+            self._tool_result_message_ids[tool_call.id] = tool_message_id
+            self.known_message_ids.add(tool_message_id)
+            self._append_task_boundary_observation_if_present(tool_call=tool_call, result=result)
+            return tool_message_id
 
     def append_interrupted_tool_results(self) -> list[ToolCall]:
         """为会话尾部尚未闭合的工具调用写入中断结果。"""
 
-        pending = self._pending_tool_calls_from_tail()
-        if len(pending) != 1:
-            return []
+        with self._tool_result_lock:
+            pending = self._pending_tool_calls_from_tail()
+            if len(pending) != 1:
+                return []
 
-        first, remaining, _ = pending[0]
-        tool_calls = [first, *remaining]
-        for tool_call in tool_calls:
-            self.append_tool_result(
-                tool_call=tool_call,
-                result=make_error_result(
-                    tool_call.name,
-                    "工具执行被用户中断；结果未知，操作可能尚未执行、部分执行，或已在后台继续。",
-                    interrupted=True,
-                    execution_outcome="unknown",
-                ),
-            )
-        return tool_calls
+            first, remaining, _ = pending[0]
+            tool_calls = [first, *remaining]
+            for tool_call in tool_calls:
+                self.append_tool_result(
+                    tool_call=tool_call,
+                    result=make_error_result(
+                        tool_call.name,
+                        "工具执行被用户中断；结果未知，操作可能尚未执行、部分执行，或已在后台继续。",
+                        interrupted=True,
+                        execution_outcome="unknown",
+                    ),
+                )
+            return tool_calls
 
     def append_background_notification(
         self,
@@ -617,6 +628,22 @@ def _tool_call_from_part(part: MessagePart) -> ToolCall:
         name=str(part.metadata["tool_name"]),
         arguments=arguments,
     )
+
+
+def _tool_result_message_ids_from_view(view: SessionView) -> dict[str, str]:
+    """Index existing tool results so resumed sessions preserve idempotent settlement."""
+
+    result: dict[str, str] = {}
+    for message in view.messages:
+        if message.role != "tool":
+            continue
+        for part in message.parts:
+            if part.kind != "tool_result":
+                continue
+            tool_call_id = part.metadata.get("tool_call_id")
+            if tool_call_id:
+                result.setdefault(str(tool_call_id), message.id)
+    return result
 
 
 def _infer_turn_counter(messages: list[AgentMessage]) -> int:

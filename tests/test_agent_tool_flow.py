@@ -91,6 +91,32 @@ def test_unknown_tool_result_is_persisted_as_structured_error(tmp_path) -> None:
     assert "未知工具" in part.metadata["error"]
 
 
+def test_late_tool_result_after_interruption_is_settled_once(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_idempotent_settlement")
+    tool_call = ToolCall(id="call_race", name="grep", arguments={"pattern": "TODO"})
+    session.append_assistant_response(
+        ChatResponse(
+            provider="fake",
+            model="fake-model",
+            content="",
+            tool_calls=[tool_call],
+            finish_reason="tool_calls",
+        )
+    )
+
+    session.append_interrupted_tool_results()
+    session.append_tool_result(
+        tool_call=tool_call,
+        result=ToolResult(name="grep", ok=True, content="late success"),
+    )
+
+    tool_messages = [message for message in session.rebuild_view().messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].parts[0].metadata["tool_call_id"] == "call_race"
+    assert tool_messages[0].parts[0].metadata["data"]["interrupted"] is True
+
+
 def test_project_session_permissioned_write_pauses_without_writing(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     session = AgentSession.from_project(
