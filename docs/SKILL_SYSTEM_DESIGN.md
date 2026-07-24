@@ -46,7 +46,7 @@ The model sees only entries like:
 Use load_skill(name, args?) to load full instructions when needed.
 ```
 
-It contains no filesystem path, root, source enum, or duplicate name. Descriptions are normalized to one bounded line. The complete listing is capped at 8,000 characters and admits only whole entries.
+It contains no filesystem path, root, source enum, or duplicate name. Descriptions are normalized to one bounded line. The complete listing is capped at 8,000 characters: the renderer reserves a complete name row for every effective skill first, then distributes the remaining budget across descriptions (up to 240 characters per skill). Only when the name rows themselves exceed the budget does it emit a whole-line prefix and an explicit truncation warning.
 
 ## `load_skill` Tool
 
@@ -100,7 +100,7 @@ Commands never read the file or mutate skill state directly. Formal loading alwa
 
 | Symptom | Check |
 | --- | --- |
-| model cannot see a skill | directory layout, disable-global flag, frontmatter name/description, 8,000-character budget |
+| model cannot see a skill | directory layout, disable-global flag, frontmatter name/description, or an extreme catalog where the name rows themselves exceed the 8,000-character budget |
 | wrong duplicate wins | project/global source priority and stable root/path tie order |
 | model does not call a skill | catalog description quality or explicit `/<skill-name>` invocation |
 | `load_skill` fails | exact name, file existence, and registered path containment |

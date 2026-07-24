@@ -11,14 +11,17 @@ FirstCoder tool named `mcp__<server>__<tool>`.
 firstcoder mcp add / TOML configuration
   -> AppConfig loads desired servers
   -> McpManager connects and calls tools/list
-  -> adapter creates regular Tool objects
-  -> app.factory.McpToolProvider merges them with builtins at composition time
+  -> adapter creates regular Tool objects and a compact local search catalog
+  -> app.factory.McpToolProvider merges executors with builtins
+  -> mcp_tool_search discovers at most 8 matching MCP definitions per user turn
   -> SessionBootstrap / session registry + PermissionAwareToolRegistry
   -> AgentLoop calls the tool and records the normal session events
 ```
 
 MCP is merged at the **composition root**, not by inventing a second tool
-registry or agent loop. Failed or disabled servers simply omit tools.
+registry or agent loop. MCP executors remain registered for normal dispatch, but
+concrete MCP schemas are not sent to the provider until `mcp_tool_search` finds
+them. Failed or disabled servers simply omit tools.
 
 Configuration is persistent intent. Connection state (`connected`, `failed`,
 or `disabled`) is process-local and is rebuilt when FirstCoder starts.
@@ -108,6 +111,28 @@ They show connection state, discovered tool count, and safe errors. They do
 not print configured headers, resolved environment values, or other secrets.
 A failed, disabled, or timed-out server does not block startup and contributes
 no tools.
+
+## On-demand tool schemas
+
+The initial provider request contains built-in tools and `mcp_tool_search`, but
+not every `mcp__<server>__<tool>` schema. The search is local and deterministic:
+it matches the server name, tool name, and description from the already filtered
+`tools/list` catalog. It returns at most eight matching names and their compact
+descriptions. The next provider request exposes those matching schemas.
+
+Activation is scoped to the current user turn. Tool-loop rounds, prompt-too-long
+retries, and permission confirmation resume keep the activated definitions. A
+new user message clears them; ordinary `ask_user` answers are new messages and
+therefore also clear them. No activation set is written as a new session event.
+
+Hiding a schema is not an execution permission: if the model guesses an
+unactivated `mcp__...` name, AgentLoop rejects it before permission preflight and
+before `McpManager.call_tool`, returning a normal tool error that asks the model
+to search first. Once activated, the existing exact `<server>/<tool>` permission
+check remains mandatory.
+
+`enabled` and `allowed_tools` are applied before the local search catalog is
+created, so search cannot reveal a disabled or disallowed MCP tool.
 
 ## Troubleshooting
 
