@@ -46,7 +46,7 @@ SessionBootstrap 发现项目与全局 skill
 Use load_skill(name, args?) to load full instructions when needed.
 ```
 
-目录不包含 filesystem path、root、source enum 或重复名称。description 会压成单行并限制长度；整个目录最多 8,000 字符，只加入完整条目，不输出半截记录。
+目录不包含 filesystem path、root、source enum 或重复名称。description 会压成单行并限制长度；整个目录最多 8,000 字符。渲染器先为每个有效 Skill 保留完整名称行，再把剩余预算公平分配给 description（每条最多 240 字符）。只有名称行本身就超过预算时，才输出完整行前缀并附带明确的目录截断提示。
 
 ## `load_skill` 工具
 
@@ -100,7 +100,7 @@ load_skill(name: string, args?: string)
 
 | 现象 | 检查 |
 | --- | --- |
-| 模型看不到 skill | 目录布局、disable-global flag、frontmatter name/description、8,000 字符目录预算 |
+| 模型看不到 skill | 目录布局、disable-global flag、frontmatter name/description，或名称行本身超过 8,000 字符极端预算 |
 | 同名 skill 选错 | 项目/全局来源优先级和稳定 root/path 排序 |
 | 模型没有调用 skill | system prompt 目录是否有清晰 description，或使用 `/<skill-name>` 明确指定 |
 | `load_skill` 失败 | 名称是否精确、文件是否仍存在、登记 path 是否在 root 内 |

@@ -9,13 +9,14 @@ MCP tool 会被转换为普通 FirstCoder tool，名称固定为 `mcp__<server>_
 firstcoder mcp add / TOML 配置
   -> AppConfig 读取想要连接的 server
   -> McpManager 连接并执行 tools/list
-  -> adapter 转成现有 Tool
-  -> app.factory.McpToolProvider 在装配期与 builtins 合并
+  -> adapter 转成现有 Tool，并建立紧凑的本地搜索目录
+  -> app.factory.McpToolProvider 在装配期把 executor 与 builtins 合并
+  -> mcp_tool_search 每个用户回合最多发现 8 个匹配的 MCP 定义
   -> SessionBootstrap / session registry + PermissionAwareToolRegistry
   -> AgentLoop 调用工具并照常写入 session
 ```
 
-MCP 在**组合根**合并进工具面，不会另起一套 registry 或 agent loop。失败/禁用的 server 只是不注入工具。
+MCP 在**组合根**合并进工具面，不会另起一套 registry 或 agent loop。MCP executor 会继续注册以便正常分发，但具体的 MCP schema 只有在 `mcp_tool_search` 找到后才发送给模型。失败/禁用的 server 只是不注入工具。
 
 配置是持久化的“想连接什么”；`connected`、`failed`、`disabled` 是进程内运行状态，重启后会重新建立。
 
@@ -95,6 +96,25 @@ URL 与 headers。`allowed_tools` 可选，支持工具名 glob 过滤。
 
 它们会显示连接状态、发现工具数和安全错误，不会输出配置 headers、已解析的环境变量
 或其他秘密。server 失败、禁用或超时都不会阻止 FirstCoder 启动，只是不注入工具。
+
+## 按需暴露工具 schema
+
+首次 provider 请求只包含内建工具和 `mcp_tool_search`，不会携带所有
+`mcp__<server>__<tool>` schema。搜索在本地确定性执行：它针对已经过
+`tools/list`、`enabled` 和 `allowed_tools` 过滤的目录，匹配 server 名、工具名和
+description，最多返回 8 个工具名及紧凑描述。下一次 provider 请求才会暴露这些命中
+工具的完整 schema。
+
+激活集合只作用于当前用户回合。工具循环、prompt-too-long 重试以及权限确认恢复都会
+保留本回合已激活的定义；收到新的用户消息时清空集合。普通 `ask_user` 的回答也属于
+新消息，因此同样会清空。激活集合不会作为新的 session event 写入。
+
+隐藏 schema 不等于执行授权：如果模型猜测并调用尚未激活的 `mcp__...` 名称，
+AgentLoop 会在权限预检和 `McpManager.call_tool` 之前拒绝，并返回要求先搜索的普通
+工具错误。工具激活后，原有精确到 `<server>/<tool>` 的权限检查仍然必须通过。
+
+`enabled` 和 `allowed_tools` 会在建立本地搜索目录之前生效，因此搜索不会泄露被禁用或
+不允许的 MCP 工具。
 
 ## 排障
 

@@ -115,6 +115,8 @@ class ToolExecutor:
         cancellation_token: CancellationToken | None,
         tag_task_boundary_messages: Callable[[dict[str, object]], None],
         emit_settlements: Callable[[str, object], None],
+        validate_tool_call: Callable[[ToolCall], ToolResult | None] | None = None,
+        observe_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
         background_manager: BackgroundJobManager | None = None,
         background_tool_names: frozenset[str] | None = None,
     ) -> None:
@@ -125,6 +127,8 @@ class ToolExecutor:
         self.cancellation_token = cancellation_token
         self._tag_task_boundary_messages = tag_task_boundary_messages
         self._emit_settlements = emit_settlements
+        self._validate_tool_call = validate_tool_call
+        self._observe_tool_result = observe_tool_result
         self._background_manager = background_manager
         self._background_tool_names = background_tool_names
         self._background_request: dict[str, tuple[str | None, str | None]] = {}
@@ -145,6 +149,16 @@ class ToolExecutor:
         while index < len(tool_calls):
             self._check_cancelled()
             tool_call = tool_calls[index]
+            validation_error = (
+                self._validate_tool_call(tool_call)
+                if self._validate_tool_call is not None
+                else None
+            )
+            if validation_error is not None:
+                self._emit_event("denied", tool_call, result=validation_error)
+                self._record_result(tool_call, validation_error, state=state)
+                index += 1
+                continue
             if tool_call.name in HIDDEN_TOOL_STATUS_NAMES:
                 result = make_error_result(
                     tool_call.name,
@@ -439,6 +453,8 @@ class ToolExecutor:
         skipped_tool_calls: list[ToolCall] | None = None,
     ) -> UserInputRequest | None:
         self.session.append_tool_result(tool_call=tool_call, result=result)
+        if self._observe_tool_result is not None:
+            self._observe_tool_result(tool_call, result)
         pending_input = user_input_request_from_tool_result(
             result,
             tool_call_id=tool_call.id,
