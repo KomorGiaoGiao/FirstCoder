@@ -163,16 +163,27 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         return staged
 
     def _run_command(self, instruction: str, *, session_id: str) -> str:
-        """Build the command without provider secrets or verifier information."""
+        """运行 agent 并将会话副本导出为 Harbor 可收集的日志文件。"""
+
+        safe_session_id = _session_id(session_id)
+        session_path = f"{_SESSION_ROOT}/sessions/{safe_session_id}.jsonl"
 
         return (
+            "set -o pipefail; "
             f"{shlex.quote(_venv_python())} -m firstcoder "
             "--benchmark --project . "
             f"--data-root {shlex.quote(_SESSION_ROOT)} "
-            f"--session-id {shlex.quote(_session_id(session_id))} "
+            f"--session-id {shlex.quote(safe_session_id)} "
             f"--max-tool-rounds {self._max_tool_rounds} "
             f"--message {shlex.quote(instruction)} "
-            "2>&1 | tee /logs/agent/firstcoder.txt"
+            "2>&1 | tee /logs/agent/firstcoder.txt; "
+            'FIRSTCODER_EXIT="${PIPESTATUS[0]}"; '
+            f"if [ -f {shlex.quote(session_path)} ]; then "
+            f"  if ! cp {shlex.quote(session_path)} /logs/agent/firstcoder-session.jsonl; then "
+            '    echo "warning: failed to export FirstCoder benchmark session" >&2; '
+            "  fi; "
+            "fi; "
+            'exit "$FIRSTCODER_EXIT"'
         )
 
     @staticmethod

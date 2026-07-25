@@ -24,6 +24,11 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
     assert "--max-tool-rounds 77" in command
     assert "'Fix the task." in command
     assert "/logs/agent/firstcoder.txt" in command
+    assert "set -o pipefail" in command
+    assert "FIRSTCODER_EXIT" in command
+    assert "/logs/agent/firstcoder-session.jsonl" in command
+    assert "/tmp/firstcoder-harbor-sessions/sessions/task_id.jsonl" in command
+    assert "warning: failed to export FirstCoder benchmark session" in command
     assert "FIRSTCODER_API_KEY" not in command
 
 
