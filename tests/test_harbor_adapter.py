@@ -114,8 +114,25 @@ def test_harbor_agent_bootstraps_python_311_before_installing(tmp_path: Path) ->
 
     command = agent._python_setup_command()
 
-    assert 'missing_packages+=("python3.11" "python3.11-venv")' in command
-    assert "apt-get install -y --no-install-recommends" in command
-    assert '"$PYTHON_BIN" -m venv "$venv_probe/test-venv"' in command
+    assert "case \"$PACKAGE_MANAGER\" in" in command
+    assert "apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates" in command
+    assert "apk add --no-cache python3" in command
+    assert "dnf install -y python3" in command
+    assert "yum install -y python3" in command
+    assert 'curl -LsSf https://astral.sh/uv/install.sh' in command
+    assert 'wget -qO- https://astral.sh/uv/install.sh' in command
+    assert 'UV_UNMANAGED_INSTALL="$AGENT_ROOT/bin"' in command
+    assert '"$AGENT_ROOT/bin/uv" python install 3.11' in command
+    assert '"$AGENT_ROOT/bin/uv" python find 3.11' in command
+    assert 'has_venv "$PYTHON_BIN"' in command
+    assert "requires Python 3.11+ with venv and pip after bootstrap" in command
+    assert '"$1" -m venv "$venv_probe/test-venv"' in command
     assert "for candidate in python3.12 python3.11 python3; do" in command
     assert '"$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"' in command
+
+
+def test_harbor_python_bootstrap_fails_clearly_without_supported_package_manager(tmp_path: Path) -> None:
+    command = FirstCoderHarborAgent(logs_dir=tmp_path)._python_setup_command()
+
+    assert 'PACKAGE_MANAGER="unsupported"' in command
+    assert "cannot bootstrap Python 3.11 or newer" in command
