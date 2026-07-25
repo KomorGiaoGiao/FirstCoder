@@ -60,7 +60,15 @@ def create_shell_tool(root: str | Path, *, access: SandboxAccess | None = None) 
         }
 
         if result.error:
-            return make_error_result("shell", result.error, **data)
+            content = result.error
+            output_sections = []
+            if result.stdout:
+                output_sections.append(f"stdout:\n{result.stdout.rstrip()}")
+            if result.stderr:
+                output_sections.append(f"stderr:\n{result.stderr.rstrip()}")
+            if output_sections:
+                content = f"{content}\n\n" + "\n\n".join(output_sections)
+            return ToolResult(name="shell", ok=False, content=content, data=data, error=result.error)
         if not result.ok:
             return make_error_result("shell", f"命令退出码为 {result.exit_code}", **data)
 
