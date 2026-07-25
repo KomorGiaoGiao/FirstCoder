@@ -143,6 +143,24 @@ def test_system_prompt_loads_one_unified_agent_prompt() -> None:
     assert "Never resend or replace the whole task list just to update one task" in content
 
 
+def test_benchmark_system_prompt_embeds_task_in_benchmark_role() -> None:
+    entry = SystemPromptBuilder().build(_inputs(benchmark_task="Fix the parser."))
+    content = entry.messages[0].content
+
+    assert "# Benchmark role" in content
+    assert "<task>\nFix the parser.\n</task>" in content
+    assert "# Scope and integrity" in content
+    assert "# Role and instruction priority" not in content
+
+
+def test_benchmark_task_changes_system_prompt_fingerprint() -> None:
+    builder = SystemPromptBuilder()
+
+    assert builder.fingerprint(_inputs(benchmark_task="Fix A.")) != builder.fingerprint(
+        _inputs(benchmark_task="Fix B.")
+    )
+
+
 def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     entry = SystemPromptBuilder().build(_inputs())
     content = entry.messages[0].content
@@ -152,7 +170,7 @@ def test_system_prompt_delegates_task_boundary_to_runtime() -> None:
     assert "task_boundary" not in content
 
 
-def test_system_prompt_version_is_v16() -> None:
+def test_system_prompt_version_is_v17() -> None:
     entry = SystemPromptBuilder().build(_inputs())
 
-    assert "prompt_version=v16" in entry.messages[0].content
+    assert "prompt_version=v17" in entry.messages[0].content

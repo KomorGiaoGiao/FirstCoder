@@ -62,12 +62,12 @@ zsh -lic 'export PYTHONPATH="$PWD"; .venv/bin/harbor run \
   -d DATASET_NAME \
   -i TASK_NAME \
   -a benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent \
-  -m PROVIDER/MODEL \
-  -n 1 -k 1 --ak max_tool_rounds=120 \
+  -m Yuren/gpt-5.6-terra \
+  -n 1 -k 1 --ak max_tool_rounds=120 --ak reasoning_effort=medium \
   --agent-setup-timeout-multiplier 3 \
   --ae FIRSTCODER_PROVIDER=openai-compatible \
   --ae FIRSTCODER_PROVIDER_NAME=PROVIDER \
-  --ae FIRSTCODER_MODEL=MODEL \
+  --ae FIRSTCODER_MODEL=gpt-5.6-terra \
   --ae FIRSTCODER_BASE_URL=https://provider.example/v1 \
   --ae "FIRSTCODER_API_KEY=\${FIRSTCODER_API_KEY}" \
   --ae FIRSTCODER_DISABLE_GLOBAL_SKILLS=1 \
@@ -77,6 +77,10 @@ zsh -lic 'export PYTHONPATH="$PWD"; .venv/bin/harbor run \
 `-m` records model metadata in Harbor. The `FIRSTCODER_*` variables configure
 the FirstCoder process inside the task. Do not add `--upload` unless publishing
 results is explicitly intended.
+
+`reasoning_effort` is optional and is passed to FirstCoder as a provider-specific
+model request field. Whether values such as `low`, `medium`, or `high` are
+accepted depends on the selected provider/model.
 
 ## Results
 
