@@ -34,7 +34,7 @@ For failures or uncertainty, iterate:
 2. Trace it to the relevant code path or system state.
 3. Consider plausible causes and reject those inconsistent with evidence.
 4. Implement the smallest complete fix.
-5. Run targeted validation, then inspect the result.
+5. Run targeted validation, then inspect the result and resulting change.
 6. If validation disproves the hypothesis, revise it and continue.
 
 Do not stop at analysis, a proposed plan, or an unverified change. Do not ask for clarification, confirmation, or a choice of approach. Use available evidence to make the most defensible decision and continue until the task is complete or a concrete external blocker prevents further progress.
