@@ -1,11 +1,13 @@
 """子进程执行通用工具。
 
-shell、python_exec、diagnostics、grep 都有近乎相同的 subprocess.run 调用
-加上 TimeoutExpired / OSError 处理和输出截断，统一到这里消除重复。
+shell、python_exec、diagnostics、grep 共用同一个 Popen 进程组边界，统一处理
+超时/取消、进程树回收、TimeoutExpired / OSError 和输出截断。
 """
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -44,70 +46,23 @@ def run_command(
 ) -> CommandResult:
     """执行子进程命令并返回统一结果。
 
+    每个命令都在独立进程组中启动；超时或取消时终止整个进程组，并回收已经产生的输出。
     自动处理 TimeoutExpired 和 OSError，自动截断超长输出。
     这是 shell / python_exec / diagnostics / grep 四个工具共同需要的执行模式。
     """
 
-    if cancellation_token is not None:
-        return _run_command_with_cancellation(
-            command,
-            cwd=cwd,
-            timeout_seconds=timeout_seconds,
-            max_output_chars=max_output_chars,
-            shell=shell,
-            env=env,
-            cancellation_token=cancellation_token,
-        )
-
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            shell=shell,
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return CommandResult(
-            exit_code=-1,
-            stdout="",
-            stderr="",
-            stdout_truncated=False,
-            stderr_truncated=False,
-            ok=False,
-            error="命令执行超时",
-        )
-    except OSError as exc:
-        return CommandResult(
-            exit_code=-1,
-            stdout="",
-            stderr="",
-            stdout_truncated=False,
-            stderr_truncated=False,
-            ok=False,
-            error=f"命令执行失败：{exc}",
-        )
-
-    stdout, stdout_truncated = truncate(completed.stdout, max_output_chars)
-    stderr, stderr_truncated = truncate(completed.stderr, max_output_chars)
-    ok = completed.returncode == 0
-
-    return CommandResult(
-        exit_code=completed.returncode,
-        stdout=stdout,
-        stderr=stderr,
-        stdout_truncated=stdout_truncated,
-        stderr_truncated=stderr_truncated,
-        ok=ok,
+    return _run_command_with_process_group(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+        shell=shell,
+        env=env,
+        cancellation_token=cancellation_token,
     )
 
 
-def _run_command_with_cancellation(
+def _run_command_with_process_group(
     command: list[str] | str,
     *,
     cwd: Path,
@@ -115,7 +70,7 @@ def _run_command_with_cancellation(
     max_output_chars: int,
     shell: bool,
     env: dict[str, str] | None,
-    cancellation_token: CancellationToken,
+    cancellation_token: CancellationToken | None,
 ) -> CommandResult:
     try:
         process = subprocess.Popen(
@@ -128,6 +83,7 @@ def _run_command_with_cancellation(
             text=True,
             encoding="utf-8",
             errors="replace",
+            **_process_group_kwargs(),
         )
     except OSError as exc:
         return CommandResult(
@@ -143,19 +99,30 @@ def _run_command_with_cancellation(
     deadline = time.monotonic() + timeout_seconds
     timed_out = False
     interrupted = False
-    while process.poll() is None:
-        if cancellation_token.is_cancelled:
+    stdout = stderr = ""
+    while True:
+        if cancellation_token is not None and cancellation_token.is_cancelled:
             interrupted = True
             break
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             timed_out = True
             break
-        time.sleep(0.05)
+        try:
+            stdout, stderr = process.communicate(
+                timeout=min(remaining, 0.05) if cancellation_token is not None else remaining,
+            )
+            break
+        except subprocess.TimeoutExpired:
+            if cancellation_token is None:
+                timed_out = True
+                break
 
     if interrupted or timed_out:
-        _terminate_process(process)
-
-    stdout, stderr = process.communicate()
+        _terminate_process_group(process)
+        # communicate() again drains everything the process group emitted before
+        # termination; this is the output that must accompany a timeout result.
+        stdout, stderr = process.communicate()
     stdout, stdout_truncated = truncate(stdout, max_output_chars)
     stderr, stderr_truncated = truncate(stderr, max_output_chars)
 
@@ -191,10 +158,52 @@ def _run_command_with_cancellation(
     )
 
 
-def _terminate_process(process: subprocess.Popen[str]) -> None:
-    process.terminate()
+def _process_group_kwargs() -> dict[str, int | bool]:
+    """Start each command in its own process group/session."""
+
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Terminate the command and every descendant in its process group."""
+
+    if os.name == "nt":
+        _taskkill_process_tree(process.pid)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        process.kill()
+        pass
+    # The leader may have exited while a descendant ignored SIGTERM.  Kill the
+    # group unconditionally after the grace period so those descendants cannot
+    # survive merely because Popen's direct child is already reaped.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
         process.wait(timeout=1)
+
+
+def _taskkill_process_tree(pid: int) -> None:
+    """Best-effort Windows equivalent of killing a POSIX process group."""
+
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        pass
