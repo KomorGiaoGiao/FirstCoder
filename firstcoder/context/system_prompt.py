@@ -53,7 +53,7 @@ class SystemPromptBuilder:
             "agents_md_hash": content_fingerprint(inputs.agents_md),
             "skill_protocol_hash": content_fingerprint(inputs.skill_protocol),
             "skill_catalog_summary_hash": content_fingerprint(inputs.skill_catalog_summary),
-            "benchmark_task_hash": content_fingerprint(inputs.benchmark_task),
+            "benchmark_mode": bool(inputs.benchmark_task.strip()),
             "provider_name": inputs.provider_name,
             "provider_capabilities": inputs.provider_capabilities,
             "permission_policy": inputs.permission_policy,
@@ -118,8 +118,6 @@ def _agent_instructions(benchmark_task: str = "") -> str:
     filename = "benchmark_agent_instructions.md" if benchmark_task.strip() else "agent_instructions.md"
     path = Path(__file__).with_name("prompts") / filename
     content = path.read_text(encoding="utf-8").strip()
-    if benchmark_task.strip():
-        return content.replace("{{task}}", benchmark_task.strip())
     return content
 
 
