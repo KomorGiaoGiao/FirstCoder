@@ -442,6 +442,29 @@ def test_main_parses_max_tool_rounds_for_single_message(tmp_path: Path):
     assert seen[0].max_tool_rounds == 80
 
 
+def test_main_parses_reasoning_effort_for_single_message(tmp_path: Path):
+    seen: list[CliConfig] = []
+
+    def fake_runner(config: CliConfig) -> str:
+        seen.append(config)
+        return "done"
+
+    exit_code = main(
+        [
+            "--project",
+            str(tmp_path),
+            "--message",
+            "solve it",
+            "--reasoning-effort",
+            "high",
+        ],
+        runner=fake_runner,
+    )
+
+    assert exit_code == 0
+    assert seen[0].reasoning_effort == "high"
+
+
 def test_main_parses_benchmark_mode_for_single_message(tmp_path: Path):
     seen: list[CliConfig] = []
 
@@ -486,9 +509,13 @@ def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: P
 
         def __init__(self) -> None:
             self.permission_mode = None
+            self.benchmark_task = None
 
         def set_permission_mode(self, mode):
             self.permission_mode = mode
+
+        def set_benchmark_task(self, task: str) -> None:
+            self.benchmark_task = task
 
     class FakeCurrentSession:
         def __init__(self) -> None:
@@ -528,6 +555,7 @@ def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: P
     assert output == "done"
     assert str(app.current_session.session.permission_mode) == "bypass"
     assert app.current_session.session.require_prewrite_review is False
+    assert app.current_session.session.benchmark_task == "solve it"
     assert app.chat_runner.limits.max_tool_rounds == 120
 
 

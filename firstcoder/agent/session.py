@@ -94,6 +94,7 @@ class AgentSession:
     known_message_ids: set[str] = field(default_factory=set)
     turn_counter: int = 0
     mode: str = "default"
+    benchmark_task: str = ""
     require_prewrite_review: bool = True
     pending_permission_execution: PendingPermissionExecution | None = None
     _tool_result_lock: RLock = field(default_factory=RLock, repr=False)
@@ -333,6 +334,7 @@ class AgentSession:
             agents_md=self.agents_md,
             skill_protocol=self._skill_protocol(),
             skill_catalog_summary=self._skill_catalog_summary(),
+            benchmark_task=self.benchmark_task,
             provider_name=provider_name,
             provider_model=provider_model,
             provider_capabilities=provider_capabilities,
@@ -343,6 +345,11 @@ class AgentSession:
         entry = self.prompt_cache.get_or_build(inputs, self.prompt_builder)
         self.runtime_state.system_prompt_fingerprint = entry.fingerprint
         return entry.messages
+
+    def set_benchmark_task(self, task: str) -> None:
+        """Attach the current isolated benchmark task to the system prompt."""
+
+        self.benchmark_task = task.strip()
 
     def _skill_protocol(self) -> str:
         if not self.skill_catalog.skills:

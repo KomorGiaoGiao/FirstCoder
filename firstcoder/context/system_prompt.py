@@ -32,6 +32,7 @@ class SystemPromptInputs:
     permission_policy: dict[str, Any]
     skill_protocol: str = ""
     skill_catalog_summary: str = ""
+    benchmark_task: str = ""
     mode: str = "default"
     prompt_version: str = SYSTEM_PROMPT_VERSION
 
@@ -52,6 +53,7 @@ class SystemPromptBuilder:
             "agents_md_hash": content_fingerprint(inputs.agents_md),
             "skill_protocol_hash": content_fingerprint(inputs.skill_protocol),
             "skill_catalog_summary_hash": content_fingerprint(inputs.skill_catalog_summary),
+            "benchmark_task_hash": content_fingerprint(inputs.benchmark_task),
             "provider_name": inputs.provider_name,
             "provider_capabilities": inputs.provider_capabilities,
             "permission_policy": inputs.permission_policy,
@@ -65,7 +67,7 @@ class SystemPromptBuilder:
             section
             for section in [
                 inputs.base_rules.strip(),
-                _agent_instructions(),
+                _agent_instructions(inputs.benchmark_task),
                 _format_section("Project instructions", inputs.agents_md),
                 _format_section("Project skill protocol", inputs.skill_protocol),
                 _format_section("Available skills", inputs.skill_catalog_summary),
@@ -112,9 +114,13 @@ def _format_section(title: str, content: str) -> str:
     return f"{title}:\n{content}"
 
 
-def _agent_instructions() -> str:
-    path = Path(__file__).with_name("prompts") / "agent_instructions.md"
-    return path.read_text(encoding="utf-8").strip()
+def _agent_instructions(benchmark_task: str = "") -> str:
+    filename = "benchmark_agent_instructions.md" if benchmark_task.strip() else "agent_instructions.md"
+    path = Path(__file__).with_name("prompts") / filename
+    content = path.read_text(encoding="utf-8").strip()
+    if benchmark_task.strip():
+        return content.replace("{{task}}", benchmark_task.strip())
+    return content
 
 
 def _format_provider(inputs: SystemPromptInputs) -> str:

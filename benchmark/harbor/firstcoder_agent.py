@@ -40,12 +40,14 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         self,
         *args,
         max_tool_rounds: int | str = 90,
+        reasoning_effort: str | None = None,
         source_dir: str | Path | None = None,
         package: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._max_tool_rounds = _positive_int(max_tool_rounds, "max_tool_rounds")
+        self._reasoning_effort = _optional_nonblank(reasoning_effort, "reasoning_effort")
         self._source_dir = (
             Path(source_dir).expanduser().resolve()
             if source_dir is not None
@@ -168,6 +170,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         safe_session_id = _session_id(session_id)
         session_path = f"{_SESSION_ROOT}/sessions/{safe_session_id}.jsonl"
 
+        effort = f"--reasoning-effort {shlex.quote(self._reasoning_effort)} " if self._reasoning_effort else ""
         return (
             "set -o pipefail; "
             f"{shlex.quote(_venv_python())} -m firstcoder "
@@ -175,6 +178,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
             f"--data-root {shlex.quote(_SESSION_ROOT)} "
             f"--session-id {shlex.quote(safe_session_id)} "
             f"--max-tool-rounds {self._max_tool_rounds} "
+            f"{effort}"
             f"--message {shlex.quote(instruction)} "
             "2>&1 | tee /logs/agent/firstcoder.txt; "
             'FIRSTCODER_EXIT="${PIPESTATUS[0]}"; '
@@ -282,6 +286,14 @@ def _positive_int(value: int | str, name: str) -> int:
     if parsed <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return parsed
+
+
+def _optional_nonblank(value: str | None, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-blank string")
+    return value.strip()
 
 
 def _session_id(value: str) -> str:

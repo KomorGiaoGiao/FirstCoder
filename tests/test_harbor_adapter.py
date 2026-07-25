@@ -32,6 +32,14 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
     assert "FIRSTCODER_API_KEY" not in command
 
 
+def test_harbor_agent_passes_reasoning_effort_to_firstcoder(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path, reasoning_effort="high")
+
+    command = agent._run_command("Fix the task.", session_id="task")
+
+    assert "--reasoning-effort high" in command
+
+
 def test_harbor_agent_stages_only_runtime_source_tree(tmp_path: Path) -> None:
     source = tmp_path / "source"
     package = source / "firstcoder"

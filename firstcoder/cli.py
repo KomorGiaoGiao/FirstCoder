@@ -5,7 +5,7 @@ from firstcoder.app.ports import ChatRunnerLike
 
 import argparse
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -26,6 +26,7 @@ class CliConfig:
     message: str
     model_spec: str | None = None
     max_tool_rounds: int | None = None
+    reasoning_effort: str | None = None
     benchmark: bool = False
 
 
@@ -73,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tui", action="store_true", help="Run the Textual TUI.")
     parser.add_argument("--auto-approve", action="store_true", help="Automatically answer permission confirmations with allow_once.")
     parser.add_argument("--max-tool-rounds", type=_positive_int, default=None, help="Override per-turn tool round limit.")
+    parser.add_argument("--reasoning-effort", default=None, help="Provider-specific reasoning effort passed in the model request.")
     parser.add_argument(
         "--benchmark",
         action="store_true",
@@ -108,6 +110,7 @@ def main(
             message="",
             model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
+            reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
         )
         try:
@@ -127,6 +130,7 @@ def main(
             message="",
             model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
+            reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
         )
         try:
@@ -151,6 +155,7 @@ def main(
         message=message,
         model_spec=args.model,
         max_tool_rounds=args.max_tool_rounds,
+        reasoning_effort=args.reasoning_effort,
         benchmark=args.benchmark,
     )
     run = runner or run_single_turn
@@ -178,6 +183,7 @@ def run_benchmark_turn(config: CliConfig) -> str:
     app = create_cli_app(config)
     app.current_session.set_permission_mode(PermissionMode.BYPASS)
     app.current_session.session.require_prewrite_review = False
+    app.current_session.session.set_benchmark_task(config.message)
     app.chat_runner.limits = _benchmark_limits(config.max_tool_rounds)
     response = app.chat_runner.run_user_turn(config.message)
     return response.content
@@ -200,6 +206,14 @@ def create_cli_app(config: CliConfig):
     )
     if config.max_tool_rounds is not None:
         app.chat_runner.limits = AgentLoopLimits.default().with_max_tool_rounds(config.max_tool_rounds)
+    if config.reasoning_effort is not None:
+        effort = config.reasoning_effort.strip()
+        if not effort:
+            raise ValueError("reasoning_effort must be a non-blank string")
+        options = app.chat_runner.request_options
+        extra_body = dict(options.extra_body)
+        extra_body["reasoning_effort"] = effort
+        app.chat_runner.request_options = replace(options, extra_body=extra_body)
     return app
 
 
