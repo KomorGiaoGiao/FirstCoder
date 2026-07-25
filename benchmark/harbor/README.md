@@ -82,6 +82,29 @@ results is explicitly intended.
 model request field. Whether values such as `low`, `medium`, or `high` are
 accepted depends on the selected provider/model.
 
+## Reuse dependencies across trials
+
+By default Harbor gives every trial a fresh container, so FirstCoder's Python
+dependencies are downloaded again for each task. The adapter installs into a
+shared pip/uv cache at `/opt/firstcoder-cache`. Bind-mount a host directory
+there with Harbor's `--mounts` so wheels download once and are reused across
+trials and concurrent containers:
+
+```sh
+mkdir -p "$HOME/.cache/firstcoder-harbor"
+.venv/bin/harbor run \
+  ... \
+  --mounts '[{"type":"bind","source":"'"$HOME"'/.cache/firstcoder-harbor","target":"/opt/firstcoder-cache"}]' \
+  ...
+```
+
+The mount stores downloaded archives only, not the virtual environment: each
+trial rebuilds its own venv (`--clear`) so concurrent trials never corrupt a
+shared environment. The install step retries the download up to three times
+with backoff, so a single flaky fetch does not error the trial. Without the
+mount the adapter still runs correctly, using a per-container cache that is
+discarded when the container is removed.
+
 ## Results
 
 Harbor stores the resolved configuration, trial status, agent logs, verifier

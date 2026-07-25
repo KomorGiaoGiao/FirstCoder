@@ -93,9 +93,29 @@ def test_harbor_install_can_use_python_venv_without_curl_or_wget() -> None:
 
     assert 'if [ -x "$UV_BIN" ]; then' in command
     assert '"$PYTHON_BIN" -m venv "$AGENT_ROOT/.venv" --clear' in command
-    assert '"$AGENT_ROOT/.venv/bin/python" -m pip install --no-cache' in command
+    assert '"$AGENT_ROOT/.venv/bin/python" -m pip install --cache-dir "$CACHE_DIR"' in command
     assert "astral.sh/uv/install.sh" not in command
     assert "wget" not in command
+
+
+def test_harbor_install_reuses_a_shared_download_cache() -> None:
+    command = _install_command("/installed-agent/firstcoder-src")
+
+    assert "CACHE_DIR=/opt/firstcoder-cache" in command
+    assert '"$UV_BIN" pip install --python "$AGENT_ROOT/.venv/bin/python" --cache-dir "$CACHE_DIR"' in command
+    # The cache stores downloaded wheels only; the venv is still rebuilt per trial.
+    assert "--no-cache" not in command
+    assert command.count("--clear") == 2
+
+
+def test_harbor_install_retries_the_download_step_with_backoff() -> None:
+    command = _install_command("/installed-agent/firstcoder-src")
+
+    assert "install_deps() {" in command
+    assert "until install_deps; do" in command
+    assert 'if [ "$attempt" -ge 3 ]; then' in command
+    assert "failed to install dependencies after" in command
+    assert 'sleep "$((attempt * 5))"' in command
 
 
 def test_harbor_agent_does_not_require_system_package_installation(tmp_path: Path) -> None:
@@ -115,16 +135,20 @@ def test_harbor_agent_bootstraps_python_311_before_installing(tmp_path: Path) ->
     command = agent._python_setup_command()
 
     assert "case \"$PACKAGE_MANAGER\" in" in command
-    assert "apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates" in command
-    assert "apk add --no-cache python3" in command
-    assert "dnf install -y python3" in command
-    assert "yum install -y python3" in command
+    assert "apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates" in command
+    assert "apt-get update && apt-get install -y --no-install-recommends python3-venv" in command
+    assert "apk add --no-cache python3 py3-pip" in command
+    assert "apk add --no-cache py3-pip" in command
+    assert "dnf install -y python3 python3-pip" in command
+    assert "yum install -y python3 python3-pip" in command
     assert 'curl -LsSf https://astral.sh/uv/install.sh' in command
     assert 'wget -qO- https://astral.sh/uv/install.sh' in command
-    assert 'UV_UNMANAGED_INSTALL="$AGENT_ROOT/bin"' in command
-    assert '"$AGENT_ROOT/bin/uv" python install 3.11' in command
+    assert 'UV_UNMANAGED_INSTALL="' in command
     assert '"$AGENT_ROOT/bin/uv" python find 3.11' in command
     assert 'has_venv "$PYTHON_BIN"' in command
+    assert 'if [ -n "$PYTHON_BIN" ] && ! has_venv "$PYTHON_BIN"; then' in command
+    assert 'if install_python_venv && has_venv "$PYTHON_BIN"; then' in command
+    assert 'install_system_python\n  PYTHON_BIN="$(find_python || true)"' in command
     assert "requires Python 3.11+ with venv and pip after bootstrap" in command
     assert '"$1" -m venv "$venv_probe/test-venv"' in command
     assert "for candidate in python3.12 python3.11 python3; do" in command
@@ -136,3 +160,21 @@ def test_harbor_python_bootstrap_fails_clearly_without_supported_package_manager
 
     assert 'PACKAGE_MANAGER="unsupported"' in command
     assert "cannot bootstrap Python 3.11 or newer" in command
+
+
+def test_harbor_python_bootstrap_retries_flaky_package_and_network_steps(tmp_path: Path) -> None:
+    command = FirstCoderHarborAgent(logs_dir=tmp_path)._python_setup_command()
+
+    # A retry helper with bounded backoff wraps every step that hits a mirror.
+    assert "retry() {" in command
+    assert 'until "$@"; do' in command
+    assert 'if [ "$attempt" -ge 3 ]; then' in command
+    assert 'sleep "$((attempt * 5))"' in command
+    # System package installs and network fetches all go through retry.
+    assert "retry sh -c 'apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates'" in command
+    assert "retry sh -c 'apt-get update && apt-get install -y --no-install-recommends python3-venv'" in command
+    assert "retry apk add --no-cache python3 py3-pip" in command
+    assert "retry dnf install -y python3 python3-pip" in command
+    assert "retry yum install -y python3 python3-pip" in command
+    assert "retry sh -c 'curl -LsSf https://astral.sh/uv/install.sh" in command
+    assert 'retry "$AGENT_ROOT/bin/uv" python install 3.11' in command
