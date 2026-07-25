@@ -192,44 +192,85 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
 
     @staticmethod
     def _python_setup_command() -> str:
-        """Ensure a task image has a Python version that FirstCoder supports."""
+        """Ensure FirstCoder has an isolated Python 3.11+ runtime across task images."""
 
-        return (
-            "set -euo pipefail; "
-            'PYTHON_BIN="python3"; '
-            "missing_packages=(); "
-            "if ! command -v python3 >/dev/null 2>&1; then "
-            '  missing_packages+=("python3"); '
-            "fi; "
-            "if command -v python3 >/dev/null 2>&1 && ! python3 -c "
-            "'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then "
-            '  missing_packages+=("python3.11" "python3.11-venv"); '
-            "fi; "
-            "if command -v python3.11 >/dev/null 2>&1; then PYTHON_BIN=python3.11; fi; "
-            'venv_probe="$(mktemp -d)"; '
-            'if ! "$PYTHON_BIN" -m venv "$venv_probe/test-venv" >/dev/null 2>&1 || '
-            '! "$venv_probe/test-venv/bin/python" -m pip --version >/dev/null 2>&1; then '
-            '  if [ "$PYTHON_BIN" = "python3.11" ]; then '
-            '    missing_packages+=("python3.11-venv"); '
-            "  else "
-            '    missing_packages+=("python3-venv"); '
-            "  fi; "
-            "fi; "
-            'rm -rf "$venv_probe"; '
-            'if [ "${#missing_packages[@]}" -gt 0 ]; then '
-            "  apt-get update; apt-get install -y --no-install-recommends \"${missing_packages[@]}\"; "
-            "fi; "
-            'PYTHON_BIN=""; '
-            'for candidate in python3.12 python3.11 python3; do '
-            '  if command -v "$candidate" >/dev/null 2>&1 && '
-            '     "$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"; then '
-            '    PYTHON_BIN="$(command -v "$candidate")"; break; '
-            '  fi; '
-            'done; '
-            'if [ -z "$PYTHON_BIN" ]; then '
-            '  echo "FirstCoder Harbor agent requires Python 3.11 or newer in the task image." >&2; exit 64; '
-            "fi"
-        )
+        return """set -euo pipefail
+AGENT_ROOT=/opt/firstcoder-agent
+find_python() {
+  for candidate in python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && \\
+       "$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+has_venv() {
+  venv_probe="$(mktemp -d)"
+  "$1" -m venv "$venv_probe/test-venv" >/dev/null 2>&1 && \\
+    "$venv_probe/test-venv/bin/python" -m pip --version >/dev/null 2>&1
+  status=$?
+  rm -rf "$venv_probe"
+  return "$status"
+}
+PYTHON_BIN="$(find_python || true)"
+BOOTSTRAP_PYTHON="$(command -v python3 || true)"
+if [ -z "$PYTHON_BIN" ] && [ -z "$BOOTSTRAP_PYTHON" ]; then
+  PACKAGE_MANAGER="unsupported"
+  if command -v apt-get >/dev/null 2>&1; then
+    PACKAGE_MANAGER="apt-get"
+  elif command -v apk >/dev/null 2>&1; then
+    PACKAGE_MANAGER="apk"
+  elif command -v dnf >/dev/null 2>&1; then
+    PACKAGE_MANAGER="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PACKAGE_MANAGER="yum"
+  fi
+  case "$PACKAGE_MANAGER" in
+    apt-get)
+      apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates
+      ;;
+    apk)
+      apk add --no-cache python3
+      ;;
+    dnf)
+      dnf install -y python3
+      ;;
+    yum)
+      yum install -y python3
+      ;;
+    *)
+      echo "FirstCoder Harbor agent cannot bootstrap Python 3.11 or newer: no supported package manager is available." >&2
+      exit 64
+      ;;
+  esac
+  BOOTSTRAP_PYTHON="$(command -v python3 || true)"
+fi
+if [ -n "$PYTHON_BIN" ] && has_venv "$PYTHON_BIN"; then
+  exit 0
+fi
+install_uv() {
+  if [ -x "$AGENT_ROOT/bin/uv" ]; then
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | UV_UNMANAGED_INSTALL="$AGENT_ROOT/bin" sh
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://astral.sh/uv/install.sh | UV_UNMANAGED_INSTALL="$AGENT_ROOT/bin" sh
+  else
+    echo "FirstCoder Harbor agent needs curl or wget to install uv." >&2
+    exit 64
+  fi
+}
+install_uv
+"$AGENT_ROOT/bin/uv" python install 3.11
+PYTHON_BIN="$("$AGENT_ROOT/bin/uv" python find 3.11)"
+if [ -z "$PYTHON_BIN" ] || ! has_venv "$PYTHON_BIN"; then
+  echo "FirstCoder Harbor agent requires Python 3.11+ with venv and pip after bootstrap." >&2
+  exit 64
+fi
+"""
 
 
 def _default_source_dir() -> Path | None:
@@ -253,7 +294,9 @@ def _install_command(install_spec: str) -> str:
         f"AGENT_ROOT={quoted_root}; "
         'UV_BIN="$AGENT_ROOT/bin/uv"; '
         'PYTHON_BIN=""; '
+        'if [ -x "$UV_BIN" ]; then PYTHON_BIN="$("$UV_BIN" python find 3.11)"; fi; '
         'for candidate in python3.12 python3.11 python3; do '
+        '  [ -n "$PYTHON_BIN" ] && break; '
         '  if command -v "$candidate" >/dev/null 2>&1 && '
         '     "$candidate" -c "import sys; raise SystemExit(sys.version_info < (3, 11))"; then '
         '    PYTHON_BIN="$(command -v "$candidate")"; break; '
