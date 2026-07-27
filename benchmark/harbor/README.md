@@ -22,6 +22,30 @@ The adapter does not copy `.git`, `.venv`, local sessions, `.env`, or other
 workspace files. It receives the task instruction but does not inspect verifier
 files or inject hidden-test information into the prompt.
 
+## Aider Polyglot feedback mode
+
+The upstream Aider Polyglot benchmark permits one repair turn after the first
+test run fails. For an Aider-comparable local run, opt in to the benchmark-only
+plugin below. It keeps the first agent turn blind to verifier files, and only
+after a real `reward=0` sends the verifier's test output back through the same
+FirstCoder session. Timeouts, missing reward files, and provider failures do
+not receive a repair turn.
+
+For a long-running local suite, classify infrastructure failures separately from `reward=0`: network/provider errors, Docker environment failures, timeouts, and a verifier that fails before writing `reward.txt` do not carry the same interpretation as an implementation failing its tests. The run report documents examples and recovery commands.
+
+```sh
+PYTHONPATH="$PWD" .venv/bin/harbor run \
+  -p .local/harbor-datasets/aider-polyglot \
+  -a benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent \
+  --plugin benchmark.harbor.aider_feedback_plugin:AiderFeedbackPlugin \
+  -m gpt-5.6-luna -n 2 -k 1 \
+  --ak max_tool_rounds=120 --ak reasoning_effort=high \
+  -o benchmark/runs/harbor/aider-polyglot-feedback -y
+```
+
+Do not use this plugin for Terminal-Bench or any benchmark whose official
+protocol does not explicitly allow test-feedback repair rounds.
+
 ## Install Harbor
 
 Install Harbor in FirstCoder's development environment:

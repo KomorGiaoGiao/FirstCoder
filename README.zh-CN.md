@@ -56,7 +56,7 @@ FirstCoder 是一个能真实运行的本地 coding agent，带有 Textual TUI�
 | --- | --- | --- |
 | 学习价值 | 子系统边界清楚，文档明确，适合按模块阅读 | 往往更偏单一路径教程或 demo 流程 |
 | 实用表面 | 有真实 TUI、tools、permissions、sessions、provider adapters | 往往更聚焦某个更窄的 loop 或概念验证 |
-| 可验证性 | 有 108 个测试模块，并接入了多个 benchmark 入口 | 往往较少强调测试体系和 benchmark 集成 |
+| 可验证性 | 有 pytest 测试体系，并接入 Harbor benchmark | 往往较少强调测试体系和 benchmark 集成 |
 | 延展路径 | 更适合继续改造成作品集或简历项目 | 更适合跟做和入门，但未必适合长期扩展 |
 
 也就是说，这个仓库在“适合学习”之外，还尽量保留了足够的运行时结构、测试和 benchmark 钩子，让它在你第一次读完之后依然有继续演化的价值。
@@ -178,6 +178,7 @@ FirstCoder 的 TUI 不是为了把 agent loop 藏起来，而是为了把它展�
 - [代码阅读指南](docs/CODEBASE_READING_GUIDE.zh-CN.md)
 - [多模态输入设计](docs/MULTIMODAL_INPUT_DESIGN.zh-CN.md)
 - [MCP 客户端配置](docs/MCP.zh-CN.md)
+- [Harbor 测评说明](benchmark/harbor/README.md)
 
 ## 开发
 

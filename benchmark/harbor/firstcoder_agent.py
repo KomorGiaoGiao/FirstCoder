@@ -110,7 +110,11 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         """Run one FirstCoder benchmark turn in Harbor's configured workdir."""
 
         del context  # FirstCoder persists its own local benchmark transcript.
-        command = self._run_command(instruction, session_id=environment.session_id)
+        command = self._run_command(
+            instruction,
+            session_id=environment.session_id,
+            resume_session=instruction.startswith("The tests are correct. Do not modify the tests."),
+        )
         await self.exec_as_agent(
             environment,
             command=command,
@@ -172,19 +176,27 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         shutil.copytree(package_dir, staged / "firstcoder", ignore=_ignore_source_artifacts)
         return staged
 
-    def _run_command(self, instruction: str, *, session_id: str) -> str:
+    def _run_command(
+        self,
+        instruction: str,
+        *,
+        session_id: str,
+        resume_session: bool = False,
+    ) -> str:
         """运行 agent 并将会话副本导出为 Harbor 可收集的日志文件。"""
 
         safe_session_id = _session_id(session_id)
         session_path = f"{_SESSION_ROOT}/sessions/{safe_session_id}.jsonl"
 
         effort = f"--reasoning-effort {shlex.quote(self._reasoning_effort)} " if self._reasoning_effort else ""
+        resume = "--resume-session " if resume_session else ""
         return (
             "set -o pipefail; "
             f"{shlex.quote(_venv_python())} -m firstcoder "
             "--benchmark --project . "
             f"--data-root {shlex.quote(_SESSION_ROOT)} "
             f"--session-id {shlex.quote(safe_session_id)} "
+            f"{resume}"
             f"--max-tool-rounds {self._max_tool_rounds} "
             f"{effort}"
             f"--message {shlex.quote(instruction)} "

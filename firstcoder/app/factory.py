@@ -112,6 +112,7 @@ def create_firstcoder_app(
     data_root: str | Path | None = None,
     provider: ChatProvider | None = None,
     session_id: str | None = None,
+    resume_session: bool = False,
     tools: list[Tool] | None = None,
     config: FirstCoderTuiConfig | None = None,
     app_config: AppConfig | None = None,
@@ -162,13 +163,18 @@ def create_firstcoder_app(
     tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)
     current_tools = tool_provider()
     resolved_provider = provider or create_provider(project_root=project_path)
-    session = SessionBootstrap(
+    bootstrap = SessionBootstrap(
         store=store,
         project_root=project_path,
         data_root=resolved_data_root,
         tools=current_tools,
         sandbox_access=sandbox_access,
-    ).from_project(session_id=session_id)
+    )
+    session = (
+        bootstrap.resume(session_id)
+        if resume_session and session_id is not None
+        else bootstrap.from_project(session_id=session_id)
+    )
     current = CurrentSessionState(session)
     compact_summarizer = ProviderLlmCompactSummarizer(resolved_provider)
     context_manager = ContextWindowManager(

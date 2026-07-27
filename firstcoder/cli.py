@@ -28,6 +28,7 @@ class CliConfig:
     max_tool_rounds: int | None = None
     reasoning_effort: str | None = None
     benchmark: bool = False
+    resume_session: bool = False
 
 
 CliRunner = Callable[[CliConfig], str]
@@ -67,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", default=".", help="Project root for tools and AGENTS.md.")
     parser.add_argument("--data-root", default=None, help="Directory for FirstCoder session data.")
     parser.add_argument("--session-id", default=None, help="Session id to create or reuse.")
+    parser.add_argument(
+        "--resume-session",
+        action="store_true",
+        help="Resume an existing session id instead of creating a new session.",
+    )
     parser.add_argument("--provider", default=None, help="Provider name override.")
     parser.add_argument("--model", default=None, help="Model reference, for example provider/model.")
     parser.add_argument("--message", default=None, help="Single user message. Reads stdin when omitted.")
@@ -112,6 +118,7 @@ def main(
             max_tool_rounds=args.max_tool_rounds,
             reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
+            resume_session=args.resume_session,
         )
         try:
             app = create_cli_app(config)
@@ -132,6 +139,7 @@ def main(
             max_tool_rounds=args.max_tool_rounds,
             reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
+            resume_session=args.resume_session,
         )
         try:
             app = create_cli_app(config)
@@ -157,6 +165,7 @@ def main(
         max_tool_rounds=args.max_tool_rounds,
         reasoning_effort=args.reasoning_effort,
         benchmark=args.benchmark,
+        resume_session=args.resume_session,
     )
     run = runner or run_single_turn
     try:
@@ -203,6 +212,7 @@ def create_cli_app(config: CliConfig):
         provider=provider,
         session_id=config.session_id,
         model_spec=config.model_spec,
+        resume_session=config.resume_session,
     )
     if config.max_tool_rounds is not None:
         app.chat_runner.limits = AgentLoopLimits.default().with_max_tool_rounds(config.max_tool_rounds)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,14 @@ from benchmark.harbor.firstcoder_agent import (  # noqa: E402
     FirstCoderHarborAgent,
     _install_command,
 )
+from benchmark.harbor.aider_feedback_trial import (  # noqa: E402
+    AiderFeedbackTrial,
+    build_aider_feedback,
+    create_aider_feedback_trial,
+    should_request_feedback_after_missing_reward,
+    should_request_feedback_round,
+)
+from benchmark.harbor.aider_feedback_plugin import AiderFeedbackPlugin  # noqa: E402
 
 
 def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path) -> None:
@@ -38,6 +47,83 @@ def test_harbor_agent_passes_reasoning_effort_to_firstcoder(tmp_path: Path) -> N
     command = agent._run_command("Fix the task.", session_id="task")
 
     assert "--reasoning-effort high" in command
+
+
+def test_harbor_agent_marks_feedback_turn_as_a_session_resume(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path)
+
+    command = agent._run_command(
+        "The tests are correct. Do not modify the tests.\nTesting errors:\nFAIL",
+        session_id="task",
+        resume_session=True,
+    )
+
+    assert "--resume-session" in command
+
+
+def test_aider_feedback_round_only_follows_a_real_failed_reward() -> None:
+    assert should_request_feedback_round({"reward": 0})
+    assert should_request_feedback_round({"reward": 0.0, "other": 1})
+    assert not should_request_feedback_round({"reward": 1})
+    assert not should_request_feedback_round(None)
+    assert not should_request_feedback_round({})
+
+
+def test_aider_feedback_round_follows_a_cpp_test_compile_failure_without_reward() -> None:
+    output = """\
+/app/example_test.cpp:15: error: no matching function for call to 'convert'
+make: *** [Makefile:91: all] Error 2
+CMake build failed
+"""
+
+    assert should_request_feedback_after_missing_reward(output)
+
+
+def test_aider_feedback_round_does_not_follow_missing_reward_from_dependency_install() -> None:
+    output = """\
+Installing Python test dependencies...
+ERROR: Could not find a version that satisfies the requirement pytest
+"""
+
+    assert not should_request_feedback_after_missing_reward(output)
+
+
+def test_aider_feedback_prompt_preserves_test_output_and_protects_tests() -> None:
+    feedback = build_aider_feedback("FAIL: expected 4 but got 3\n")
+
+    assert "The tests are correct" in feedback
+    assert "Do not modify the tests" in feedback
+    assert "FAIL: expected 4 but got 3" in feedback
+
+
+def test_aider_feedback_factory_preserves_multistep_tasks() -> None:
+    class FakeTask:
+        has_steps = True
+
+    class FakeTrial:
+        @classmethod
+        async def _load_task(cls, config):
+            return FakeTask(), "download"
+
+    created = asyncio.run(create_aider_feedback_trial(FakeTrial, object()))
+
+    assert created is None
+
+
+def test_aider_feedback_plugin_restores_harbor_trial_factory() -> None:
+    from harbor.trial.trial import Trial
+
+    original = Trial.__dict__["create"]
+    plugin = AiderFeedbackPlugin()
+
+    async def exercise() -> None:
+        await plugin.on_job_start(object())
+        assert Trial.__dict__["create"] is not original
+        await plugin.on_job_end(None)
+
+    asyncio.run(exercise())
+
+    assert Trial.__dict__["create"] is original
 
 
 def test_harbor_agent_stages_only_runtime_source_tree(tmp_path: Path) -> None:
