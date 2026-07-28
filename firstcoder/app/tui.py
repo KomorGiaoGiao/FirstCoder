@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -128,6 +129,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._stream_text_entry: TuiTranscriptEntry | None = None
         self._stream_rendered_text = ""
         self._stream_flush_timer: Timer | None = None
+        self._stream_markdown_update = None
+        self._stream_event_lock = threading.Lock()
+        self._stream_event_generation = 0
+        self._stream_event_dispatch_scheduled = False
+        self._pending_stream_text: list[str] = []
+        self._pending_reasoning_text: list[str] = []
         self._reasoning_buffer = ""
         self._reasoning_is_fallback = False
         self._working_text = ""
@@ -351,6 +358,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
 
     def _interrupt_chat_turn(self) -> None:
         self._chat_turn_token += 1
+        self._discard_stream_deltas()
         cancel_current_turn = getattr(self.chat_runner, "cancel_current_turn", None)
         if cancel_current_turn is not None:
             cancel_current_turn()
@@ -751,6 +759,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             self._write_chat_response(response)
 
     def _write_chat_response(self, response) -> None:
+        self._drain_stream_deltas()
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
         content = getattr(response, "content", "")
         if self._stream_text_started:

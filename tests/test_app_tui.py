@@ -1668,6 +1668,87 @@ def test_firstcoder_app_paces_stream_markdown_updates(monkeypatch) -> None:
     assert markdown.updates[-1] == "FirstCoder:\n\n我在这里"
 
 
+def test_firstcoder_app_coalesces_stream_chunks_into_one_ui_callback(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+    scheduled: list[object] = []
+    appended: list[str] = []
+
+    monkeypatch.setattr(app, "_schedule_ui_callback", lambda callback, *args: scheduled.append((callback, args)) or True)
+    monkeypatch.setattr(app, "_append_stream_text", appended.append)
+    monkeypatch.setattr(app, "_complete_working_indicator", lambda: None)
+
+    app._install_stream_event_handler()
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="我"))
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="在"))
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="这里"))
+
+    assert len(scheduled) == 1
+    assert appended == []
+
+    callback, args = scheduled.pop()
+    callback(*args)
+
+    assert appended == ["我在这里"]
+
+
+def test_firstcoder_app_discards_coalesced_stream_chunks_after_interrupt(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+    scheduled: list[object] = []
+    appended: list[str] = []
+
+    monkeypatch.setattr(app, "_schedule_ui_callback", lambda callback, *args: scheduled.append((callback, args)) or True)
+    monkeypatch.setattr(app, "_append_stream_text", appended.append)
+    monkeypatch.setattr(app, "_complete_working_indicator", lambda: None)
+
+    app._install_stream_event_handler()
+    runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="stale"))
+    app._discard_stream_deltas()
+
+    callback, args = scheduled.pop()
+    callback(*args)
+
+    assert appended == []
+
+
+def test_firstcoder_app_stream_markdown_update_uses_latest_snapshot(monkeypatch) -> None:
+    output = FakeOutput()
+    app = FirstCoderApp()
+    updates: list[str] = []
+    update_results: list[FakeMarkdownUpdateResult] = []
+    timers: list[object] = []
+
+    def mount(widget: object) -> None:
+        output.mounted.append(widget)
+        if isinstance(widget, Markdown):
+            def update(markdown: str) -> FakeMarkdownUpdateResult:
+                updates.append(markdown)
+                result = FakeMarkdownUpdateResult(None)
+                update_results.append(result)
+                return result
+
+            widget.update = update  # type: ignore[method-assign]
+
+    monkeypatch.setattr(output, "mount", mount)
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+    monkeypatch.setattr(app, "_loop", object())
+    monkeypatch.setattr(app, "set_timer", lambda interval, callback, **kwargs: timers.append(callback) or object())
+
+    app._append_stream_text("我")
+    app._append_stream_text("在")
+    app._flush_stream_text()
+    app._append_stream_text("这里")
+    app._flush_stream_text()
+
+    assert updates == ["FirstCoder:\n\n我"]
+
+    update_results[0].finish()
+    timers[-1]()
+
+    assert updates == ["FirstCoder:\n\n我", "FirstCoder:\n\n我在这里"]
+
+
 def test_firstcoder_app_does_not_scroll_stream_when_render_is_deferred(monkeypatch) -> None:
     output = FakeOutput()
     app = FirstCoderApp()
@@ -1868,16 +1949,17 @@ def test_firstcoder_app_stream_event_handler_schedules_ui_updates_on_app_thread(
     scheduled: list[object] = []
 
     monkeypatch.setattr(app, "_append_stream_text", lambda text: calls.append(("text", text)))
-    monkeypatch.setattr(app, "_call_ui_thread", lambda callback, *args, **kwargs: scheduled.append((callback, args, kwargs)))
+    monkeypatch.setattr(app, "_complete_working_indicator", lambda: None)
+    monkeypatch.setattr(app, "_schedule_ui_callback", lambda callback, *args: scheduled.append((callback, args)) or True)
 
     previous_handler = app._install_stream_event_handler()
     runner.stream_event_handler(ChatStreamEvent(kind="text_delta", text="hello"))
     app._restore_stream_event_handler(previous_handler)
 
     assert calls == []
-    assert len(scheduled) == 2
-    callback, args, kwargs = scheduled[1]
-    callback(*args, **kwargs)
+    assert len(scheduled) == 1
+    callback, args = scheduled[0]
+    callback(*args)
     assert calls == [("text", "hello")]
 
 

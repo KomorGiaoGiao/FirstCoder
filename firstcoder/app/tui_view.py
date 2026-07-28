@@ -149,6 +149,13 @@ class FirstCoderViewMixin:
         self._stream_text_entry = None
         self._stream_rendered_text = ""
         self._stream_flush_timer = None
+        self._stream_markdown_update = None
+        with self._stream_event_lock:
+            self._stream_event_generation += 1
+            stream_generation = self._stream_event_generation
+            self._stream_event_dispatch_scheduled = False
+            self._pending_stream_text.clear()
+            self._pending_reasoning_text.clear()
         self._reasoning_buffer = ""
         self._reasoning_is_fallback = False
         self._working_text = ""
@@ -167,12 +174,11 @@ class FirstCoderViewMixin:
                 return
             if kind == "reasoning_delta":
                 self._stream_reasoning_started = True
-                self._call_ui_thread(self._append_reasoning_text, text)
+                self._enqueue_stream_delta(kind, text, stream_generation)
             elif kind == "text_delta":
                 self._stream_text_started = True
                 self._stream_text_needs_newline = True
-                self._call_ui_thread(self._complete_working_indicator)
-                self._call_ui_thread(self._append_stream_text, text)
+                self._enqueue_stream_delta(kind, text, stream_generation)
 
         setattr(self.chat_runner, "stream_event_handler", handle_event)
         return previous_handler
@@ -232,6 +238,61 @@ class FirstCoderViewMixin:
         if getattr(self, "_thread_id", None) == threading.get_ident():
             return callback(*args, **kwargs)
         return self.call_from_thread(callback, *args, **kwargs)
+
+    def _schedule_ui_callback(self, callback, *args) -> bool:
+        if not getattr(self, "is_running", False):
+            callback(*args)
+            return True
+        return self.call_later(callback, *args)
+
+    def _enqueue_stream_delta(self, kind: str, text: str, generation: int) -> None:
+        with self._stream_event_lock:
+            if generation != self._stream_event_generation:
+                return
+            pending = self._pending_reasoning_text if kind == "reasoning_delta" else self._pending_stream_text
+            pending.append(text)
+            if self._stream_event_dispatch_scheduled:
+                return
+            self._stream_event_dispatch_scheduled = True
+        if self._schedule_ui_callback(self._drain_stream_deltas, generation):
+            return
+        with self._stream_event_lock:
+            if generation == self._stream_event_generation:
+                self._stream_event_dispatch_scheduled = False
+
+    def _drain_stream_deltas(self, generation: int | None = None) -> None:
+        generation = self._stream_event_generation if generation is None else generation
+        with self._stream_event_lock:
+            if generation != self._stream_event_generation:
+                return
+            reasoning_text = "".join(self._pending_reasoning_text)
+            stream_text = "".join(self._pending_stream_text)
+            self._pending_reasoning_text.clear()
+            self._pending_stream_text.clear()
+
+        if reasoning_text:
+            self._append_reasoning_text(reasoning_text)
+        if stream_text:
+            self._complete_working_indicator()
+            self._append_stream_text(stream_text)
+
+        with self._stream_event_lock:
+            if generation != self._stream_event_generation:
+                return
+            has_pending = bool(self._pending_reasoning_text or self._pending_stream_text)
+            if not has_pending:
+                self._stream_event_dispatch_scheduled = False
+        if has_pending and not self._schedule_ui_callback(self._drain_stream_deltas, generation):
+            with self._stream_event_lock:
+                if generation == self._stream_event_generation:
+                    self._stream_event_dispatch_scheduled = False
+
+    def _discard_stream_deltas(self) -> None:
+        with self._stream_event_lock:
+            self._stream_event_generation += 1
+            self._stream_event_dispatch_scheduled = False
+            self._pending_stream_text.clear()
+            self._pending_reasoning_text.clear()
 
     def _scroll_output_end_if_pinned(self, output) -> None:
         if not hasattr(output, "scroll_end"):
@@ -610,6 +671,7 @@ class FirstCoderViewMixin:
             output.write(f"{prefix}{text}")
 
     def _close_stream_segment_for_tool(self) -> None:
+        self._drain_stream_deltas()
         if self._stream_text_widget is None and not self._stream_text_buffer:
             return
         self._flush_stream_text()
@@ -621,6 +683,7 @@ class FirstCoderViewMixin:
         self._stream_text_entry = None
         self._stream_rendered_text = ""
         self._stream_flush_timer = None
+        self._stream_markdown_update = None
         self._stream_segment_closed_for_tool = False
 
     def _schedule_stream_flush(self) -> None:
@@ -640,8 +703,30 @@ class FirstCoderViewMixin:
             return False
         if self._stream_rendered_text == self._stream_text_buffer:
             return False
+        if self._stream_markdown_update is not None:
+            return False
         self._stream_rendered_text = self._stream_text_buffer
-        _observe_markdown_update(self._stream_text_widget.update(f"FirstCoder:\n\n{self._stream_rendered_text}"))
+        update_result = self._stream_text_widget.update(f"FirstCoder:\n\n{self._stream_rendered_text}")
+        self._track_stream_markdown_update(update_result)
+        _observe_markdown_update(update_result)
         output = self.query_one("#output")
         self._scroll_output_end_if_pinned(output)
         return True
+
+    def _track_stream_markdown_update(self, update_result) -> None:
+        future = getattr(update_result, "_future", None)
+        if future is None or not hasattr(future, "add_done_callback"):
+            return
+        self._stream_markdown_update = update_result
+
+        def finish_latest_update(_future) -> None:
+            self._schedule_ui_callback(self._finish_stream_markdown_update, update_result)
+
+        future.add_done_callback(finish_latest_update)
+
+    def _finish_stream_markdown_update(self, update_result) -> None:
+        if self._stream_markdown_update is not update_result:
+            return
+        self._stream_markdown_update = None
+        if self._stream_rendered_text != self._stream_text_buffer:
+            self._schedule_stream_flush()
