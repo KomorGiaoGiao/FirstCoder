@@ -258,6 +258,7 @@ def test_fork_command_rewrites_nested_session_ids(tmp_path: Path) -> None:
                 "tail_start_message_id": "msg_tail",
                 "covered_until_message_id": "msg_tail",
                 "source_fingerprint": "source",
+                "strategy_version": "v1",
             },
         )
     )

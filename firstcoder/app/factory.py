@@ -32,12 +32,9 @@ from firstcoder.mcp.search import McpSearchEntry, create_mcp_tool_search
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.factory import (
     ProviderConfigError,
-    create_provider,
     create_provider_for_model,
-    create_provider_from_config,
 )
 from firstcoder.providers.types import MainRequestOptions
-from firstcoder.providers.presets import PROVIDER_PRESETS
 from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.fork import ForkSessionService
@@ -131,7 +128,9 @@ def create_firstcoder_app(
     model_state_store = ModelStateStore(resolved_data_root / "model_state.json")
     model_catalog = resolved_app_config.model_catalog()
     selected_profile: ModelProfile | None = None
-    if provider is None and model_catalog.profiles:
+    if provider is None:
+        if not model_catalog.profiles:
+            raise ValueError("模型目录为空；请配置 default_model、[providers] 和 [models]")
         selected_profile = _initial_model_profile(
             model_catalog,
             model_spec=model_spec,
@@ -162,7 +161,7 @@ def create_firstcoder_app(
         pass
     tool_provider = McpToolProvider(resolved_tools, mcp_manager, include_mcp=tools is None)
     current_tools = tool_provider()
-    resolved_provider = provider or create_provider(project_root=project_path)
+    resolved_provider = provider
     bootstrap = SessionBootstrap(
         store=store,
         project_root=project_path,
@@ -300,40 +299,17 @@ class RuntimeModelSwitcher:
         return ModelState(provider=provider.name, model=provider.model)
 
     def model_choices(self) -> list[ModelState]:
-        current = self.current_model()
-        if self._catalog.profiles:
-            return _unique_model_states([ModelState(provider=profile.provider_id, model=profile.model_id) for profile in self._catalog.list()])
-        choices = [current]
-        for provider_name, preset in PROVIDER_PRESETS.items():
-            choices.append(ModelState(provider=provider_name, model=preset.default_model))
-        return _unique_model_states(choices)
+        return _unique_model_states([ModelState(provider=profile.provider_id, model=profile.model_id) for profile in self._catalog.list()])
 
     def switch_model(self, spec: str) -> ModelState:
         selected_provider, model = _parse_model_spec(spec)
-        if self._catalog.profiles:
-            if selected_provider is None:
-                raise ValueError("模型目录模式需要使用 <provider>/<model>")
-            ref = f"{selected_provider}/{model}"
-            profile = self._catalog.get(ref)
-            if profile is None:
-                raise ValueError(f"未配置模型：{ref}。请在 [models] 中添加它。")
-            return self._apply_profile(profile, persist=True)
-
-        config = _config_for_model_switch(
-            self._app_config,
-            current_provider=self._chat_runner.provider,
-            selected_provider=selected_provider.lower() if selected_provider else None,
-            model=model,
-        )
-        try:
-            provider = create_provider_from_config(config)
-        except ProviderConfigError as error:
-            raise ValueError(str(error)) from error
-
-        self._app_config = config
-        self._chat_runner.set_provider(provider, use_streaming=_should_use_streaming(provider, config))
-        self._compact_summarizer.provider = provider
-        return ModelState(provider=provider.name, model=provider.model)
+        if selected_provider is None:
+            raise ValueError("模型目录模式需要使用 <provider>/<model>")
+        ref = f"{selected_provider}/{model}"
+        profile = self._catalog.get(ref)
+        if profile is None:
+            raise ValueError(f"未配置模型：{ref}。请在 [models] 中添加它。")
+        return self._apply_profile(profile, persist=True)
 
     def _apply_profile(self, profile: ModelProfile, *, persist: bool) -> ModelState:
         try:
@@ -400,31 +376,3 @@ def _unique_model_states(states: list[ModelState]) -> list[ModelState]:
         seen.add(key)
         unique.append(state)
     return unique
-
-
-def _config_for_model_switch(
-    config: AppConfig,
-    *,
-    current_provider: ChatProvider,
-    selected_provider: str | None,
-    model: str,
-) -> AppConfig:
-    provider_name = config.provider_name
-    env = dict(config.env)
-    if selected_provider:
-        if selected_provider in PROVIDER_PRESETS:
-            provider_name = selected_provider
-        elif selected_provider != current_provider.name:
-            raise ValueError(f"unsupported provider: {selected_provider}")
-    if provider_name in PROVIDER_PRESETS:
-        env[PROVIDER_PRESETS[provider_name].model_env] = model
-    else:
-        env["FIRSTCODER_MODEL"] = model
-    return AppConfig(
-        provider_name=provider_name,
-        env=env,
-        project_config=config.project_config,
-        global_config=config.global_config,
-        project_config_path=config.project_config_path,
-        global_config_path=config.global_config_path,
-    )

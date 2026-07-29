@@ -16,7 +16,6 @@ dependencies = [
     "anyio",
     "mcp>=1.28.1",
     "python-dotenv",
-    "pydantic",
     "PyYAML",
     "tomlkit",
     "portalocker",

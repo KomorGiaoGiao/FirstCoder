@@ -46,8 +46,10 @@ completion in a thread; streaming providers override `astream`.
 
 ## Configuration and Factory
 
-`load_config` resolves settings and `create_provider_from_config` constructs a
-provider. Static presets cover OpenAI, DeepSeek, Qwen, Moonshot, Zhipu,
+`load_config` resolves the standard `default_model` / `[providers]` / `[models]`
+catalog. `create_provider_for_model` constructs a provider from the selected
+`ModelProfile`; there is no legacy single-provider factory or environment-only
+model path. Static presets cover OpenAI, DeepSeek, Qwen, Moonshot, Zhipu,
 OpenRouter, Ollama, and Anthropic. There is no runtime provider-plugin registry,
 instance cache, or general health-check service today.
 

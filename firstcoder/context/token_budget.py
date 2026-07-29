@@ -37,24 +37,6 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def estimate_chat_request_tokens(
-    *,
-    messages: list[ChatMessage],
-    tools: list[ToolDefinition],
-    reserved_output_tokens: int = 0,
-) -> int:
-    """Estimate the model-facing request, including schema and output reserve.
-
-    This remains provider-neutral and deliberately uses the same cheap text
-    heuristic as the rest of the context layer.  Unlike a tail-only estimate,
-    it includes all request material that occupies the provider window.
-    """
-
-    message_tokens = sum(_estimate_chat_message_tokens(message) for message in messages)
-    tool_tokens = _estimate_tool_definition_tokens(tools)
-    return message_tokens + tool_tokens + max(0, reserved_output_tokens)
-
-
 def build_context_budget(
     *,
     messages: list[ChatMessage],

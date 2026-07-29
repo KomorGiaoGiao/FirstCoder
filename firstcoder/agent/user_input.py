@@ -28,3 +28,19 @@ class AgentTurnResult:
     status: AgentTurnStatus
     response: ChatResponse | None = None
     pending_input: UserInputRequest | None = None
+
+    @property
+    def content(self) -> str:
+        return self.response.content if self.response is not None else ""
+
+    @property
+    def finish_reason(self) -> str | None:
+        return self.response.finish_reason if self.response is not None else None
+
+    @property
+    def tool_calls(self):
+        return self.response.tool_calls if self.response is not None else []
+
+    @property
+    def diagnostics(self):
+        return self.response.diagnostics if self.response is not None else None

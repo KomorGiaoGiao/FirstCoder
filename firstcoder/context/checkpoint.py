@@ -39,6 +39,11 @@ class Checkpoint:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Checkpoint":
+        strategy_version = value.get("strategy_version")
+        if strategy_version != CHECKPOINT_STRATEGY_VERSION:
+            raise ValueError(
+                f"checkpoint strategy_version must be {CHECKPOINT_STRATEGY_VERSION}"
+            )
         return cls(
             id=str(value["id"]),
             session_id=str(value["session_id"]),
@@ -48,7 +53,7 @@ class Checkpoint:
             source_fingerprint=str(value["source_fingerprint"]),
             created_at=str(value.get("created_at") or utc_now_iso()),
             sequence=int(value.get("sequence") or 0),
-            strategy_version=str(value.get("strategy_version") or CHECKPOINT_STRATEGY_VERSION),
+            strategy_version=strategy_version,
             metadata=dict(value.get("metadata") or {}),
         )
 

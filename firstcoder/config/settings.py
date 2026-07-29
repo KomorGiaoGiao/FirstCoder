@@ -28,7 +28,6 @@ class AppConfig:
     承载 TOML 配置。provider factory 只依赖这个对象的方法，不需要知道配置来自哪里。
     """
 
-    provider_name: str
     env: dict[str, str]
     project_config: dict[str, Any] | None = None
     global_config: dict[str, Any] | None = None
@@ -38,31 +37,10 @@ class AppConfig:
     def get_env(self, name: str, default: str | None = None) -> str | None:
         """读取配置中的环境变量值。
 
-        这个方法保留给已有 provider 代码和测试；新增配置优先使用
-        `get_provider_value()`。
+        Provider secrets are resolved by an explicit Catalog profile.
         """
 
         return self.env.get(name, default)
-
-    def get_provider_value(
-        self,
-        name: str,
-        *,
-        env: str | None = None,
-        default: str | None = None,
-        provider_name: str | None = None,
-    ) -> str | None:
-        """按 FirstCoder 配置优先级读取 provider 字段。
-
-        优先级：环境变量 / `.env` > 项目 `firstcoder.toml` > 全局配置 > 默认值。
-        """
-
-        if env:
-            env_value = self.get_env(env)
-            if env_value:
-                return env_value
-        value = self._provider_config_raw_value(name, provider_name=provider_name)
-        return str(value) if value is not None else default
 
     def get_provider_bool(
         self,
@@ -70,7 +48,7 @@ class AppConfig:
         *,
         env: str | None = None,
         default: bool | None = None,
-        provider_name: str | None = None,
+        provider_name: str,
     ) -> bool | None:
         """按配置优先级读取 provider 布尔字段。"""
 
@@ -127,29 +105,21 @@ class AppConfig:
         provider_name: str | None,
     ) -> Any | None:
         for config in (self.project_config, self.global_config):
-            value = _provider_raw_value(config, name, provider_name=provider_name or self.provider_name)
+            value = _provider_raw_value(config, name, provider_name=provider_name)
             if value is not None:
                 return value
         return None
 
 
 def load_config(
-    provider_name: str | None = None,
     *,
     project_root: Path | str | None = None,
     env: dict[str, str] | None = None,
 ) -> AppConfig:
     """从配置文件、`.env` 和系统环境变量加载应用配置。
 
-    provider 选择优先级：
-    1. 函数参数 `provider_name`
-    2. 环境变量 / `.env` 的 `FIRSTCODER_PROVIDER`
-    3. 项目 `firstcoder.toml`
-    4. 全局配置
-    5. 默认 `openai`
-
-    这个函数只做“读取和收拢配置”，不负责判断 provider 是否支持，也不负责校验
-    API key 是否存在；这些 provider 相关规则仍然交给 provider factory。
+    Provider 和模型选择只来自标准 Model Catalog；旧的单 provider 环境变量不再
+    参与选择。
     """
 
     load_dotenv()
@@ -160,11 +130,7 @@ def load_config(
     global_config = _read_toml_file(global_path)
     project_config = _read_toml_file(project_path)
 
-    provider_override = provider_name or env_snapshot.get("FIRSTCODER_PROVIDER")
-    selected_provider = provider_override.lower() if provider_override else _provider_name_from_config(project_config) or _provider_name_from_config(global_config) or "openai"
-
     return AppConfig(
-        provider_name=selected_provider,
         env=env_snapshot,
         project_config=project_config,
         global_config=global_config,
@@ -222,13 +188,6 @@ def _read_toml_file(path: Path) -> dict[str, Any] | None:
     with path.open("rb") as handle:
         data = tomllib.load(handle)
     return data
-
-
-def _provider_name_from_config(config: dict[str, Any] | None) -> str | None:
-    default_model = _string_value(config, "default_model")
-    if default_model and "/" in default_model:
-        return default_model.split("/", 1)[0]
-    return None
 
 
 def _provider_raw_value(config: dict[str, Any] | None, name: str, *, provider_name: str | None) -> Any | None:

@@ -11,6 +11,7 @@ The first implementation keeps the boundary deliberately small:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -218,7 +219,10 @@ class SubagentRunner:
             enable_delegate_tool=False,
         )
         try:
-            response = loop.run_user_turn(prompt)
+            result = asyncio.run(loop.run_user_turn(prompt))
+            response = result.response
+            if response is None:
+                raise RuntimeError("subagent paused for user input")
         except Exception as exc:  # noqa: BLE001 - delegate must return a tool result, not break parent loop
             return SubagentResult(
                 ok=False,
@@ -290,7 +294,21 @@ class SubagentRunner:
                 enable_delegate_tool=False,
             )
             try:
-                response = loop.run_user_turn(prompt)
+                result = asyncio.run(loop.run_user_turn(prompt))
+                response = result.response
+                if response is None:
+                    diff = manager.diff(worktree)
+                    return SubagentResult(
+                        ok=False,
+                        role=request.role,
+                        child_session_id=session_id,
+                        summary="隔离 coder 等待用户输入，无法在后台继续。",
+                        error="waiting_for_user_input",
+                        files_changed=diff.files_changed,
+                        worktree_path=str(worktree.path),
+                        worktree_branch=worktree.branch,
+                        diff_summary=diff.render(),
+                    )
             except Exception as exc:  # noqa: BLE001 - never break the parent loop
                 diff = manager.diff(worktree)
                 return SubagentResult(
@@ -306,18 +324,6 @@ class SubagentRunner:
                 )
             diff = manager.diff(worktree)
             content = response.content.strip() or "Subagent finished without text output."
-            if response.finish_reason == "waiting_for_user_input":
-                return SubagentResult(
-                    ok=False,
-                    role=request.role,
-                    child_session_id=session_id,
-                    summary=f"隔离 coder 等待用户输入，无法在后台继续：{content}",
-                    error="waiting_for_user_input",
-                    files_changed=diff.files_changed,
-                    worktree_path=str(worktree.path),
-                    worktree_branch=worktree.branch,
-                    diff_summary=diff.render(),
-                )
             summary = self._compose_isolated_summary(content, worktree=worktree, diff=diff)
             return SubagentResult(
                 ok=True,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,7 @@ pytest.importorskip("harbor")
 
 from benchmark.harbor.firstcoder_agent import (  # noqa: E402
     FirstCoderHarborAgent,
+    _catalog_bootstrap_command,
     _install_command,
 )
 from benchmark.harbor.aider_feedback_trial import (  # noqa: E402
@@ -31,6 +35,10 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
     assert "--data-root /tmp/firstcoder-harbor-sessions" in command
     assert "--session-id task_id" in command
     assert "--max-tool-rounds 77" in command
+    assert '--model "${FIRSTCODER_PROVIDER_NAME}/${FIRSTCODER_MODEL}"' in command
+    assert '"[providers." + quote(provider)' in command
+    assert 'api_key_env = \"FIRSTCODER_API_KEY\"' in command
+    assert "FIRSTCODER_BASE_URL" in command
     assert "'Fix the task." in command
     assert "/logs/agent/firstcoder.txt" in command
     assert "set -o pipefail" in command
@@ -38,7 +46,29 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
     assert "/logs/agent/firstcoder-session.jsonl" in command
     assert "/tmp/firstcoder-harbor-sessions/sessions/task_id.jsonl" in command
     assert "warning: failed to export FirstCoder benchmark session" in command
-    assert "FIRSTCODER_API_KEY" not in command
+    assert 'api_key = ' not in command
+
+
+def test_harbor_catalog_bootstrap_writes_parseable_standard_config(tmp_path: Path) -> None:
+    command = _catalog_bootstrap_command().replace(
+        "/opt/firstcoder-agent/.venv/bin/python",
+        sys.executable,
+    ).replace("/tmp/firstcoder-harbor-config", str(tmp_path / "xdg"))
+    env = {
+        **os.environ,
+        "FIRSTCODER_PROVIDER_NAME": "Yuren",
+        "FIRSTCODER_MODEL": "gpt-test",
+        "FIRSTCODER_BASE_URL": "https://example.test/v1",
+    }
+
+    subprocess.run(command, cwd=tmp_path, env=env, shell=True, executable="/bin/zsh", check=True)
+
+    config_path = tmp_path / "xdg" / "firstcoder" / "config.toml"
+    assert not (tmp_path / "firstcoder.toml").exists()
+    config = config_path.read_text(encoding="utf-8")
+    assert 'default_model = "Yuren/gpt-test"' in config
+    assert '[providers."Yuren"]' in config
+    assert '[models."Yuren/gpt-test"]' in config
 
 
 def test_harbor_agent_passes_reasoning_effort_to_firstcoder(tmp_path: Path) -> None:

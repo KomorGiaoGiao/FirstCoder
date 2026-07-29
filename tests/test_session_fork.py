@@ -12,7 +12,6 @@ from firstcoder.session.fork import ForkSessionService
 @pytest.mark.parametrize(
     ("schema_payload", "actual_version"),
     [
-        (None, "missing"),
         ({}, "missing"),
         ({"context_event_schema_version": "v1"}, "v1"),
         ({"context_event_schema_version": "future"}, "future"),
@@ -25,32 +24,22 @@ def test_fork_rejects_unsupported_schema_without_writing_or_copying(
     actual_version: str,
 ) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
-    if schema_payload is None:
-        store.append_event(
-            SessionEvent(
-                id="evt_metadata",
-                session_id="sess_legacy",
-                type="session_metadata_updated",
-                payload={"title": "Legacy"},
-            )
+    store.append_event(
+        SessionEvent(
+            id="evt_created",
+            session_id="sess_legacy",
+            type="session_created",
+            payload={"session_id": "sess_legacy", **schema_payload},
         )
-    else:
-        store.append_event(
-            SessionEvent(
-                id="evt_created",
-                session_id="sess_legacy",
-                type="session_created",
-                payload={"session_id": "sess_legacy", **schema_payload},
-            )
+    )
+    store.append_event(
+        SessionEvent(
+            id="evt_created_later",
+            session_id="sess_legacy",
+            type="session_created",
+            payload={"context_event_schema_version": "v2"},
         )
-        store.append_event(
-            SessionEvent(
-                id="evt_created_later",
-                session_id="sess_legacy",
-                type="session_created",
-                payload={"context_event_schema_version": "v2"},
-            )
-        )
+    )
     archive = store.root / "archives" / "sess_legacy" / "archive.json"
     archive.parent.mkdir(parents=True)
     archive.write_text("source archive", encoding="utf-8")

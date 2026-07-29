@@ -198,17 +198,9 @@ class AgentChatRunner:
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> ChatResponse:
-        before_count, cancellation_token, loop = self._start_turn()
-        try:
-            result = loop.run_user_turn_interactive(content, attachments=attachments)
-        finally:
-            self._finish_cancellable_turn(cancellation_token)
-        self.last_pending_input = result.pending_input
-        self._remember_pending_permission_loop(loop)
-        self._refresh_turn_output(before_count, loop)
-        if result.response is not None:
-            return result.response
-        return self._waiting_for_input_response(result.pending_input)
+        """Synchronous outer boundary for CLI callers."""
+
+        return asyncio.run(self.arun_user_turn(content, attachments=attachments))
 
     def resume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
         """恢复等待中的权限确认。
@@ -217,19 +209,7 @@ class AgentChatRunner:
         tool_result，所以 UI 通过这个入口把用户选择交回 agent loop。
         """
 
-        before_count, cancellation_token, loop = self._resume_turn()
-        try:
-            result = loop.resume_with_user_input(request_id, answer)
-        finally:
-            self._finish_cancellable_turn(cancellation_token)
-        self.last_pending_input = result.pending_input
-        self._remember_pending_permission_loop(loop)
-        self._refresh_turn_output(before_count, loop)
-        if result.response is not None:
-            if result.response.content and not self.last_display_lines:
-                self.last_display_lines.append(result.response.content)
-            return result.response
-        return self._waiting_for_input_response(result.pending_input)
+        return asyncio.run(self.aresume_with_user_input(request_id, answer))
 
     async def arun_user_turn(
         self,
@@ -243,43 +223,44 @@ class AgentChatRunner:
         才会在 `use_streaming=True` 时消费 provider 的内部 stream event。
         """
 
-        if self.use_streaming:
-            before_count, cancellation_token, loop = self._start_turn(streaming=True)
-            try:
-                response = await anyio.to_thread.run_sync(
-                    _run_coroutine_in_thread,
-                    loop.run_user_turn_streaming(content, attachments=attachments),
-                )
-            finally:
-                self._finish_cancellable_turn(cancellation_token)
-            raw_pending = response.raw.get("pending_input") if isinstance(response.raw, dict) else None
-            self.last_pending_input = raw_pending if isinstance(raw_pending, UserInputRequest) else None
-            self._remember_pending_permission_loop(loop)
-            self._refresh_turn_output(before_count, loop)
-            if self.last_pending_input is not None and response.content:
-                self.last_display_lines.append(response.content)
-            return response
-
-        return await asyncio.to_thread(self.run_user_turn, content, attachments=attachments)
+        before_count, cancellation_token, loop = self._start_turn(streaming=self.use_streaming)
+        try:
+            result = await anyio.to_thread.run_sync(
+                _run_coroutine_in_thread,
+                loop.run_user_turn(
+                    content,
+                    attachments=attachments,
+                    streaming=self.use_streaming,
+                ),
+            )
+        finally:
+            self._finish_cancellable_turn(cancellation_token)
+        return self._finish_agent_result(before_count, loop, result)
 
     async def aresume_with_user_input(self, request_id: str, answer: str) -> ChatResponse:
-        if self.use_streaming:
-            before_count, cancellation_token, loop = self._resume_turn(streaming=True)
-            try:
-                result = await anyio.to_thread.run_sync(
-                    _run_coroutine_in_thread,
-                    loop.resume_with_user_input_streaming(request_id, answer),
-                )
-            finally:
-                self._finish_cancellable_turn(cancellation_token)
-            self.last_pending_input = result.pending_input
-            self._remember_pending_permission_loop(loop)
-            self._refresh_turn_output(before_count, loop)
-            if result.response is not None:
-                return result.response
-            return self._waiting_for_input_response(result.pending_input)
+        before_count, cancellation_token, loop = self._resume_turn(streaming=self.use_streaming)
+        try:
+            result = await anyio.to_thread.run_sync(
+                _run_coroutine_in_thread,
+                loop.resume_with_user_input(
+                    request_id,
+                    answer,
+                    streaming=self.use_streaming,
+                ),
+            )
+        finally:
+            self._finish_cancellable_turn(cancellation_token)
+        return self._finish_agent_result(before_count, loop, result)
 
-        return await asyncio.to_thread(self.resume_with_user_input, request_id, answer)
+    def _finish_agent_result(self, before_count: int, loop: AgentLoop, result) -> ChatResponse:
+        self.last_pending_input = result.pending_input
+        self._remember_pending_permission_loop(loop)
+        self._refresh_turn_output(before_count, loop)
+        if result.response is not None:
+            if result.response.content and not self.last_display_lines:
+                self.last_display_lines.append(result.response.content)
+            return result.response
+        return self._waiting_for_input_response(result.pending_input)
 
     def _current_tools(self) -> list[Tool] | None:
         """Resolve tools once per loop so the session registry sees that same list."""

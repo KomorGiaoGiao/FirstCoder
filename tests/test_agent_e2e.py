@@ -52,7 +52,7 @@ def test_agent_single_turn_e2e_writes_and_rebuilds_session(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_e2e", agents_md="项目规则")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="收到")])
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn("你好")
+    response = AgentLoop(session=session, provider=provider)._run_user_turn_sync("你好")
 
     assert response.content == "收到"
     assert len(provider.requests) == 1
@@ -92,7 +92,7 @@ def test_agent_tool_call_e2e_uses_real_view_tool_and_persists_result(tmp_path) -
         session=session,
         provider=provider,
         tools=[create_view_tool(tmp_path)],
-    ).run_user_turn("读 README")
+    )._run_user_turn_sync("读 README")
 
     assert response.content == "README 已读取"
     assert len(provider.requests) == 2
@@ -117,11 +117,11 @@ def test_agent_resume_e2e_replays_history_and_continues_turn(tmp_path) -> None:
     original = AgentSession.create(store=store, session_id="sess_e2e", agents_md="规则")
     first_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="第一轮回复")])
 
-    AgentLoop(session=original, provider=first_provider).run_user_turn("第一轮")
+    AgentLoop(session=original, provider=first_provider)._run_user_turn_sync("第一轮")
 
     resumed = AgentSession.resume(store=store, session_id="sess_e2e", agents_md="规则")
     second_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="第二轮回复")])
-    response = AgentLoop(session=resumed, provider=second_provider).run_user_turn("第二轮")
+    response = AgentLoop(session=resumed, provider=second_provider)._run_user_turn_sync("第二轮")
 
     assert response.content == "第二轮回复"
     assert len(second_provider.requests) == 4
@@ -206,7 +206,7 @@ def test_prompt_too_long_e2e_writes_l4_checkpoint_and_retries_with_summary(tmp_p
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_prompt_retry", agents_md="规则")
     seed_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
-    AgentLoop(session=session, provider=seed_provider).run_user_turn("旧问题")
+    AgentLoop(session=session, provider=seed_provider)._run_user_turn_sync("旧问题")
 
     provider = FakeProvider(
         [
@@ -227,7 +227,7 @@ def test_prompt_too_long_e2e_writes_l4_checkpoint_and_retries_with_summary(tmp_p
         session=session,
         provider=provider,
         context_manager=context_manager,
-    ).run_user_turn("新问题")
+    )._run_user_turn_sync("新问题")
 
     assert response.content == "恢复后完成"
     event_types = [event.type for event in store.list_events("sess_prompt_retry")]
@@ -292,7 +292,7 @@ def test_auto_token_threshold_e2e_writes_compaction_and_checkpoint(tmp_path) -> 
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_auto_token", agents_md="")
     seed = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
-    AgentLoop(session=session, provider=seed).run_user_turn("旧问题")
+    AgentLoop(session=session, provider=seed)._run_user_turn_sync("旧问题")
     provider = FakeProvider(
         [
             ChatResponse(provider="fake", model="fake-model", content="自动压缩摘要"),
@@ -306,7 +306,7 @@ def test_auto_token_threshold_e2e_writes_compaction_and_checkpoint(tmp_path) -> 
         provider=provider,
         context_manager=_compact_manager(store, provider, reason="token_threshold"),
         context_window=32_768,
-    ).run_user_turn("触发 token 阈值 " * 8_000)
+    )._run_user_turn_sync("触发 token 阈值 " * 8_000)
 
     assert response.content == "完成"
     compact = _compact_events(store, "sess_auto_token")[0]
@@ -341,7 +341,7 @@ def test_auto_large_single_tool_result_does_not_bypass_dynamic_watermark(tmp_pat
         provider=provider,
         tools=[_echo_tool(output="large output\n" * 50)],
         context_manager=_compact_manager(store, provider, reason="large_tool_result"),
-    ).run_user_turn("调用大工具")
+    )._run_user_turn_sync("调用大工具")
 
     assert response.content == "完成"
     assert _compact_events(store, "sess_large_tool") == []
@@ -372,7 +372,7 @@ def test_auto_large_turn_tool_results_do_not_bypass_dynamic_watermark(tmp_path) 
         provider=provider,
         tools=[_echo_tool(output="turn output\n" * 8)],
         context_manager=_compact_manager(store, provider, reason="turn_tool_results"),
-    ).run_user_turn("调用两个工具")
+    )._run_user_turn_sync("调用两个工具")
 
     assert response.content == "完成"
     assert _compact_events(store, "sess_turn_tools") == []
@@ -384,7 +384,7 @@ def test_auto_tail_message_count_does_not_bypass_dynamic_watermark(tmp_path) -> 
     store = JsonlSessionStore(tmp_path)
     session = AgentSession.create(store=store, session_id="sess_tail_count", agents_md="")
     seed = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="旧回复")])
-    AgentLoop(session=session, provider=seed).run_user_turn("旧问题")
+    AgentLoop(session=session, provider=seed)._run_user_turn_sync("旧问题")
     provider = FakeProvider(
         [
             ChatResponse(provider="fake", model="fake-model", content="完成"),
@@ -395,7 +395,7 @@ def test_auto_tail_message_count_does_not_bypass_dynamic_watermark(tmp_path) -> 
         session=session,
         provider=provider,
         context_manager=_compact_manager(store, provider, reason="tail_message_count"),
-    ).run_user_turn("新问题")
+    )._run_user_turn_sync("新问题")
 
     assert response.content == "完成"
     assert _compact_events(store, "sess_tail_count") == []
@@ -435,8 +435,8 @@ def test_task_boundary_e2e_writes_task_hash_changed_compaction(tmp_path) -> None
         provider=provider,
         context_manager=ContextWindowManager(store=store),
     )
-    loop.run_user_turn("换一个任务")
-    response = loop.run_user_turn("继续新任务")
+    loop._run_user_turn_sync("换一个任务")
+    response = loop._run_user_turn_sync("继续新任务")
 
     assert response.content == "任务切换完成"
     task_boundary_events = _events(store, "sess_task_boundary", "task_boundary_observed")
@@ -477,10 +477,10 @@ def test_task_boundary_e2e_compacts_old_task_content_when_under_token_budget(tmp
 
     provider.complete = complete_with_latest_user_basis
 
-    loop.run_user_turn("旧任务内容 " + ("alpha " * 80))
+    loop._run_user_turn_sync("旧任务内容 " + ("alpha " * 80))
     first_task_hash = session.runtime_state.active_task_hash
-    loop.run_user_turn("换一个任务 " + ("beta " * 20))
-    loop.run_user_turn("继续新任务")
+    loop._run_user_turn_sync("换一个任务 " + ("beta " * 20))
+    loop._run_user_turn_sync("继续新任务")
 
     compact_events = [event.payload["event"] for event in _compact_events(store, "sess_task_boundary_old_task") if event.payload["trigger"] == "task_hash_changed"]
     assert compact_events
@@ -563,10 +563,10 @@ def test_task_boundary_e2e_confirms_pending_new_when_next_turn_is_same_task(tmp_
 
     provider.complete = complete_with_latest_user_basis
 
-    loop.run_user_turn("旧任务内容 " + ("alpha " * 80))
+    loop._run_user_turn_sync("旧任务内容 " + ("alpha " * 80))
     first_task_hash = session.runtime_state.active_task_hash
-    loop.run_user_turn("任务B：HTTP 缓存头解释")
-    loop.run_user_turn("任务B：继续 HTTP 缓存头解释")
+    loop._run_user_turn_sync("任务B：HTTP 缓存头解释")
+    loop._run_user_turn_sync("任务B：继续 HTTP 缓存头解释")
 
     compact_events = [event.payload["event"] for event in _compact_events(store, "sess_task_boundary_new_then_same") if event.payload["trigger"] == "task_hash_changed"]
     assert compact_events

@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import threading
 
+import pytest
+
 from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
@@ -204,13 +206,25 @@ def test_create_firstcoder_app_enables_streaming_for_capable_provider(tmp_path: 
     assert app.chat_runner.use_streaming is True
 
 
+def test_create_firstcoder_app_requires_catalog_without_injected_provider(tmp_path: Path) -> None:
+    config = AppConfig(env={}, project_config={})
+
+    with pytest.raises(ValueError, match="模型目录为空"):
+        create_firstcoder_app(
+            project_root=tmp_path,
+            data_root=tmp_path / ".firstcoder",
+            app_config=config,
+            session_id="sess_test",
+            tools=[],
+        )
+
+
 def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) -> None:
     provider = FakeProvider(
         responses=[ChatResponse(provider="fake", model="fake-model", content="ok")],
         capabilities=ProviderCapabilities(supports_streaming=True),
     )
     config = AppConfig(
-        provider_name="fake",
         env={},
         project_config={"providers": {"fake": {"type": "openai-compatible", "streaming": False}}},
     )
@@ -225,37 +239,6 @@ def test_create_firstcoder_app_honors_streaming_disabled_config(tmp_path: Path) 
     )
 
     assert app.chat_runner.use_streaming is False
-
-
-def test_model_command_switches_runtime_provider_and_compact_summarizer(tmp_path: Path) -> None:
-    initial_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
-    config = AppConfig(
-        provider_name="custom",
-        env={
-            "FIRSTCODER_API_KEY": "test-key",
-            "FIRSTCODER_MODEL": "old-model",
-            "FIRSTCODER_PROVIDER_NAME": "yurenapi",
-            "FIRSTCODER_BASE_URL": "https://example.test/v1",
-            "FIRSTCODER_PARALLEL_TOOL_CALLS": "true",
-        },
-    )
-    app = create_firstcoder_app(
-        project_root=tmp_path,
-        data_root=tmp_path / ".firstcoder",
-        provider=initial_provider,
-        session_id="sess_test",
-        tools=[],
-        app_config=config,
-    )
-
-    result = app.command_handler.handle("/model new-model")
-
-    assert result.output == "Model switched: yurenapi/new-model"
-    assert result.action == {"type": "model_changed", "provider": "yurenapi", "model": "new-model"}
-    assert app.chat_runner.provider.name == "yurenapi"
-    assert app.chat_runner.provider.model == "new-model"
-    assert app.chat_runner.use_streaming is True
-    assert app.chat_runner.context_manager.l4_service.summarizer.provider is app.chat_runner.provider
 
 
 def _catalog_config(*, default_model: str | None = "yuren/main") -> AppConfig:
@@ -280,7 +263,6 @@ def _catalog_config(*, default_model: str | None = "yuren/main") -> AppConfig:
     if default_model is not None:
         project["default_model"] = default_model
     return AppConfig(
-        provider_name="openai-compatible",
         env={"YUREN_KEY": "test-key", "MIMO_KEY": "mimo-key"},
         project_config=project,
     )
@@ -366,7 +348,6 @@ def test_catalog_model_switch_rejects_unconfigured_short_name(tmp_path: Path) ->
 
 def test_catalog_picker_can_switch_mixed_case_provider_ref(tmp_path: Path) -> None:
     config = AppConfig(
-        provider_name="openai-compatible",
         env={"YUREN_KEY": "test-key"},
         project_config={
             "default_model": "Yuren/main",
@@ -403,7 +384,6 @@ def test_catalog_picker_can_switch_mixed_case_provider_ref(tmp_path: Path) -> No
 
 def test_catalog_anthropic_alias_is_current_model_and_picker_selection(tmp_path: Path) -> None:
     config = AppConfig(
-        provider_name="anthropic",
         env={"ANTHROPIC_API_KEY": "test-key"},
         project_config={
             "default_model": "claude/sonnet",

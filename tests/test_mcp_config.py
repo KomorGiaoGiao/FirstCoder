@@ -13,7 +13,6 @@ from firstcoder.mcp.models import McpConfigError, McpLocalServerConfig, McpRemot
 
 def test_load_mcp_configs_parses_local_server_with_defaults():
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={"mcp": {"lark": {"type": "local", "command": ["lark-mcp", "serve"]}}},
     )
@@ -36,7 +35,6 @@ def test_load_mcp_configs_parses_local_server_with_defaults():
 
 def test_load_mcp_configs_parses_remote_server():
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={
             "mcp": {
@@ -68,7 +66,6 @@ def test_load_mcp_configs_parses_remote_server():
 
 def test_load_mcp_configs_parses_remote_bearer_token_environment_variable():
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={
             "mcp": {
@@ -95,7 +92,6 @@ def test_load_mcp_configs_rejects_invalid_remote_bearer_token_environment_variab
     bearer_token_env_var,
 ):
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={
             "mcp": {
@@ -122,7 +118,7 @@ def test_load_mcp_configs_rejects_invalid_remote_bearer_token_environment_variab
     ],
 )
 def test_load_mcp_configs_rejects_missing_or_mixed_transport_fields(server):
-    config = AppConfig(provider_name="openai", env={}, project_config={"mcp": {"bad": server}})
+    config = AppConfig(env={}, project_config={"mcp": {"bad": server}})
 
     with pytest.raises(McpConfigError):
         load_mcp_configs(config)
@@ -130,7 +126,6 @@ def test_load_mcp_configs_rejects_missing_or_mixed_transport_fields(server):
 
 def test_project_server_completely_overrides_same_named_global_server():
     config = AppConfig(
-        provider_name="openai",
         env={},
         global_config={
             "mcp": {
@@ -178,7 +173,6 @@ def test_resolve_environment_placeholders_recurses_without_mutating_input():
 @pytest.mark.parametrize("allowed_tools", ["calendar_*", [""], ["valid", 1], ["bad tool"]])
 def test_load_mcp_configs_validates_allowed_tools(allowed_tools):
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={
             "mcp": {

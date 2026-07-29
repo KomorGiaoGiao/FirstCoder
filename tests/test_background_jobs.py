@@ -798,7 +798,7 @@ def test_end_to_end_model_receives_task_notification(tmp_path) -> None:
             tools=[_bg_tool("shell", executor=blocking), _bg_tool("note")],
             background_manager=manager,
         )
-        result = loop.run_user_turn("run a background job")
+        result = loop._run_user_turn_sync("run a background job")
         assert result.content == "all done"
 
         # 第三次 provider 请求应当包含后台完成通知。

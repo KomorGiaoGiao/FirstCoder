@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -155,30 +154,19 @@ class AgentLoop:
         self._ensure_background_control_tools()
         self._ensure_delegate_tool()
 
-    def run_user_turn(
+    async def run_user_turn(
         self,
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
-    ) -> ChatResponse:
-        """非交互兼容入口。
+        streaming: bool = False,
+    ) -> AgentTurnResult:
+        """Execute one turn through the single asynchronous AgentTurnResult API."""
 
-        旧调用方只认识 `ChatResponse`。如果底层因为权限确认或 ask_user 暂停，这里会把
-        “等待用户输入”包装成一条响应文本；真正需要恢复暂停的 UI 应使用
-        `run_user_turn_interactive()` 和 `resume_with_user_input()`。
-        """
-
-        result = self.run_user_turn_interactive(content, attachments=attachments)
-        if result.response is not None:
-            return result.response
-        pending = result.pending_input
-        content = pending.question if pending is not None else "等待用户输入。"
-        return ChatResponse(
-            provider=self.provider.name,
-            model=self.provider.model,
-            content=content,
-            finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
-            raw={"pending_input": pending},
+        if streaming:
+            return await self._run_user_turn_streaming(content, attachments=attachments)
+        return await anyio.to_thread.run_sync(
+            lambda: self._run_user_turn_sync(content, attachments=attachments)
         )
 
     def replace_cancellation_token(self, token: CancellationToken | None) -> None:
@@ -190,17 +178,13 @@ class AgentLoop:
     def clear_stream_events(self) -> None:
         self.last_stream_events = []
 
-    def run_user_turn_interactive(
+    def _run_user_turn_sync(
         self,
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> AgentTurnResult:
-        """执行一轮会话，并在工具请求用户输入时暂停。
-
-        旧的 `run_user_turn()` 保持返回 `ChatResponse`，方便现有测试和非交互入口
-        继续工作。需要权限确认或 `ask_user` 暂停语义的上层应使用这个入口。
-        """
+        """Synchronous implementation kept private behind ``run_user_turn``."""
 
         if self.session.pending_permission_execution is not None:
             # 上一轮已经把 assistant tool_call 写进历史，但还缺一个匹配的 tool_result。
@@ -227,7 +211,22 @@ class AgentLoop:
             self._complete_once_with_recovery,
         )
 
-    def resume_with_user_input(self, request_id: str, answer: str) -> AgentTurnResult:
+    async def resume_with_user_input(
+        self,
+        request_id: str,
+        answer: str,
+        *,
+        streaming: bool = False,
+    ) -> AgentTurnResult:
+        """Resume a paused turn through the single asynchronous result API."""
+
+        if streaming:
+            return await self._resume_with_user_input_streaming(request_id, answer)
+        return await anyio.to_thread.run_sync(
+            lambda: self._resume_with_user_input_sync(request_id, answer)
+        )
+
+    def _resume_with_user_input_sync(self, request_id: str, answer: str) -> AgentTurnResult:
         """用用户回答恢复一个暂停中的权限确认。
 
         普通 `ask_user` 第一版仍通过“下一条用户消息”继续；权限确认不能这样做，
@@ -250,7 +249,7 @@ class AgentLoop:
         self._check_cancelled()
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
-    async def resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
+    async def _resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
         """流式模式下恢复权限确认，并继续消费 provider stream。"""
 
         try:
@@ -267,12 +266,12 @@ class AgentLoop:
         self._check_cancelled()
         return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
 
-    async def run_user_turn_streaming(
+    async def _run_user_turn_streaming(
         self,
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
-    ) -> ChatResponse:
+    ) -> AgentTurnResult:
         """使用 provider 内部 stream event 协议执行一轮会话。
 
         文本 delta 可以被上层即时展示，但工具调用仍保持原子语义：只有 stream 完成并
@@ -283,12 +282,9 @@ class AgentLoop:
         if self.session.pending_permission_execution is not None:
             pending = self.session.pending_permission_execution
             pending_input = self.tool_executor.permission_input_request_from_pending(pending)
-            return ChatResponse(
-                provider=self.provider.name,
-                model=self.provider.model,
-                content=pending_input.question,
-                finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
-                raw={"pending_input": pending_input},
+            return AgentTurnResult(
+                status=AgentTurnStatus.WAITING_FOR_USER_INPUT,
+                pending_input=pending_input,
             )
 
         self._begin_turn()
@@ -299,38 +295,14 @@ class AgentLoop:
             if self._initialize_active_task_if_missing(message_id) is None:
                 await self._classify_task_boundary_async(message_id)
         except _AgentLoopLimitReached as exc:
-            return self._complete_turn(self._limit_response(exc.reason)).response
+            return self._complete_turn(self._limit_response(exc.reason))
         except AgentCancelledError:
-            return self._complete_turn(self._interrupted_response()).response
+            return self._complete_turn(self._interrupted_response())
 
         result = await self._run_tool_loop_interactive_async(
             self._stream_once_with_recovery,
         )
-        if result.response is not None:
-            return result.response
-        pending = result.pending_input
-        content = pending.question if pending is not None else "等待用户输入。"
-        return ChatResponse(
-            provider=self.provider.name,
-            model=self.provider.model,
-            content=content,
-            finish_reason=AgentTurnStatus.WAITING_FOR_USER_INPUT.value,
-            raw={"pending_input": pending},
-        )
-
-    def run_user_turn_streaming_sync(
-        self,
-        content: str,
-        *,
-        attachments: list[UserAttachment] | None = None,
-    ) -> ChatResponse:
-        """同步入口，仅用于测试或没有运行中 event loop 的 CLI 场景。
-
-        Textual 这类已经运行 asyncio event loop 的 UI 后续应该直接 await
-        `run_user_turn_streaming()` 或放到 worker 中执行，不能调用这个包装方法。
-        """
-
-        return asyncio.run(self.run_user_turn_streaming(content, attachments=attachments))
+        return result
 
     def _initialize_active_task_if_missing(self, basis_message_id: str):
         service = TaskBoundaryService(known_message_ids=self.session.known_message_ids)

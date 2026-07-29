@@ -2,7 +2,7 @@
 
 from firstcoder.providers.anthropic_provider import AnthropicProvider
 from firstcoder.providers.base import ChatProvider
-from firstcoder.providers.factory import ProviderConfigError, create_provider, create_provider_from_config
+from firstcoder.providers.factory import ProviderConfigError, create_provider_for_model
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.tool_adapters import to_anthropic_tool, to_openai_tool
 from firstcoder.providers.types import (
@@ -35,8 +35,7 @@ __all__ = [
     "ToolChoiceFunction",
     "ToolCall",
     "ToolDefinition",
-    "create_provider",
-    "create_provider_from_config",
+    "create_provider_for_model",
     "to_anthropic_tool",
     "to_openai_tool",
 ]

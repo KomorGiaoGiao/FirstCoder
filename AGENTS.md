@@ -10,7 +10,7 @@ Create and populate the local environment:
 
 ```sh
 python -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -e ".[dev]"
 ```
 
 Run the full test suite:
@@ -33,7 +33,7 @@ Start the app locally:
 
 ## Coding Style & Naming Conventions
 
-Use standard Python style with 4-space indentation, explicit names, and small functions that stay close to their module’s responsibility. Prefer dataclasses or Pydantic models for structured data already represented that way. Keep provider-specific fields inside provider adapters, and keep UI concerns inside `firstcoder/app`. Test files use `test_*.py`; test functions should describe behavior, for example `test_resume_without_id_requests_picker`.
+Use standard Python style with 4-space indentation, explicit names, and small functions that stay close to their module’s responsibility. Prefer dataclasses for structured data already represented that way. Keep provider-specific fields inside provider adapters, and keep UI concerns inside `firstcoder/app`. Test files use `test_*.py`; test functions should describe behavior, for example `test_resume_without_id_requests_picker`.
 
 ## Testing Guidelines
 

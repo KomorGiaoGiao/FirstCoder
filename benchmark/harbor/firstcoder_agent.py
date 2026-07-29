@@ -21,6 +21,7 @@ from harbor.models.agent.context import AgentContext
 _AGENT_ROOT: Final = "/opt/firstcoder-agent"
 _REMOTE_SOURCE_DIR: Final = "/installed-agent/firstcoder-src"
 _SESSION_ROOT: Final = "/tmp/firstcoder-harbor-sessions"
+_CONFIG_ROOT: Final = "/tmp/firstcoder-harbor-config"
 # Download cache for pip/uv. Bind-mount a host directory here (Harbor
 # ``--mounts``) so FirstCoder's dependencies download once and are reused
 # across trials and containers instead of being fetched for every task.
@@ -192,8 +193,11 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         resume = "--resume-session " if resume_session else ""
         return (
             "set -o pipefail; "
+            f"{_catalog_bootstrap_command()}"
+            f"XDG_CONFIG_HOME={shlex.quote(_CONFIG_ROOT)} "
             f"{shlex.quote(_venv_python())} -m firstcoder "
             "--benchmark --project . "
+            "--model \"${FIRSTCODER_PROVIDER_NAME}/${FIRSTCODER_MODEL}\" "
             f"--data-root {shlex.quote(_SESSION_ROOT)} "
             f"--session-id {shlex.quote(safe_session_id)} "
             f"{resume}"
@@ -209,6 +213,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
             "fi; "
             'exit "$FIRSTCODER_EXIT"'
         )
+
 
     @staticmethod
     def _python_setup_command() -> str:
@@ -334,6 +339,38 @@ if [ -z "$PYTHON_BIN" ] || ! has_venv "$PYTHON_BIN"; then
   exit 64
 fi
 """
+
+
+def _catalog_bootstrap_command() -> str:
+    script = r"""import json
+import os
+
+required = ("FIRSTCODER_PROVIDER_NAME", "FIRSTCODER_MODEL", "FIRSTCODER_BASE_URL")
+missing = [name for name in required if not os.environ.get(name)]
+if missing:
+    raise SystemExit("missing Harbor model configuration: " + ", ".join(missing))
+provider = os.environ["FIRSTCODER_PROVIDER_NAME"]
+model = os.environ["FIRSTCODER_MODEL"]
+ref = provider + "/" + model
+quote = json.dumps
+config = (
+    "default_model = " + quote(ref) + "\n"
+    + "[providers." + quote(provider) + "]\n"
+    + 'type = "openai-compatible"\n'
+    + "base_url = " + quote(os.environ["FIRSTCODER_BASE_URL"]) + "\n"
+    + 'api_key_env = "FIRSTCODER_API_KEY"\n'
+    + "parallel_tool_calls = true\n"
+    + "[models." + quote(ref) + "]\n"
+)
+root = os.environ.get("XDG_CONFIG_HOME", "/tmp/firstcoder-harbor-config")
+path = os.path.join(root, "firstcoder", "config.toml")
+os.makedirs(os.path.dirname(path), exist_ok=True)
+open(path, "w", encoding="utf-8").write(config)
+"""
+    return (
+        f"XDG_CONFIG_HOME={shlex.quote(_CONFIG_ROOT)} "
+        f"{shlex.quote(_venv_python())} - <<'PY'\n{script}PY\n"
+    )
 
 
 def _default_source_dir() -> Path | None:

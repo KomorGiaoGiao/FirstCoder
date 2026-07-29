@@ -1,7 +1,7 @@
 from firstcoder.context.checkpoint import Checkpoint
 from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.providers.types import ChatMessage, ToolDefinition
-from firstcoder.context.token_budget import estimate_chat_request_tokens
+from firstcoder.context.token_budget import build_context_budget
 from firstcoder.context.triggers import ContextCompactionConfig, evaluate_context_triggers
 
 
@@ -47,7 +47,7 @@ def test_token_thresholds_trigger_expected_compaction_reason() -> None:
 
 
 def test_request_token_estimate_includes_system_messages_tools_and_reserved_output() -> None:
-    estimate = estimate_chat_request_tokens(
+    budget = build_context_budget(
         messages=[
             ChatMessage(role="system", content="system" * 40),
             ChatMessage(role="user", content="user" * 40),
@@ -59,24 +59,30 @@ def test_request_token_estimate_includes_system_messages_tools_and_reserved_outp
                 parameters={"type": "object", "properties": {"path": {"type": "string"}}},
             )
         ],
-        reserved_output_tokens=50,
+        context_window=10_000,
+        max_output_tokens=50,
     )
 
-    assert estimate >= 140
+    assert budget.input_tokens >= 90
+    assert budget.output_reserve == 50
 
 
 def test_request_token_estimate_reserves_requested_output_space() -> None:
-    baseline = estimate_chat_request_tokens(
+    baseline = build_context_budget(
         messages=[ChatMessage(role="user", content="hello")],
         tools=[],
+        context_window=10_000,
+        max_output_tokens=256,
     )
-    reserved = estimate_chat_request_tokens(
+    reserved = build_context_budget(
         messages=[ChatMessage(role="user", content="hello")],
         tools=[],
-        reserved_output_tokens=512,
+        context_window=10_000,
+        max_output_tokens=512,
     )
 
-    assert reserved == baseline + 512
+    assert reserved.input_tokens == baseline.input_tokens
+    assert reserved.input_capacity == baseline.input_capacity - 256
 
 
 def test_large_single_tool_result_does_not_bypass_dynamic_watermark() -> None:

@@ -229,7 +229,9 @@ def test_connect_all_in_background_returns_before_slow_server_finishes():
 
     assert time.monotonic() - started < 0.05
     assert manager.doctor("slow").state == "connecting"
-    assert manager.wait_for_connections(timeout=1) is True
+    deadline = time.monotonic() + 1
+    while manager.doctor("slow").state == "connecting" and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert manager.doctor("slow").state == "connected"
     manager.close()
 

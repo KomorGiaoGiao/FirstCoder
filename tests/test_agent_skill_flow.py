@@ -36,7 +36,7 @@ def test_user_language_does_not_auto_load_skill_before_provider_call(tmp_path: P
     session = AgentSession.from_project(store=store, session_id="sess_skill", project_root=tmp_path)
     provider = RecordingProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("按框架跑一次今天的全球家办资讯简报")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("按框架跑一次今天的全球家办资讯简报")
 
     assert [event for event in store.list_events("sess_skill") if event.type.startswith("skill_")] == []
     system_prompt = provider.requests[0].messages[0].content
@@ -63,7 +63,7 @@ def test_model_load_skill_call_returns_body_in_next_provider_request_and_audits(
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("生成今天的简报")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("生成今天的简报")
 
     events = store.list_events("sess_skill")
     assert [event.type for event in events if event.type.startswith("skill_")] == ["skill_selected", "skill_loaded"]
@@ -92,7 +92,7 @@ def test_resume_replays_loaded_skill_tool_result_without_reading_disk(tmp_path: 
             ChatResponse(provider="fake", model="fake-model", content="done"),
         ]
     )
-    AgentLoop(session=original, provider=provider).run_user_turn("生成简报")
+    AgentLoop(session=original, provider=provider)._run_user_turn_sync("生成简报")
     (tmp_path / "skills" / "global-family-office-news-brief.md").unlink()
 
     resumed = AgentSession.resume(
@@ -103,7 +103,7 @@ def test_resume_replays_loaded_skill_tool_result_without_reading_disk(tmp_path: 
     )
     resumed_provider = RecordingProvider([ChatResponse(provider="fake", model="fake-model", content="继续完成")])
 
-    AgentLoop(session=resumed, provider=resumed_provider).run_user_turn("继续")
+    AgentLoop(session=resumed, provider=resumed_provider)._run_user_turn_sync("继续")
 
     request_text = "\n".join(message.content for request in resumed_provider.requests for message in request.messages)
     assert "Loaded skill: global-family-office-news-brief" in request_text

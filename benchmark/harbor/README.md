@@ -89,7 +89,6 @@ zsh -lic 'export PYTHONPATH="$PWD"; .venv/bin/harbor run \
   -m Yuren/gpt-5.6-terra \
   -n 1 -k 1 --ak max_tool_rounds=120 --ak reasoning_effort=medium \
   --agent-setup-timeout-multiplier 3 \
-  --ae FIRSTCODER_PROVIDER=openai-compatible \
   --ae FIRSTCODER_PROVIDER_NAME=PROVIDER \
   --ae FIRSTCODER_MODEL=gpt-5.6-terra \
   --ae FIRSTCODER_BASE_URL=https://provider.example/v1 \

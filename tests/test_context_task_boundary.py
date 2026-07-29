@@ -6,6 +6,7 @@ from firstcoder.context.task_boundary import (
     TaskBoundaryDecision,
     TaskBoundaryObservation,
     TaskBoundaryService,
+    observation_from_tool_result_data,
 )
 
 
@@ -268,3 +269,23 @@ def test_task_hash_event_records_stable_window_state() -> None:
     assert event.payload["triggered_compaction"] is False
     assert event.payload["confirmation_reason"] == "stable_window_pending"
     assert event.payload["created_at"].endswith("Z")
+
+
+def test_task_boundary_tool_result_rejects_missing_versions() -> None:
+    data = {
+        "decision": "same",
+        "basis_message_id": "msg_1",
+    }
+
+    assert observation_from_tool_result_data(data) is None
+
+
+def test_task_boundary_tool_result_rejects_unknown_versions() -> None:
+    data = {
+        "decision": "same",
+        "basis_message_id": "msg_1",
+        "event_version": "future",
+        "strategy_version": "future",
+    }
+
+    assert observation_from_tool_result_data(data) is None

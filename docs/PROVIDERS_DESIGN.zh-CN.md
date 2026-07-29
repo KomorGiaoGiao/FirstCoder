@@ -39,7 +39,11 @@ ContextBuilder + session registry
 
 ## 配置与工厂
 
-`load_config` 解析设置，`create_provider_from_config` 构造 provider。静态 preset 包含 OpenAI、DeepSeek、Qwen、Moonshot、Zhipu、OpenRouter、Ollama、Anthropic。当前没有运行时 provider plugin registry、实例缓存或通用 health-check 服务。
+`load_config` 只解析标准 `default_model` / `[providers]` / `[models]` Catalog，
+`create_provider_for_model` 根据选中的 `ModelProfile` 构造 provider；不再存在旧的单
+provider factory 或纯环境变量模型路径。静态 preset 包含 OpenAI、DeepSeek、Qwen、
+Moonshot、Zhipu、OpenRouter、Ollama、Anthropic。当前没有运行时 provider plugin
+registry、实例缓存或通用 health-check 服务。
 
 凭证/base URL 留在配置和环境层，不要让 agent loop 自己读。`/model` 切换会重建 provider，并同步更新 L4 context compaction 所用的 summarizer。
 

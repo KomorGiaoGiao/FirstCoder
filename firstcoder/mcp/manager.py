@@ -73,16 +73,6 @@ class McpManager:
             )
             self._connection_thread.start()
 
-    def wait_for_connections(self, timeout: float | None = None) -> bool:
-        """等待后台连接完成；仅供启动协调与测试使用。"""
-
-        with self._lock:
-            worker = self._connection_thread
-        if worker is None:
-            return True
-        worker.join(timeout=timeout)
-        return not worker.is_alive()
-
     def reconnect(self, name: str | None = None) -> bool:
         """在后台重新连接一个服务器；``None`` 表示所有已启用服务器。"""
 

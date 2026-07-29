@@ -11,19 +11,17 @@ from firstcoder.providers.anthropic_provider import AnthropicProvider
 from firstcoder.providers.factory import (
     ProviderConfigError,
     create_provider_for_model,
-    create_provider_from_config,
 )
 from firstcoder.providers.openai_compatible import OpenAICompatibleProvider
 from firstcoder.providers.presets import PROVIDER_PRESETS
 
 
-def test_load_config_defaults_to_openai(tmp_path, monkeypatch):
-    monkeypatch.delenv("FIRSTCODER_PROVIDER", raising=False)
+def test_load_config_has_no_implicit_provider_without_catalog(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
     config = load_config(env={})
 
-    assert config.provider_name == "openai"
+    assert config.model_catalog().profiles == ()
 
 
 def test_load_config_reads_project_firstcoder_toml(tmp_path, monkeypatch):
@@ -44,13 +42,13 @@ def test_load_config_reads_project_firstcoder_toml(tmp_path, monkeypatch):
 
     config = load_config(project_root=tmp_path, env={"CUSTOM_API_KEY": "test-key"})
 
-    assert config.provider_name == "custom"
+    assert config.model_catalog().require("custom/custom-model").provider.id == "custom"
     assert config.get_config_value("default_model") == "custom/custom-model"
-    assert config.get_provider_value("base_url") == "https://example.com/v1"
+    assert config.model_catalog().require("custom/custom-model").provider.base_url == "https://example.com/v1"
     assert config.project_config_path == tmp_path / "firstcoder.toml"
 
 
-def test_environment_provider_overrides_project_config(tmp_path, monkeypatch):
+def test_legacy_environment_provider_does_not_override_catalog(tmp_path, monkeypatch):
     monkeypatch.setenv("FIRSTCODER_PROVIDER", "deepseek")
     (tmp_path / "firstcoder.toml").write_text(
         "\n".join(['default_model = "custom/model"', "[providers.custom]", 'type = "openai-compatible"', '[models."custom/model"]']),
@@ -59,57 +57,7 @@ def test_environment_provider_overrides_project_config(tmp_path, monkeypatch):
 
     config = load_config(project_root=tmp_path)
 
-    assert config.provider_name == "deepseek"
-
-
-def test_load_config_argument_overrides_environment(monkeypatch):
-    monkeypatch.setenv("FIRSTCODER_PROVIDER", "openai")
-
-    config = load_config("deepseek")
-
-    assert config.provider_name == "deepseek"
-
-
-def test_create_provider_from_config_uses_preset_values():
-    config = AppConfig(
-        provider_name="deepseek",
-        env={
-            "DEEPSEEK_API_KEY": "test-key",
-        },
-    )
-
-    provider = create_provider_from_config(config)
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == "deepseek"
-    assert provider.model == "deepseek-chat"
-    assert provider.base_url == "https://api.deepseek.com"
-    assert provider.capabilities.supports_tools is True
-
-
-def test_create_provider_from_config_reports_missing_api_key():
-    config = AppConfig(provider_name="openai", env={})
-
-    with pytest.raises(ProviderConfigError, match="OPENAI_API_KEY"):
-        create_provider_from_config(config)
-
-
-def test_create_provider_from_config_supports_custom_openai_compatible():
-    config = AppConfig(
-        provider_name="custom",
-        env={
-            "FIRSTCODER_API_KEY": "test-key",
-            "FIRSTCODER_MODEL": "custom-model",
-            "FIRSTCODER_BASE_URL": "https://example.com/v1",
-            "FIRSTCODER_PROVIDER_NAME": "example",
-        },
-    )
-
-    provider = create_provider_from_config(config)
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == "example"
-    assert provider.model == "custom-model"
+    assert config.model_catalog().default_ref == "custom/model"
 
 
 def test_render_default_config_uses_api_key_env_not_plain_secret():
@@ -122,7 +70,6 @@ def test_render_default_config_uses_api_key_env_not_plain_secret():
 
 def test_model_catalog_reads_context_window() -> None:
     config = AppConfig(
-        provider_name="custom",
         env={},
         project_config={
             "providers": {"custom": {"type": "openai-compatible"}},
@@ -144,7 +91,6 @@ def test_model_catalog_reads_context_window() -> None:
 @pytest.mark.parametrize("value", [0, -1, True, "128000"])
 def test_model_catalog_rejects_invalid_context_window(value) -> None:
     config = AppConfig(
-        provider_name="custom",
         env={},
         project_config={
             "providers": {"custom": {"type": "openai-compatible"}},
@@ -158,7 +104,6 @@ def test_model_catalog_rejects_invalid_context_window(value) -> None:
 
 def test_model_catalog_rejects_output_reserve_that_exhausts_window() -> None:
     config = AppConfig(
-        provider_name="custom",
         env={},
         project_config={
             "providers": {"custom": {"type": "openai-compatible"}},
@@ -183,7 +128,6 @@ def test_default_global_config_path_respects_xdg_config_home(tmp_path, monkeypat
 
 def test_mcp_config_merges_servers_without_using_provider_accessors():
     config = AppConfig(
-        provider_name="openai",
         env={},
         global_config={"mcp": {"global": {"type": "local", "command": ["global"]}}},
         project_config={"mcp": {"project": {"type": "remote", "url": "https://example.test/mcp"}}},
@@ -216,15 +160,16 @@ def test_openai_compatible_presets_have_constructable_metadata():
         assert preset.capabilities.supports_tools is True
 
 
-def test_create_provider_from_config_passes_openrouter_headers():
+def test_catalog_preset_provider_passes_openrouter_headers():
     config = AppConfig(
-        provider_name="openrouter",
-        env={
-            "OPENROUTER_API_KEY": "test-key",
+        env={"OPENROUTER_API_KEY": "test-key"},
+        project_config={
+            "providers": {"openrouter": {"type": "openrouter"}},
+            "models": {"openrouter/custom": {}},
         },
     )
 
-    provider = create_provider_from_config(config)
+    provider = create_provider_for_model(config, config.model_catalog().require("openrouter/custom"))
 
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.base_url == "https://openrouter.ai/api/v1"
@@ -233,7 +178,6 @@ def test_create_provider_from_config_passes_openrouter_headers():
 
 def test_model_catalog_deep_merges_global_and_project_entries() -> None:
     config = AppConfig(
-        provider_name="openai-compatible",
         env={},
         global_config={
             "providers": {
@@ -279,7 +223,7 @@ def test_model_catalog_deep_merges_global_and_project_entries() -> None:
 
 
 def test_model_catalog_rejects_model_without_declared_provider() -> None:
-    config = AppConfig(provider_name="openai-compatible", env={}, project_config={"models": {"missing/model": {}}})
+    config = AppConfig(env={}, project_config={"models": {"missing/model": {}}})
 
     with pytest.raises(ModelCatalogError, match="missing/model.*missing"):
         config.model_catalog()
@@ -287,7 +231,6 @@ def test_model_catalog_rejects_model_without_declared_provider() -> None:
 
 def test_model_catalog_rejects_legacy_single_provider_config() -> None:
     config = AppConfig(
-        provider_name="openai-compatible",
         env={"YUREN_API_KEY": "test-key"},
         project_config={
             "model": "yurenapi/gpt-legacy",
@@ -306,7 +249,6 @@ def test_model_catalog_rejects_legacy_single_provider_config() -> None:
 
 def test_create_provider_for_model_uses_profile_provider_and_model_options() -> None:
     config = AppConfig(
-        provider_name="openai-compatible",
         env={"YUREN_API_KEY": "test-key"},
         project_config={
             "providers": {
@@ -334,7 +276,6 @@ def test_create_provider_for_model_uses_profile_provider_and_model_options() -> 
 
 def test_create_provider_for_model_supports_anthropic_profile() -> None:
     config = AppConfig(
-        provider_name="anthropic",
         env={"ANTHROPIC_API_KEY": "test-key"},
         project_config={
             "providers": {"claude": {"type": "anthropic", "api_key_env": "ANTHROPIC_API_KEY"}},
@@ -351,7 +292,6 @@ def test_create_provider_for_model_supports_anthropic_profile() -> None:
 
 def test_create_provider_for_model_reports_profile_api_key_env() -> None:
     config = AppConfig(
-        provider_name="openai-compatible",
         env={},
         project_config={
             "providers": {
@@ -370,7 +310,6 @@ def test_create_provider_for_model_reports_profile_api_key_env() -> None:
 
 def test_create_provider_for_model_supports_preset_and_profile_model() -> None:
     config = AppConfig(
-        provider_name="openai",
         env={"OPENAI_API_KEY": "test-key"},
         project_config={
             "providers": {"openai": {"type": "openai"}},
@@ -386,7 +325,6 @@ def test_create_provider_for_model_supports_preset_and_profile_model() -> None:
 
 def test_create_provider_for_model_reports_missing_preset_api_key() -> None:
     config = AppConfig(
-        provider_name="openai",
         env={},
         project_config={
             "providers": {"openai": {"type": "openai"}},
@@ -400,12 +338,11 @@ def test_create_provider_for_model_reports_missing_preset_api_key() -> None:
 
 def test_model_catalog_validates_request_options_and_reserved_extra_body() -> None:
     base = {"providers": {"p": {"type": "openai-compatible"}}, "models": {"p/m": {}}}
-    config = AppConfig(provider_name="p", env={}, project_config={**base, "models": {"p/m": {"request": {"max_tokens": 0}}}})
+    config = AppConfig(env={}, project_config={**base, "models": {"p/m": {"request": {"max_tokens": 0}}}})
     with pytest.raises(ModelCatalogError, match="max_tokens"):
         config.model_catalog()
 
     config = AppConfig(
-        provider_name="p",
         env={},
         project_config={
             **base,
@@ -419,7 +356,6 @@ def test_model_catalog_validates_request_options_and_reserved_extra_body() -> No
 @pytest.mark.parametrize("reasoning_effort", ["xhigh", "minimal"])
 def test_model_catalog_passes_provider_specific_reasoning_effort_through(reasoning_effort: str) -> None:
     config = AppConfig(
-        provider_name="p",
         env={},
         project_config={
             "providers": {"p": {"type": "openai-compatible"}},
@@ -436,7 +372,6 @@ def test_model_catalog_passes_provider_specific_reasoning_effort_through(reasoni
 @pytest.mark.parametrize("reasoning_effort", [123, "", "   "])
 def test_model_catalog_rejects_non_string_or_blank_reasoning_effort(reasoning_effort: object) -> None:
     config = AppConfig(
-        provider_name="p",
         env={},
         project_config={
             "providers": {"p": {"type": "openai-compatible"}},
@@ -450,7 +385,6 @@ def test_model_catalog_rejects_non_string_or_blank_reasoning_effort(reasoning_ef
 
 def test_model_catalog_rejects_duplicate_reasoning_effort_in_extra_body() -> None:
     config = AppConfig(
-        provider_name="p",
         env={},
         project_config={
             "providers": {"p": {"type": "openai-compatible"}},

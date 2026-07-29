@@ -18,6 +18,8 @@ from firstcoder.session.catalog import SessionCatalog, require_usable_record
 from firstcoder.session.catalog import is_safe_session_id
 from firstcoder.session.errors import (
     SessionInvalidIdError,
+    SessionCorruptError,
+    SessionEmptyError,
     SessionNotFoundError,
     SessionUnsupportedSchemaError,
 )
@@ -65,35 +67,43 @@ def validate_session_schema(store: JsonlSessionStore, session_id: str) -> None:
     if not path.exists():
         raise SessionNotFoundError(f"session not found: {session_id}")
 
-    actual = None
-    saw_valid_envelope = False
+    saw_session_created = False
+    saw_content = False
     try:
         with path.open("r", encoding="utf-8") as file:
             for line in file:
                 if not line.strip():
                     continue
+                saw_content = True
                 try:
                     envelope = json.loads(line)
-                except json.JSONDecodeError:
-                    if not saw_valid_envelope:
-                        return
-                    break
-                if not isinstance(envelope, dict) or envelope.get("type") != "session_created":
-                    saw_valid_envelope = isinstance(envelope, dict)
+                except json.JSONDecodeError as error:
+                    raise SessionCorruptError(
+                        f"session {session_id} contains invalid JSON: {error}"
+                    ) from error
+                if (
+                    saw_session_created
+                    or not isinstance(envelope, dict)
+                    or envelope.get("type") != "session_created"
+                ):
                     continue
-                saw_valid_envelope = True
+                saw_session_created = True
                 payload = envelope.get("payload")
-                if isinstance(payload, dict):
-                    actual = payload.get("context_event_schema_version")
-                break
-    except UnicodeError:
-        return
-    if not saw_valid_envelope:
-        return
-    actual_version = str(actual) if actual is not None else "missing"
-    if actual_version != CONTEXT_EVENT_SCHEMA_VERSION:
-        raise SessionUnsupportedSchemaError(
-            session_id=session_id,
-            actual_version=actual_version,
-            expected_version=CONTEXT_EVENT_SCHEMA_VERSION,
+                actual = payload.get("context_event_schema_version") if isinstance(payload, dict) else None
+                actual_version = str(actual) if actual is not None else "missing"
+                if actual_version != CONTEXT_EVENT_SCHEMA_VERSION:
+                    raise SessionUnsupportedSchemaError(
+                        session_id=session_id,
+                        actual_version=actual_version,
+                        expected_version=CONTEXT_EVENT_SCHEMA_VERSION,
+                    )
+    except UnicodeError as error:
+        raise SessionCorruptError(
+            f"session {session_id} has no valid session_created event: {error}"
+        ) from error
+    if not saw_content:
+        raise SessionEmptyError(f"session {session_id} is empty")
+    if not saw_session_created:
+        raise SessionCorruptError(
+            f"session {session_id} has no valid session_created event"
         )

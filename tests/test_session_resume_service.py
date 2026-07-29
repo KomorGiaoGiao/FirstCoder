@@ -16,7 +16,7 @@ from firstcoder.session.errors import (
     SessionNotFoundError,
     SessionUnsupportedSchemaError,
 )
-from firstcoder.session.resume import ResumeService
+from firstcoder.session.resume import ResumeService, validate_session_schema
 from firstcoder.tools.write import create_write_tool
 from firstcoder.permissions.types import PermissionMode
 
@@ -80,7 +80,6 @@ def test_resume_service_restores_session_task_plan(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("schema_payload", "actual_version"),
     [
-        (None, "missing"),
         ({}, "missing"),
         ({"context_event_schema_version": "v1"}, "v1"),
         ({"context_event_schema_version": "future"}, "future"),
@@ -93,32 +92,22 @@ def test_resume_rejects_unsupported_schema_before_bootstrap_side_effects(
     actual_version: str,
 ) -> None:
     store = JsonlSessionStore(tmp_path / ".firstcoder")
-    if schema_payload is None:
-        store.append_event(
-            SessionEvent(
-                id="evt_metadata",
-                session_id="sess_legacy",
-                type="session_metadata_updated",
-                payload={"title": "Legacy"},
-            )
+    store.append_event(
+        SessionEvent(
+            id="evt_created",
+            session_id="sess_legacy",
+            type="session_created",
+            payload={"session_id": "sess_legacy", **schema_payload},
         )
-    else:
-        store.append_event(
-            SessionEvent(
-                id="evt_created",
-                session_id="sess_legacy",
-                type="session_created",
-                payload={"session_id": "sess_legacy", **schema_payload},
-            )
+    )
+    store.append_event(
+        SessionEvent(
+            id="evt_created_later",
+            session_id="sess_legacy",
+            type="session_created",
+            payload={"context_event_schema_version": "v2"},
         )
-        store.append_event(
-            SessionEvent(
-                id="evt_created_later",
-                session_id="sess_legacy",
-                type="session_created",
-                payload={"context_event_schema_version": "v2"},
-            )
-        )
+    )
     calls: list[str] = []
 
     def unexpected_bootstrap(**kwargs):
@@ -161,6 +150,41 @@ def test_resume_rejects_future_schema_before_parsing_later_events(tmp_path: Path
         ResumeService(store=store, project_root=tmp_path).resume("sess_future")
 
     assert caught.value.actual_version == "v3"
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "not-json\n",
+        '{"id":"evt_metadata","session_id":"sess_corrupt","type":"session_metadata_updated","payload":{}}\n',
+    ],
+)
+def test_resume_rejects_corrupt_log_without_valid_session_created(
+    tmp_path: Path,
+    contents: str,
+) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    path = store.sessions_dir / "sess_corrupt.jsonl"
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(SessionCorruptError):
+        ResumeService(store=store, project_root=tmp_path).resume("sess_corrupt")
+
+
+def test_schema_validation_rejects_corrupt_json_after_valid_session_created(
+    tmp_path: Path,
+) -> None:
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    path = store.sessions_dir / "sess_corrupt_tail.jsonl"
+    path.write_text(
+        '{"id":"evt_created","session_id":"sess_corrupt_tail","type":"session_created",'
+        '"payload":{"context_event_schema_version":"v2"}}\n'
+        "not-json\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SessionCorruptError, match="invalid JSON"):
+        validate_session_schema(store, "sess_corrupt_tail")
 
 
 def test_resume_service_rediscovers_current_project_skill_catalog(tmp_path: Path, monkeypatch) -> None:
@@ -258,7 +282,7 @@ def test_resume_service_restores_pending_permission_confirmation(tmp_path: Path)
         ]
     )
 
-    pending = AgentLoop(session=original, provider=provider).run_user_turn_interactive("写 README")
+    pending = AgentLoop(session=original, provider=provider)._run_user_turn_sync("写 README")
     assert pending.pending_input is not None
     result = ResumeService(
         store=store,
@@ -305,7 +329,7 @@ def test_resume_service_restores_pending_permission_even_after_grant_exists(tmp_
         ]
     )
 
-    pending = AgentLoop(session=original, provider=provider).run_user_turn_interactive("写 README")
+    pending = AgentLoop(session=original, provider=provider)._run_user_turn_sync("写 README")
     assert pending.pending_input is not None
     original.permission_manager.resolve_confirmation(
         original.pending_permission_execution.permission_request,

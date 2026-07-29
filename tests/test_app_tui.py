@@ -839,7 +839,7 @@ class FakeChatRunner:
         self.attachments: list[list[UserAttachment] | None] = []
         self.last_display_lines = []
 
-    def run_user_turn(
+    async def arun_user_turn(
         self,
         content: str,
         *,
@@ -851,8 +851,14 @@ class FakeChatRunner:
 
 
 class FakeDisplayChatRunner(FakeChatRunner):
-    def run_user_turn(self, content: str) -> ChatResponse:
+    async def arun_user_turn(
+        self,
+        content: str,
+        *,
+        attachments: list[UserAttachment] | None = None,
+    ) -> ChatResponse:
         self.inputs.append(content)
+        self.attachments.append(attachments)
         self.last_display_lines = ["Tool call: echo {}", "Tool result: echo success: ok", "done"]
         return ChatResponse(provider="fake", model="fake", content="done")
 

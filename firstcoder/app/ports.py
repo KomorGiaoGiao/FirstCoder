@@ -18,14 +18,14 @@ class CommandHandlerLike(Protocol):
 class ChatRunnerLike(Protocol):
     last_pending_input: object | None
 
-    def run_user_turn(
+    async def arun_user_turn(
         self,
         content: str,
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> Any: ...
 
-    def resume_with_user_input(self, request_id: str, answer: str) -> Any: ...
+    async def aresume_with_user_input(self, request_id: str, answer: str) -> Any: ...
 
 
 class CurrentSessionLike(Protocol):

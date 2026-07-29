@@ -272,7 +272,14 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
 
     decision = data.get("decision")
     basis_message_id = data.get("basis_message_id")
-    if not decision or not basis_message_id:
+    event_version = data.get("event_version")
+    strategy_version = data.get("strategy_version")
+    if (
+        not decision
+        or not basis_message_id
+        or event_version != CONTEXT_EVENT_SCHEMA_VERSION
+        or strategy_version != TASK_BOUNDARY_TOOL_VERSION
+    ):
         return None
 
     try:
@@ -292,7 +299,7 @@ def observation_from_tool_result_data(data: dict[str, object]) -> TaskBoundaryOb
         stable_count=int(data.get("stable_count") or 0),
         confirmation_reason=str(data.get("confirmation_reason") or "not_confirmed"),
         required_stable_count=int(data.get("required_stable_count") or 2),
-        event_version=str(data.get("event_version") or CONTEXT_EVENT_SCHEMA_VERSION),
-        strategy_version=str(data.get("strategy_version") or TASK_BOUNDARY_TOOL_VERSION),
+        event_version=str(event_version),
+        strategy_version=str(strategy_version),
         created_at=str(data.get("created_at") or ""),
     )

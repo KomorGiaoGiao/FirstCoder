@@ -692,18 +692,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             previous_tool_handler = self._install_tool_event_handler(token)
             self._preserve_turn_metrics()
             self._show_working_indicator("resuming with permission answer...")
-            async_resume = getattr(self.chat_runner, "aresume_with_user_input", None)
-            if async_resume is not None:
-                response = await async_resume(request_id, answer)
-                if self._is_current_chat_turn(token):
-                    self._write_chat_response(response)
-                return
-            resume = getattr(self.chat_runner, "resume_with_user_input", None)
-            if resume is None:
-                if self._is_current_chat_turn(token):
-                    self._write_line("Permission resume is not configured.", kind=TuiEntryKind.ERROR)
-                return
-            response = resume(request_id, answer)
+            response = await self.chat_runner.aresume_with_user_input(request_id, answer)
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -738,11 +727,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                     token=token,
                 )
             self._show_working_indicator("planning next step...")
-            async_runner = getattr(self.chat_runner, "arun_user_turn", None) if self.chat_runner else None
-            if async_runner is not None:
-                response = await async_runner(text, attachments=attachments) if attachments else await async_runner(text)
-            else:
-                response = self.chat_runner.run_user_turn(text, attachments=attachments) if attachments else self.chat_runner.run_user_turn(text)
+            response = (
+                await self.chat_runner.arun_user_turn(text, attachments=attachments)
+                if attachments
+                else await self.chat_runner.arun_user_turn(text)
+            )
         except asyncio.CancelledError:
             return
         except Exception as exc:

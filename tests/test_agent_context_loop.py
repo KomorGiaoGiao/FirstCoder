@@ -42,6 +42,18 @@ from firstcoder.tools.shell import create_shell_tool
 from firstcoder.tools.types import Tool, ToolResult
 
 
+def _run_streaming(loop: AgentLoop, content: str):
+    result = asyncio.run(loop.run_user_turn(content, streaming=True))
+    assert result.response is not None
+    return result.response
+
+
+def _run_sync(loop: AgentLoop, content: str):
+    result = asyncio.run(loop.run_user_turn(content))
+    assert result.response is not None
+    return result.response
+
+
 @dataclass
 class FakeProvider(ChatProvider):
     responses: list[ChatResponse]
@@ -567,7 +579,7 @@ def test_agent_loop_persists_provider_diagnostics_metadata(tmp_path) -> None:
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("读取 README")
 
     assistant = [message for message in store.rebuild_session_view("sess_test").messages if message.role == "assistant"][0]
     assert assistant.metadata["diagnostics"]["raw_finish_reason"] == "tool_calls"
@@ -587,7 +599,7 @@ def test_agent_loop_appends_user_and_assistant_messages(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="项目规则")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="收到")])
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn("你好")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("你好")
 
     assert result.content == "收到"
     view = store.rebuild_session_view("sess_test")
@@ -607,7 +619,7 @@ def test_agent_loop_projects_image_attachment_into_provider_request(tmp_path) ->
     session = AgentSession.create(store=store, session_id="sess_image_request")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="收到图片")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn(
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync(
         "描述图片",
         attachments=[attach_path(image)],
     )
@@ -625,7 +637,7 @@ def test_agent_loop_builds_context_with_system_prefix_without_storing_it(tmp_pat
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="AGENTS 规则")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("问题")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("问题")
 
     request = provider.requests[0]
     assert request.messages[0].role == "system"
@@ -643,7 +655,7 @@ def test_agent_loop_system_prefix_uses_provider_model_and_default_permission_pol
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="AGENTS 规则")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("问题")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("问题")
 
     system_prompt = provider.requests[0].messages[0].content
     assert '"model": "fake-model"' in system_prompt
@@ -656,7 +668,7 @@ def test_agent_loop_exposes_user_message_id_for_task_boundary(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("新需求")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("新需求")
 
     user_message_id = store.rebuild_session_view("sess_test").messages[0].id
     request_user_message = provider.requests[0].messages[-1]
@@ -681,7 +693,7 @@ def test_agent_loop_executes_tool_call_and_appends_tool_result(tmp_path) -> None
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider, tools=[_echo_tool()]).run_user_turn("调用工具")
+    result = AgentLoop(session=session, provider=provider, tools=[_echo_tool()])._run_user_turn_sync("调用工具")
 
     assert result.content == "完成"
     assert len(provider.requests) == 2
@@ -713,7 +725,7 @@ def test_sync_and_streaming_tool_loops_persist_equivalent_terminal_state(tmp_pat
     provider = StreamingProvider(responses) if streaming else FakeProvider(responses)
     loop = AgentLoop(session=session, provider=provider, tools=[_echo_tool()])
 
-    response = loop.run_user_turn_streaming_sync("调用工具") if streaming else loop.run_user_turn("调用工具")
+    response = _run_streaming(loop, "调用工具") if streaming else loop._run_user_turn_sync("调用工具")
 
     view = session.rebuild_view()
     assert response.content == "完成"
@@ -756,7 +768,7 @@ def test_agent_loop_runs_readonly_tool_calls_in_parallel_and_appends_results_in_
         tool_event_handler=tool_events.append,
     )
 
-    result = loop.run_user_turn("并发读")
+    result = loop._run_user_turn_sync("并发读")
 
     assert result.content == "完成"
     assert execution_intervals["view"][0] < execution_intervals["grep"][1]
@@ -806,7 +818,7 @@ def test_agent_loop_runs_bypass_allowed_tool_calls_in_parallel(tmp_path) -> None
         tool_event_handler=tool_events.append,
     )
 
-    result = loop.run_user_turn("bypass 并发")
+    result = loop._run_user_turn_sync("bypass 并发")
 
     assert result.content == "完成"
     assert execution_intervals["shell"][0] < execution_intervals["python_exec"][1]
@@ -849,7 +861,7 @@ def test_agent_loop_streaming_runs_readonly_tool_calls_in_parallel(tmp_path) -> 
         ],
     )
 
-    result = loop.run_user_turn_streaming_sync("并发读")
+    result = _run_streaming(loop, "并发读")
 
     assert result.content == "完成"
     assert execution_intervals["view"][0] < execution_intervals["grep"][1]
@@ -868,7 +880,7 @@ def test_agent_loop_streaming_text_persists_final_assistant_message(tmp_path) ->
     provider = StreamingProvider([ChatResponse(provider="fake-stream", model="fake-stream-model", content="你好")])
     loop = AgentLoop(session=session, provider=provider)
 
-    result = loop.run_user_turn_streaming_sync("你好")
+    result = _run_streaming(loop, "你好")
 
     assert result.content == "你好"
     assert [event.kind for event in loop.last_stream_events] == [
@@ -899,7 +911,7 @@ def test_agent_loop_streaming_tool_call_executes_after_message_completed(tmp_pat
     )
     loop = AgentLoop(session=session, provider=provider, tools=[_echo_tool()])
 
-    result = loop.run_user_turn_streaming_sync("调用工具")
+    result = _run_streaming(loop, "调用工具")
 
     assert result.content == "完成"
     assert len(provider.requests) == 2
@@ -946,7 +958,7 @@ async def test_agent_loop_streaming_tool_execution_does_not_block_event_loop(tmp
     )
     events: list[ToolExecutionEvent] = []
     loop = AgentLoop(session=session, provider=provider, tools=[tool], tool_event_handler=events.append)
-    task = asyncio.create_task(loop.run_user_turn_streaming("调用慢工具"))
+    task = asyncio.create_task(loop._run_user_turn_streaming("调用慢工具"))
 
     while not started.is_set():
         await asyncio.sleep(0.01)
@@ -982,7 +994,7 @@ def test_agent_loop_streaming_does_not_execute_tool_before_message_completed(tmp
     )
     provider = ObservingStreamingProvider(response=response, session=session)
 
-    AgentLoop(session=session, provider=provider, tools=[_echo_tool()]).run_user_turn_streaming_sync("调用工具")
+    _run_streaming(AgentLoop(session=session, provider=provider, tools=[_echo_tool()]), "调用工具")
 
     assert provider.tool_results_before_message_completed == 0
     view = store.rebuild_session_view("sess_stream_atomic")
@@ -994,7 +1006,7 @@ def test_agent_loop_streaming_incomplete_message_does_not_persist_assistant(tmp_
     session = AgentSession.create(store=store, session_id="sess_stream_incomplete", agents_md="")
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=IncompleteStreamingProvider()).run_user_turn_streaming_sync("你好")
+        _run_streaming(AgentLoop(session=session, provider=IncompleteStreamingProvider()), "你好")
 
     assert exc_info.value.kind == ProviderErrorKind.API_ERROR
     view = store.rebuild_session_view("sess_stream_incomplete")
@@ -1047,7 +1059,7 @@ def test_agent_loop_streaming_retries_once_after_prompt_too_long_compaction(tmp_
     )
     context_manager = PromptTooLongSuccessContextManager()
 
-    result = AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync("问题")
+    result = _run_streaming(AgentLoop(session=session, provider=provider, context_manager=context_manager), "问题")
 
     assert result.content == "ok"
     assert len(provider.requests) == 2
@@ -1065,7 +1077,7 @@ def test_agent_loop_streaming_prompt_too_long_retry_discards_failed_attempt_even
     context_manager = PromptTooLongSuccessContextManager()
     loop = AgentLoop(session=session, provider=provider, context_manager=context_manager)
 
-    result = loop.run_user_turn_streaming_sync("问题")
+    result = _run_streaming(loop, "问题")
 
     assert result.content == "ok"
     assert len(provider.requests) == 2
@@ -1088,7 +1100,7 @@ def test_agent_loop_streaming_retries_retryable_network_error_once(tmp_path) -> 
     )
     loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
 
-    result = loop.run_user_turn_streaming_sync("问题")
+    result = _run_streaming(loop, "问题")
 
     assert result.content == "ok"
     assert len(provider.requests) == 2
@@ -1117,7 +1129,7 @@ def test_agent_loop_streaming_falls_back_to_non_streaming_after_retryable_stream
     )
     loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
 
-    result = loop.run_user_turn_streaming_sync("问题")
+    result = _run_streaming(loop, "问题")
 
     assert result.content == "complete ok"
     assert len(provider.stream_requests) == 2
@@ -1145,7 +1157,7 @@ def test_agent_loop_streaming_ignores_returned_tool_calls_when_provider_without_
     )
 
     loop = AgentLoop(session=session, provider=provider)
-    response = loop.run_user_turn_streaming_sync("问题")
+    response = _run_streaming(loop, "问题")
 
     assert provider.requests[0].tools == []
     assert response.tool_calls == []
@@ -1166,7 +1178,7 @@ def test_agent_loop_streaming_second_prompt_too_long_discards_retry_attempt_even
     loop = AgentLoop(session=session, provider=provider, context_manager=context_manager)
 
     with pytest.raises(ProviderError) as exc_info:
-        loop.run_user_turn_streaming_sync("问题")
+        _run_streaming(loop, "问题")
 
     assert exc_info.value.kind == ProviderErrorKind.PROMPT_TOO_LONG
     assert len(provider.requests) == 2
@@ -1180,7 +1192,7 @@ def test_agent_loop_streaming_prompt_too_long_does_not_retry_when_compaction_fai
     context_manager = RecordingContextManager(status="failed", reason="l4_service_missing")
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn_streaming_sync("问题")
+        _run_streaming(AgentLoop(session=session, provider=provider, context_manager=context_manager), "问题")
 
     assert exc_info.value.kind == ProviderErrorKind.PROMPT_TOO_LONG
     assert len(provider.requests) == 1
@@ -1196,7 +1208,7 @@ def test_agent_loop_injects_stateful_task_boundary_tool(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("新问题")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("新问题")
 
     tools = provider.requests[0].tools
     user_message_id = store.rebuild_session_view("sess_test").messages[0].id
@@ -1214,7 +1226,7 @@ def test_agent_loop_sends_tool_schema_only_via_request_tools(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_tool_schema", agents_md="", tools=[_echo_tool()])
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("调用 echo")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("调用 echo")
 
     request = provider.requests[0]
     echo = next(tool for tool in request.tools if tool.name == "echo")
@@ -1269,7 +1281,7 @@ def test_agent_loop_exposes_only_searched_mcp_schemas_for_current_turn(tmp_path)
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn("Read issue 12")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("Read issue 12")
 
     first_names = {tool.name for tool in provider.requests[0].tools}
     second_names = {tool.name for tool in provider.requests[1].tools}
@@ -1311,8 +1323,8 @@ def test_agent_loop_clears_mcp_activation_on_next_user_turn(tmp_path) -> None:
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    loop.run_user_turn("Read issue 12")
-    loop.run_user_turn("Explain this local function")
+    loop._run_user_turn_sync("Read issue 12")
+    loop._run_user_turn_sync("Explain this local function")
 
     next_turn_names = {tool.name for tool in provider.requests[-1].tools}
     assert "mcp_tool_search" in next_turn_names
@@ -1346,7 +1358,7 @@ def test_agent_loop_rejects_guessed_mcp_tool_before_permission_or_transport(tmp_
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("Read issue 12")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("Read issue 12")
 
     assert caller.calls == []
     tool_part = next(
@@ -1400,7 +1412,7 @@ def test_agent_loop_streaming_keeps_same_mcp_visibility_rules(tmp_path) -> None:
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_streaming_sync("Read issue")
+    result = _run_streaming(AgentLoop(session=session, provider=provider), "Read issue")
 
     first_names = {tool.name for tool in provider.requests[0].tools}
     second_names = {tool.name for tool in provider.requests[1].tools}
@@ -1451,13 +1463,13 @@ def test_agent_loop_permission_resume_keeps_mcp_schema_active(tmp_path) -> None:
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    waiting = loop.run_user_turn_interactive("Read issue")
+    waiting = loop._run_user_turn_sync("Read issue")
 
     assert waiting.pending_input is not None
     assert "mcp__github__get_issue" in {
         tool.name for tool in provider.requests[1].tools
     }
-    result = loop.resume_with_user_input(waiting.pending_input.id, "allow_once")
+    result = loop._resume_with_user_input_sync(waiting.pending_input.id, "allow_once")
 
     assert result.response is not None
     assert result.response.content == "done"
@@ -1475,7 +1487,7 @@ def test_agent_loop_omits_tools_for_provider_without_tool_support(tmp_path) -> N
         capabilities=ProviderCapabilities(supports_tools=False),
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("问题")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("问题")
 
     assert provider.requests[0].tools == []
     system_message = provider.requests[0].messages[0].content
@@ -1499,7 +1511,7 @@ def test_agent_loop_ignores_returned_tool_calls_when_provider_without_tool_suppo
         capabilities=ProviderCapabilities(supports_tools=False),
     )
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn("问题")
+    response = AgentLoop(session=session, provider=provider)._run_user_turn_sync("问题")
 
     assert response.tool_calls == []
     assert response.finish_reason == "error"
@@ -1515,7 +1527,7 @@ def test_agent_loop_persists_task_boundary_observation_for_replay(tmp_path) -> N
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = BoundaryProvider()
 
-    AgentLoop(session=session, provider=provider).run_user_turn("换一个任务")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("换一个任务")
 
     event_types = [event.type for event in store.list_events("sess_test")]
     replayed = replay_runtime_state(store, "sess_test")
@@ -1529,7 +1541,7 @@ def test_agent_loop_initializes_active_task_hash_when_model_skips_task_boundary(
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("读取 README")
 
     events = store.list_events("sess_test")
     boundary_event = next(event for event in events if event.type == "task_boundary_observed")
@@ -1548,7 +1560,7 @@ def test_agent_loop_tags_initial_user_message_with_implicit_task_hash(tmp_path) 
     session = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
 
-    AgentLoop(session=session, provider=provider).run_user_turn("第一任务：" + "旧任务内容" * 80)
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("第一任务：" + "旧任务内容" * 80)
 
     view = store.rebuild_session_view("sess_test")
     user_part = next(message for message in view.messages if message.role == "user").parts[0]
@@ -1577,7 +1589,7 @@ def test_agent_loop_rejects_hidden_task_boundary_calls_from_main_model(tmp_path)
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("新任务")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("新任务")
 
     view = store.rebuild_session_view("sess_test")
     tool_result = next(message for message in view.messages if message.role == "tool").parts[0]
@@ -1596,7 +1608,7 @@ def test_agent_loop_passes_current_turn_into_context_manager(tmp_path) -> None:
     provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="ok")])
     context_manager = PromptTooLongSuccessContextManager()
 
-    AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn("新任务")
+    AgentLoop(session=session, provider=provider, context_manager=context_manager)._run_user_turn_sync("新任务")
 
     assert context_manager.calls
     assert context_manager.calls[0].current_turn == 1
@@ -1613,7 +1625,7 @@ def test_agent_loop_retries_once_after_prompt_too_long_compaction(tmp_path) -> N
     )
     context_manager = PromptTooLongSuccessContextManager()
 
-    result = AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn("问题")
+    result = AgentLoop(session=session, provider=provider, context_manager=context_manager)._run_user_turn_sync("问题")
 
     assert result.content == "ok"
     assert len(provider.requests) == 2
@@ -1636,7 +1648,7 @@ def test_agent_loop_prompt_too_long_retries_only_once(tmp_path) -> None:
     context_manager = PromptTooLongSuccessContextManager()
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn("问题")
+        AgentLoop(session=session, provider=provider, context_manager=context_manager)._run_user_turn_sync("问题")
 
     assert exc_info.value.kind == ProviderErrorKind.PROMPT_TOO_LONG
     assert len(provider.requests) == 2
@@ -1655,7 +1667,7 @@ def test_agent_loop_prompt_too_long_does_not_retry_when_compaction_fails(tmp_pat
     context_manager = RecordingContextManager(status="failed", reason="l4_service_missing")
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn("问题")
+        AgentLoop(session=session, provider=provider, context_manager=context_manager)._run_user_turn_sync("问题")
 
     assert exc_info.value.kind == ProviderErrorKind.PROMPT_TOO_LONG
     assert len(provider.requests) == 1
@@ -1673,7 +1685,7 @@ def test_agent_loop_does_not_retry_non_compaction_provider_error(tmp_path) -> No
     context_manager = RecordingContextManager()
 
     with pytest.raises(ProviderError) as exc_info:
-        AgentLoop(session=session, provider=provider, context_manager=context_manager).run_user_turn("问题")
+        AgentLoop(session=session, provider=provider, context_manager=context_manager)._run_user_turn_sync("问题")
 
     assert exc_info.value.kind == ProviderErrorKind.AUTH_ERROR
     assert len(provider.requests) == 1
@@ -1688,7 +1700,7 @@ def test_agent_loop_streaming_does_not_retry_non_compaction_provider_error(tmp_p
     loop = AgentLoop(session=session, provider=provider, context_manager=context_manager)
 
     with pytest.raises(ProviderError) as exc_info:
-        loop.run_user_turn_streaming_sync("问题")
+        _run_streaming(loop, "问题")
 
     assert exc_info.value.kind == ProviderErrorKind.AUTH_ERROR
     assert len(provider.requests) == 1
@@ -1701,11 +1713,11 @@ def test_agent_loop_resume_keeps_turn_counter_and_metadata(tmp_path) -> None:
     store = JsonlSessionStore(tmp_path)
     original = AgentSession.create(store=store, session_id="sess_test", agents_md="")
     first_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="第一轮")])
-    AgentLoop(session=original, provider=first_provider).run_user_turn("第一轮问题")
+    AgentLoop(session=original, provider=first_provider)._run_user_turn_sync("第一轮问题")
 
     resumed = AgentSession.resume(store=store, session_id="sess_test", agents_md="")
     second_provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="第二轮")])
-    AgentLoop(session=resumed, provider=second_provider).run_user_turn("第二轮问题")
+    AgentLoop(session=resumed, provider=second_provider)._run_user_turn_sync("第二轮问题")
 
     view = store.rebuild_session_view("sess_test")
     assert view.messages[0].parts[0].metadata["created_turn"] == 1
@@ -1802,7 +1814,7 @@ def test_main_provider_request_includes_latest_task_plan_snapshot_without_task_l
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("继续执行")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("继续执行")
 
     snapshots = [
         message.content
@@ -1856,7 +1868,7 @@ def test_main_provider_request_refreshes_task_plan_snapshot_after_update(tmp_pat
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("继续执行")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("继续执行")
 
     first_snapshot = next(
         message.content
@@ -1931,7 +1943,7 @@ def test_agent_loop_does_not_persist_unexecuted_tool_calls_after_round_limit(tmp
         provider=provider,
         tools=[_echo_tool()],
         limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=400, max_turn_seconds=3600),
-    ).run_user_turn("连续工具")
+    )._run_user_turn_sync("连续工具")
 
     assert not result.tool_calls
     assert "工具调用轮次达到上限" in result.content
@@ -1964,7 +1976,7 @@ def test_agent_loop_skips_classification_for_initial_task(tmp_path) -> None:
     session = AgentSession.create(store=store, session_id="sess_forced_boundary", agents_md="")
     provider = JsonBoundaryProvider(["ok"])
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn("读取 README")
+    response = AgentLoop(session=session, provider=provider)._run_user_turn_sync("读取 README")
 
     assert response.content == "ok"
     assert len(provider.requests) == 1
@@ -1987,8 +1999,8 @@ def test_agent_loop_retries_invalid_boundary_json_then_records_valid_observation
     provider = JsonBoundaryProvider(["初始化完成", "not json", "<boundary>", "ok"])
 
     loop = AgentLoop(session=session, provider=provider)
-    loop.run_user_turn("初始化任务")
-    loop.run_user_turn("读取 README")
+    loop._run_user_turn_sync("初始化任务")
+    loop._run_user_turn_sync("读取 README")
 
     user_message_id = store.rebuild_session_view("sess_unforced_boundary").messages[2].id
     assert len(provider.requests) == 4
@@ -2008,9 +2020,9 @@ def test_hidden_boundary_classification_counts_toward_provider_call_limit(tmp_pa
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=1, max_turn_seconds=None),
     )
-    loop.run_user_turn("初始化任务")
+    loop._run_user_turn_sync("初始化任务")
 
-    response = loop.run_user_turn("继续")
+    response = loop._run_user_turn_sync("继续")
 
     assert response.finish_reason == "provider_call_limit"
     assert len(provider.requests) == 2
@@ -2025,9 +2037,9 @@ def test_boundary_retry_cannot_exceed_provider_call_limit_before_main_request(tm
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=1, max_turn_seconds=None),
     )
-    loop.run_user_turn("初始化任务")
+    loop._run_user_turn_sync("初始化任务")
 
-    response = loop.run_user_turn("继续")
+    response = loop._run_user_turn_sync("继续")
 
     assert response.finish_reason == "provider_call_limit"
     assert len(provider.requests) == 2
@@ -2039,8 +2051,8 @@ def test_agent_loop_falls_back_to_uncertain_after_invalid_boundary_json(tmp_path
     provider = JsonBoundaryProvider(["初始化完成", "not json", "still not json", "invalid again", "ok"])
 
     loop = AgentLoop(session=session, provider=provider)
-    loop.run_user_turn("初始化任务")
-    loop.run_user_turn("读取 README")
+    loop._run_user_turn_sync("初始化任务")
+    loop._run_user_turn_sync("读取 README")
 
     observations = [event for event in store.list_events("sess_boundary_fallback") if event.type == "task_boundary_observed"]
     assert observations[-1].payload["decision"] == "uncertain"
@@ -2059,8 +2071,8 @@ def test_agent_loop_streaming_classifies_boundary_without_emitting_stream_events
     )
 
     loop = AgentLoop(session=session, provider=provider)
-    loop.run_user_turn_streaming_sync("初始化任务")
-    response = loop.run_user_turn_streaming_sync("读取 README")
+    _run_streaming(loop, "初始化任务")
+    response = _run_streaming(loop, "读取 README")
 
     assert response.content == "ok"
     assert provider.complete_requests[0].tools == []
@@ -2101,7 +2113,7 @@ def test_agent_loop_runs_task_plan_reconciliation_before_final_answer(tmp_path) 
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
-    ).run_user_turn("做一个多步骤任务")
+    )._run_user_turn_sync("做一个多步骤任务")
 
     assert response.content == "还需要跑测试，我继续。"
     assert len(provider.requests) == 3
@@ -2186,7 +2198,7 @@ def test_agent_loop_skips_task_plan_reconciliation_when_all_tasks_done(tmp_path)
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
-    ).run_user_turn("做一个多步骤任务")
+    )._run_user_turn_sync("做一个多步骤任务")
 
     assert response.content == "我完成了"
     assert len(provider.requests) == 2
@@ -2225,7 +2237,7 @@ def test_agent_loop_skips_task_plan_reconciliation_when_all_tasks_completed(tmp_
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
-    ).run_user_turn("做一个多步骤任务")
+    )._run_user_turn_sync("做一个多步骤任务")
 
     assert response.content == "我完成了"
     assert len(provider.requests) == 2
@@ -2290,7 +2302,7 @@ def test_agent_loop_executes_incremental_task_plan_updates_after_reconciliation(
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=10, max_provider_calls=10, max_turn_seconds=None),
-    ).run_user_turn("做一个多步骤任务")
+    )._run_user_turn_sync("做一个多步骤任务")
 
     assert response.content == "现在完成了"
     view = store.rebuild_session_view("sess_task_plan_self_check_tools")
@@ -2339,7 +2351,7 @@ def test_agent_loop_runs_task_plan_reconciliation_at_most_once_per_user_turn(tmp
         ]
     )
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn("执行任务")
+    response = AgentLoop(session=session, provider=provider)._run_user_turn_sync("执行任务")
 
     assert response.content == "仍有未完成项"
     reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished linear task plan" in message.content for message in request.messages)]
@@ -2369,8 +2381,8 @@ def test_agent_loop_resets_task_plan_reconciliation_for_each_user_turn(tmp_path)
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    first = loop.run_user_turn("第一轮继续任务")
-    second = loop.run_user_turn("第二轮继续任务")
+    first = loop._run_user_turn_sync("第一轮继续任务")
+    second = loop._run_user_turn_sync("第二轮继续任务")
 
     assert first.content == "第一轮仍有未完成任务"
     assert second.content == "第二轮仍有未完成任务"
@@ -2407,7 +2419,7 @@ def test_agent_loop_does_not_reconcile_task_plan_after_tool_round_limit(tmp_path
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=5, max_turn_seconds=None),
-    ).run_user_turn("执行任务")
+    )._run_user_turn_sync("执行任务")
 
     assert response.finish_reason == "tool_round_limit"
     assert len(provider.requests) == 1
@@ -2443,7 +2455,7 @@ def test_agent_loop_converts_provider_limit_during_task_plan_reconciliation_to_s
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=2, max_turn_seconds=None),
-    ).run_user_turn("执行任务")
+    )._run_user_turn_sync("执行任务")
 
     assert response.finish_reason == "provider_call_limit"
     assert len(provider.requests) == 2
@@ -2480,7 +2492,7 @@ def test_agent_loop_converts_timeout_during_task_plan_reconciliation_to_stop_res
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=5),
         clock=FakeClock([0.0, 0.0, 0.0, 6.0]),
-    ).run_user_turn("执行任务")
+    )._run_user_turn_sync("执行任务")
 
     assert response.finish_reason == "turn_timeout"
     assert len(provider.requests) == 2
@@ -2518,7 +2530,7 @@ def test_agent_loop_converts_cancellation_during_task_plan_reconciliation_to_int
         session=session,
         provider=provider,
         cancellation_token=token,
-    ).run_user_turn("执行任务")
+    )._run_user_turn_sync("执行任务")
 
     assert response.finish_reason == "interrupted"
     assert len(provider.requests) == 2
@@ -2586,7 +2598,7 @@ def test_agent_loop_propagates_prewrite_review_from_task_plan_reconciliation_wit
     )
 
     loop = AgentLoop(session=session, provider=provider)
-    result = loop.run_user_turn_interactive("完成任务")
+    result = loop._run_user_turn_sync("完成任务")
 
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     assert result.pending_input is not None
@@ -2594,7 +2606,7 @@ def test_agent_loop_propagates_prewrite_review_from_task_plan_reconciliation_wit
     call_ids = [part.metadata["tool_call_id"] for message in store.rebuild_session_view("sess_task_plan_review_pause").messages for part in message.parts if part.kind == "tool_call"]
     assert call_ids.count("call_write_from_self_check") == 1
 
-    resumed = loop.resume_with_user_input(result.pending_input.id, "allow_once")
+    resumed = loop._resume_with_user_input_sync(result.pending_input.id, "allow_once")
 
     assert resumed.status == AgentTurnStatus.COMPLETED
     assert resumed.response is not None
@@ -2654,9 +2666,9 @@ def test_permission_resume_does_not_repeat_task_plan_reconciliation_for_same_use
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    paused = loop.run_user_turn_interactive("完成任务")
+    paused = loop._run_user_turn_sync("完成任务")
     assert paused.pending_input is not None
-    resumed = loop.resume_with_user_input(paused.pending_input.id, "allow_once")
+    resumed = loop._resume_with_user_input_sync(paused.pending_input.id, "allow_once")
 
     assert resumed.response is not None
     assert resumed.response.content == "写入完成，但任务计划尚未更新"
@@ -2708,10 +2720,16 @@ def test_agent_loop_streaming_propagates_prewrite_review_from_task_plan_reconcil
         ]
     )
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn_streaming_sync("完成任务")
+    response = asyncio.run(
+        AgentLoop(session=session, provider=provider).run_user_turn(
+            "完成任务",
+            streaming=True,
+        )
+    )
 
-    assert response.finish_reason == AgentTurnStatus.WAITING_FOR_USER_INPUT.value
-    pending = response.raw["pending_input"]
+    assert response.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
+    pending = response.pending_input
+    assert pending is not None
     assert pending.payload["pending_tool_call"]["id"] == "call_stream_write_from_self_check"
     call_ids = [part.metadata["tool_call_id"] for message in store.rebuild_session_view("sess_stream_task_plan_review_pause").messages for part in message.parts if part.kind == "tool_call"]
     assert call_ids.count("call_stream_write_from_self_check") == 1
@@ -2747,7 +2765,7 @@ def test_agent_loop_injects_guidance_before_next_provider_call(tmp_path) -> None
         provider=provider,
         tools=[_echo_tool()],
         guidance_provider=drain_guidance,
-    ).run_user_turn("开始检查")
+    )._run_user_turn_sync("开始检查")
 
     assert response.content == "收到，我继续检查测试。"
     assert len(provider.requests) == 2
@@ -2819,7 +2837,7 @@ def test_agent_loop_does_not_persist_task_plan_reconciliation_as_user_message(tm
         ]
     )
 
-    AgentLoop(session=session, provider=provider).run_user_turn("完成多步骤任务")
+    AgentLoop(session=session, provider=provider)._run_user_turn_sync("完成多步骤任务")
 
     projected_user_messages = [message.content for request in provider.requests for message in request.messages if message.role == "user"]
     assert all("unfinished linear task plan" not in text for text in projected_user_messages)
@@ -2841,8 +2859,8 @@ def test_agent_loop_resets_provider_call_count_for_each_user_turn(tmp_path) -> N
         limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=2, max_turn_seconds=None),
     )
 
-    first = loop.run_user_turn("第一轮")
-    second = loop.run_user_turn("第二轮")
+    first = loop._run_user_turn_sync("第一轮")
+    second = loop._run_user_turn_sync("第二轮")
 
     assert first.content == "first"
     assert second.content == "second"
@@ -2880,7 +2898,7 @@ def test_agent_loop_allows_unlimited_tool_rounds_when_limit_is_none(tmp_path) ->
             max_provider_calls=10,
             max_turn_seconds=None,
         ),
-    ).run_user_turn("调用两轮工具")
+    )._run_user_turn_sync("调用两轮工具")
 
     assert response.content == "done"
     assert response.finish_reason != "tool_round_limit"
@@ -2914,7 +2932,7 @@ def test_agent_loop_continues_after_successful_verification(tmp_path) -> None:
         provider=provider,
         tools=[_success_tool(), _echo_tool()],
         limits=AgentLoopLimits.default(),
-    ).run_user_turn("修测试")
+    )._run_user_turn_sync("修测试")
 
     assert response.content == "Tests pass after diff review."
     assert len(provider.requests) == 3
@@ -2951,7 +2969,7 @@ def test_agent_loop_does_not_force_final_answer_after_failed_verification(tmp_pa
         provider=provider,
         tools=[_failed_test_tool()],
         limits=AgentLoopLimits.default(),
-    ).run_user_turn("修测试")
+    )._run_user_turn_sync("修测试")
 
     assert response.content == "继续修复"
     assert provider.requests[1].tool_choice == "auto"
@@ -2981,7 +2999,7 @@ def test_agent_loop_stops_when_provider_call_limit_is_reached(tmp_path) -> None:
             max_provider_calls=1,
             max_turn_seconds=None,
         ),
-    ).run_user_turn("调用工具")
+    )._run_user_turn_sync("调用工具")
 
     assert response.finish_reason == "provider_call_limit"
     assert "provider 调用次数达到上限" in response.content
@@ -3012,7 +3030,7 @@ def test_agent_loop_stops_when_turn_timeout_is_reached(tmp_path) -> None:
             max_turn_seconds=5,
         ),
         clock=FakeClock([0.0, 0.0, 6.0]),
-    ).run_user_turn("调用工具")
+    )._run_user_turn_sync("调用工具")
 
     assert response.finish_reason == "turn_timeout"
     assert "本轮任务耗时达到上限" in response.content
@@ -3054,12 +3072,12 @@ def test_agent_loop_runs_compact_when_task_boundary_confirms_change(tmp_path) ->
         session=session,
         provider=provider,
         context_manager=context_manager,
-    ).run_user_turn("换一个任务")
+    )._run_user_turn_sync("换一个任务")
     AgentLoop(
         session=session,
         provider=provider,
         context_manager=context_manager,
-    ).run_user_turn("继续处理")
+    )._run_user_turn_sync("继续处理")
 
     triggers = [call.trigger for call in context_manager.calls]
     assert ContextWindowTrigger.TASK_HASH_CHANGED in triggers
@@ -3088,7 +3106,7 @@ def test_agent_loop_runs_auto_once_before_each_main_provider_request(tmp_path) -
         provider=provider,
         tools=[_echo_tool()],
         context_manager=context_manager,
-    ).run_user_turn("调用大工具")
+    )._run_user_turn_sync("调用大工具")
 
     auto_calls = [
         call
@@ -3160,7 +3178,7 @@ def test_agent_loop_interactive_pauses_on_ask_user(tmp_path) -> None:
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("部署")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("部署")
 
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     assert result.response is None
@@ -3207,7 +3225,7 @@ def test_agent_loop_skips_remaining_parallel_tools_when_waiting_for_user(tmp_pat
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("需要确认")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("需要确认")
 
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     view = store.rebuild_session_view("sess_parallel_ask")
@@ -3245,7 +3263,7 @@ def test_agent_loop_permission_pause_does_not_append_confirmation_tool_result(tm
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("写 README")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("写 README")
 
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     assert result.pending_input is not None
@@ -3298,7 +3316,7 @@ def test_agent_loop_bypass_mode_emits_prewrite_review_and_executes_without_confi
         session=session,
         provider=provider,
         tool_event_handler=events.append,
-    ).run_user_turn_interactive("写 README")
+    )._run_user_turn_sync("写 README")
 
     assert result.status == AgentTurnStatus.COMPLETED
     assert result.pending_input is None
@@ -3341,11 +3359,14 @@ def test_agent_loop_streaming_bypass_mode_emits_prewrite_review_without_confirma
     )
 
     events: list[ToolExecutionEvent] = []
-    response = AgentLoop(
-        session=session,
-        provider=provider,
-        tool_event_handler=events.append,
-    ).run_user_turn_streaming_sync("写 README")
+    response = _run_streaming(
+        AgentLoop(
+            session=session,
+            provider=provider,
+            tool_event_handler=events.append,
+        ),
+        "写 README",
+    )
 
     assert response.content == "写好了"
     assert session.pending_permission_execution is None
@@ -3385,7 +3406,7 @@ def test_agent_loop_bypass_mode_blocks_mutation_when_prewrite_review_fails(tmp_p
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("修改 app.py")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("修改 app.py")
 
     assert result.status == AgentTurnStatus.COMPLETED
     assert result.pending_input is None
@@ -3415,7 +3436,7 @@ def test_agent_loop_shell_permission_does_not_claim_precomputed_diff(tmp_path) -
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("运行命令")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("运行命令")
 
     assert result.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
     assert result.pending_input is not None
@@ -3451,7 +3472,7 @@ def test_agent_loop_blocks_mutation_when_prewrite_review_cannot_be_built(tmp_pat
         ]
     )
 
-    result = AgentLoop(session=session, provider=provider).run_user_turn_interactive("修改 app.py")
+    result = AgentLoop(session=session, provider=provider)._run_user_turn_sync("修改 app.py")
 
     assert result.status == AgentTurnStatus.COMPLETED
     assert result.pending_input is None
@@ -3493,9 +3514,9 @@ def test_agent_loop_permission_deny_appends_denied_result_and_continues(tmp_path
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    result = loop.resume_with_user_input(pending.id, "deny")
+    result = loop._resume_with_user_input_sync(pending.id, "deny")
 
     assert result.status == AgentTurnStatus.COMPLETED
     assert result.response is not None
@@ -3542,9 +3563,9 @@ def test_permission_resume_preserves_provider_call_budget_for_same_user_turn(tmp
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=1, max_turn_seconds=None),
     )
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    resumed = loop.resume_with_user_input(pending.id, "deny")
+    resumed = loop._resume_with_user_input_sync(pending.id, "deny")
 
     assert resumed.response is not None
     assert resumed.response.finish_reason == "provider_call_limit"
@@ -3583,9 +3604,9 @@ def test_permission_resume_preserves_turn_start_time_for_same_user_turn(tmp_path
         clock=FakeClock([0.0, 0.0, 6.0]),
     )
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    resumed = loop.resume_with_user_input(pending.id, "allow_once")
+    resumed = loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     assert resumed.response is not None
     assert resumed.response.finish_reason == "turn_timeout"
@@ -3624,9 +3645,9 @@ def test_permission_resume_preserves_tool_round_budget_for_same_user_turn(tmp_pa
         limits=AgentLoopLimits(max_tool_rounds=1, max_provider_calls=5, max_turn_seconds=None),
     )
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    resumed = loop.resume_with_user_input(pending.id, "deny")
+    resumed = loop._resume_with_user_input_sync(pending.id, "deny")
 
     assert resumed.response is not None
     assert resumed.response.finish_reason == "tool_round_limit"
@@ -3661,9 +3682,9 @@ def test_agent_loop_permission_reject_with_feedback_returns_feedback_to_model(tm
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    result = loop.resume_with_user_input(pending.id, "reject_with_feedback: 请保留原标题")
+    result = loop._resume_with_user_input_sync(pending.id, "reject_with_feedback: 请保留原标题")
 
     assert result.response is not None
     assert result.response.content == "我会按反馈重新修改"
@@ -3702,9 +3723,9 @@ def test_agent_loop_permission_allow_once_executes_without_grant(tmp_path) -> No
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    result = loop.resume_with_user_input(pending.id, "allow_once")
+    result = loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     assert result.response is not None
     assert result.response.content == "写好了"
@@ -3744,10 +3765,10 @@ def test_agent_loop_permission_allow_once_rejects_stale_prewrite_review(tmp_path
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
     (tmp_path / "README.md").write_text("external change", encoding="utf-8")
-    result = loop.resume_with_user_input(pending.id, "allow_once")
+    result = loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     assert result.response is not None
     assert result.response.content == "预览已过期，未写入"
@@ -3786,9 +3807,9 @@ def test_agent_loop_permission_allow_always_adds_grant_and_executes(tmp_path) ->
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
-    loop.resume_with_user_input(pending.id, "allow_always_same_scope")
+    loop._resume_with_user_input_sync(pending.id, "allow_always_same_scope")
 
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "hello"
     assert session.permission_manager is not None
@@ -3825,8 +3846,8 @@ def test_agent_loop_permission_resume_rejects_unknown_request_id(tmp_path) -> No
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    loop.run_user_turn_interactive("写 README")
-    result = loop.resume_with_user_input("perm_wrong", "allow_once")
+    loop._run_user_turn_sync("写 README")
+    result = loop._resume_with_user_input_sync("perm_wrong", "allow_once")
 
     assert result.response is not None
     assert result.response.finish_reason == "error"
@@ -3862,8 +3883,8 @@ def test_agent_loop_permission_pending_blocks_new_user_turn_until_resolved(tmp_p
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    first = loop.run_user_turn_interactive("写 README")
-    second = loop.run_user_turn_interactive("先别管权限，我有新问题")
+    first = loop._run_user_turn_sync("写 README")
+    second = loop._run_user_turn_sync("先别管权限，我有新问题")
 
     assert first.pending_input is not None
     assert second.status == AgentTurnStatus.WAITING_FOR_USER_INPUT
@@ -3905,9 +3926,9 @@ def test_agent_loop_permission_resume_skips_remaining_parallel_tools(tmp_path) -
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README，然后 echo").pending_input
+    pending = loop._run_user_turn_sync("写 README，然后 echo").pending_input
     assert pending is not None
-    loop.resume_with_user_input(pending.id, "allow_once")
+    loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     view = store.rebuild_session_view("sess_perm_parallel")
     assert [message.role for message in view.messages] == ["user", "assistant", "tool", "tool", "assistant"]
@@ -3948,14 +3969,14 @@ def test_agent_loop_permission_resume_uses_local_pending_not_ui_payload(tmp_path
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
     pending.payload["pending_tool_call"] = {
         "id": "call_fake",
         "name": "write",
         "arguments": {"path": "pwned.txt", "content": "tampered"},
     }
-    loop.resume_with_user_input(pending.id, "allow_once")
+    loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "safe"
     assert not (tmp_path / "pwned.txt").exists()
@@ -3992,11 +4013,11 @@ def test_agent_loop_permission_resume_ignores_nested_ui_argument_tampering(tmp_p
     )
     loop = AgentLoop(session=session, provider=provider)
 
-    pending = loop.run_user_turn_interactive("写 README").pending_input
+    pending = loop._run_user_turn_sync("写 README").pending_input
     assert pending is not None
     pending.payload["pending_tool_call"]["arguments"]["path"] = "pwned.txt"
     pending.payload["pending_tool_call"]["arguments"]["content"] = "tampered"
-    loop.resume_with_user_input(pending.id, "allow_once")
+    loop._resume_with_user_input_sync(pending.id, "allow_once")
 
     assert (tmp_path / "README.md").read_text(encoding="utf-8") == "safe"
     assert not (tmp_path / "pwned.txt").exists()
@@ -4041,7 +4062,7 @@ def test_agent_loop_reconciles_unfinished_dag_task_plan_before_final_answer(tmp_
         session=session,
         provider=provider,
         limits=AgentLoopLimits(max_tool_rounds=5, max_provider_calls=5, max_turn_seconds=None),
-    ).run_user_turn("做一个有依赖的任务")
+    )._run_user_turn_sync("做一个有依赖的任务")
 
     assert response.content == "还需要完成 Code 节点。"
     assert len(provider.requests) == 3
@@ -4089,7 +4110,7 @@ def test_agent_loop_runs_dag_task_plan_reconciliation_at_most_once_per_user_turn
         ]
     )
 
-    response = AgentLoop(session=session, provider=provider).run_user_turn("执行 DAG 任务")
+    response = AgentLoop(session=session, provider=provider)._run_user_turn_sync("执行 DAG 任务")
 
     assert response.content == "仍有未完成图节点"
     reconciliation_requests = [request for request in provider.requests if any(message.role == "system" and "unfinished dag task plan" in message.content for message in request.messages)]

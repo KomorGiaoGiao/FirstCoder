@@ -1,3 +1,5 @@
+import pytest
+
 from firstcoder.context.checkpoint import Checkpoint, CheckpointIndex
 from firstcoder.context.versions import CHECKPOINT_STRATEGY_VERSION
 
@@ -96,3 +98,33 @@ def test_checkpoint_round_trip_dict_keeps_strategy_version() -> None:
 
     assert restored == checkpoint
     assert restored.strategy_version == CHECKPOINT_STRATEGY_VERSION
+
+
+def test_checkpoint_from_dict_rejects_missing_strategy_version() -> None:
+    payload = Checkpoint(
+        id="ckpt_1",
+        session_id="sess_test",
+        summary="摘要",
+        tail_start_message_id="msg_2",
+        covered_until_message_id="msg_1",
+        source_fingerprint="source_1",
+    ).to_dict()
+    payload.pop("strategy_version")
+
+    with pytest.raises(ValueError, match="strategy_version"):
+        Checkpoint.from_dict(payload)
+
+
+def test_checkpoint_from_dict_rejects_unknown_strategy_version() -> None:
+    payload = Checkpoint(
+        id="ckpt_1",
+        session_id="sess_test",
+        summary="摘要",
+        tail_start_message_id="msg_2",
+        covered_until_message_id="msg_1",
+        source_fingerprint="source_1",
+    ).to_dict()
+    payload["strategy_version"] = "future"
+
+    with pytest.raises(ValueError, match="strategy_version"):
+        Checkpoint.from_dict(payload)
