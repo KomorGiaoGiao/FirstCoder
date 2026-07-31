@@ -14,7 +14,7 @@ dependencies = [
     "openai",
     "anthropic",
     "anyio",
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2",
     "python-dotenv",
     "PyYAML",
     "tomlkit",

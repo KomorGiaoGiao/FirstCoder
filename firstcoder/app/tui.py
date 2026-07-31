@@ -338,6 +338,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
     def _finish_chat_turn(self, token: int) -> None:
         if not self._is_current_chat_turn(token):
             return
+        self._refresh_task_plan_panel_from_current_session()
         self._chat_busy = False
         self._chat_worker = None
         if getattr(self.chat_runner, "last_pending_input", None) is None:

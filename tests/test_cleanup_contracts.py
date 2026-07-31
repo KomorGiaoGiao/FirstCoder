@@ -7,6 +7,7 @@ from firstcoder.agent.loop import AgentLoop
 from firstcoder.config import AppConfig
 from firstcoder.context import token_budget
 from firstcoder.mcp.manager import McpManager
+from firstcoder.mcp import transport as mcp_transport
 from firstcoder.providers import factory as provider_factory
 
 
@@ -34,4 +35,10 @@ def test_pyproject_is_the_single_production_dependency_manifest() -> None:
     dependencies = project["project"]["dependencies"]
 
     assert "pydantic" not in dependencies
+    assert "mcp>=1.28.1,<2" in dependencies
     assert not (ROOT / "requirements.txt").exists()
+
+
+def test_mcp_transport_uses_the_supported_streamable_http_client() -> None:
+    assert hasattr(mcp_transport, "streamable_http_client")
+    assert not hasattr(mcp_transport, "streamablehttp_client")

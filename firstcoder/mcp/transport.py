@@ -8,7 +8,8 @@ from typing import Any, Mapping, Protocol
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 from firstcoder.mcp.models import McpLocalServerConfig, McpRemoteServerConfig, McpToolDescription
 
@@ -121,5 +122,6 @@ class _StreamableHttpMcpTransport(_SdkMcpTransport):
         self._config = config
 
     async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
-        read_stream, write_stream, _ = await stack.enter_async_context(streamablehttp_client(self._config.url, headers=dict(self._config.headers)))
+        http_client = await stack.enter_async_context(create_mcp_http_client(headers=dict(self._config.headers)))
+        read_stream, write_stream, _ = await stack.enter_async_context(streamable_http_client(self._config.url, http_client=http_client))
         return read_stream, write_stream
