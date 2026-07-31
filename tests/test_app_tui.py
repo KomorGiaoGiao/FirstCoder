@@ -2370,7 +2370,7 @@ def test_firstcoder_app_replays_dag_task_plan_from_current_session_view(monkeypa
     assert panel.updates[-1] == ("Task Plan · dag\n" "Level 0 · parallel\n" "  [✓] 调研 A (a)\n" "  [~] 调研 B (b)\n" "Level 1\n" "  [!] 汇总 (c) · depends on: a, b")
 
 
-def test_firstcoder_app_reconciles_task_plan_from_session_instead_of_tool_result(monkeypatch) -> None:
+def test_firstcoder_app_refreshes_task_plan_immediately_after_successful_plan_tool(monkeypatch) -> None:
     runner = FakeToolEventAsyncChatRunner()
     output = FakeOutput()
     activity = FakeActivity()
@@ -2412,11 +2412,6 @@ def test_firstcoder_app_reconciles_task_plan_from_session_instead_of_tool_result
         )
     )
     app._restore_tool_event_handler(previous_handler)
-
-    assert panel.updates == []
-
-    token = app._next_chat_turn_token()
-    app._finish_chat_turn(token)
 
     assert panel.updates[-1] == "Task Plan · linear\n[~] 来自会话"
 

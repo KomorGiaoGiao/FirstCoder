@@ -212,6 +212,8 @@ class FirstCoderViewMixin:
             self._live_tool_events_seen = True
             self._call_ui_thread(self._close_stream_segment_for_tool)
             self._call_ui_thread(self._record_tool_activity, event)
+            if tool_name in {"task_create", "task_update", "task_revise"} and str(getattr(event, "kind", "") or "") == "finished":
+                self._call_ui_thread(self._refresh_task_plan_panel_from_current_session)
             self._call_ui_thread(
                 self._write_line,
                 line,
