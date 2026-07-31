@@ -14,6 +14,8 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
+import anyio
+
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.events import Key
@@ -118,6 +120,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._shutdown_called = False
         self._chat_busy = False
         self._chat_worker = None
+        self._compact_worker = None
         self._chat_turn_token = 0
         self._active_chat_turn: _ActiveChatTurn | None = None
         self._last_escape_at = 0.0
@@ -224,6 +227,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 self._write_line("Command handler is not configured.", kind=TuiEntryKind.ERROR)
                 return
 
+            if " ".join(text.split()) == "/compact":
+                self._submit_manual_compact(text)
+                return
+
             result = self.command_handler.handle(text)
             if result.handled:
                 self._write_line(result.output, kind=TuiEntryKind.COMMAND)
@@ -235,6 +242,37 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
 
         self._staged_attachments.clear()
         self._submit_chat_text(text, attachments=attachments)
+
+    def _submit_manual_compact(self, text: str) -> None:
+        if self._chat_busy:
+            self._write_line("Chat is still running. Please wait before compacting context.", kind=TuiEntryKind.SYSTEM)
+            return
+        if self._compact_worker is not None:
+            self._write_line("Manual compact is already running.", kind=TuiEntryKind.SYSTEM)
+            return
+        self._set_activity("compacting context...")
+        self._write_line("Manual compact started.", kind=TuiEntryKind.SYSTEM)
+        self._compact_worker = self.run_worker(self._run_manual_compact_command(text))
+
+    async def _run_manual_compact_command(self, text: str) -> None:
+        try:
+            assert self.command_handler is not None
+            result = await anyio.to_thread.run_sync(self.command_handler.handle, text)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self._write_line(f"Manual compact error: {exc}", kind=TuiEntryKind.ERROR)
+            return
+        finally:
+            self._compact_worker = None
+
+        if result.handled:
+            self._write_line(result.output, kind=TuiEntryKind.COMMAND)
+            self._handle_command_action(result.action, output=result.output)
+            self._refresh_session_subtitle()
+        else:
+            self._write_line(f"Unknown command: {text}", kind=TuiEntryKind.ERROR)
+        self._set_activity("done")
 
     async def on_composer_text_area_submitted(self, event: ComposerTextArea.Submitted) -> None:
         event.stop()
@@ -402,6 +440,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
     def _submit_chat_text(self, text: str, *, attachments: list[UserAttachment] | None = None) -> None:
         if self.chat_runner is None:
             self._write_line("普通聊天入口尚未接入 AgentLoop。", kind=TuiEntryKind.ERROR)
+            return
+
+        if self._compact_worker is not None:
+            self._write_line("Manual compact is still running. Please wait before sending a chat message.", kind=TuiEntryKind.SYSTEM)
             return
 
         if self._chat_busy:

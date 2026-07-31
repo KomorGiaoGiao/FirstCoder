@@ -1,5 +1,7 @@
 import asyncio
 
+import threading
+
 import pytest
 from rich.text import Text
 from textual import events
@@ -344,6 +346,16 @@ class RecordingCommandHandler:
         return CommandResult(handled=False)
 
 
+class BlockingCompactCommandHandler:
+    def __init__(self) -> None:
+        self.call_thread_id: int | None = None
+
+    def handle(self, text: str) -> CommandResult:
+        assert text == "/compact"
+        self.call_thread_id = threading.get_ident()
+        return CommandResult(handled=True, output="Manual compact success")
+
+
 @pytest.mark.parametrize(
     ("elapsed_seconds", "expected"),
     [
@@ -382,6 +394,25 @@ def test_firstcoder_app_can_be_created_with_command_handler() -> None:
 
     assert app.command_handler is handler
     assert app.config.title == "TestCoder"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_firstcoder_app_runs_manual_compact_command_without_blocking_ui() -> None:
+    handler = BlockingCompactCommandHandler()
+    app = FirstCoderApp(command_handler=handler)
+
+    ui_thread_id = threading.get_ident()
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press(*"/compact")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert handler.call_thread_id is not None
+        assert handler.call_thread_id != ui_thread_id
+        assert "Manual compact success" in _static_output_text(app)
+
+    assert handler.call_thread_id is not None
 
 
 @pytest.mark.anyio
