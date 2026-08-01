@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from rich.markup import escape
 
-PROVIDER_NAME = "Yuren"
+PROVIDER_NAMES = frozenset({"Yuren", "yurenapi"})
 GLOW_INTERVAL_SECONDS = 0.18
 MODEL_GLOW_PALETTES: dict[str, tuple[str, ...]] = {
     # GPT-5.6 celestial trio
@@ -36,7 +36,7 @@ MODEL_GLOW_PALETTES: dict[str, tuple[str, ...]] = {
 def model_glow_palette(provider: str, model: str) -> tuple[str, ...] | None:
     """Return the animated palette for a supported Yuren model, else None."""
 
-    if provider != PROVIDER_NAME:
+    if provider not in PROVIDER_NAMES:
         return None
     return MODEL_GLOW_PALETTES.get(model)
 

@@ -450,7 +450,7 @@ def test_firstcoder_app_topbar_colors_each_permission_mode(mode, color) -> None:
     assert "sess_test" not in app._topbar_text()
 
 
-def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> None:
+def test_firstcoder_app_topbar_shows_yurenapi_glow_and_hides_session_id() -> None:
     app = FirstCoderApp(
         current_session=FakeSession(),
         config=FirstCoderTuiConfig(
@@ -460,11 +460,11 @@ def test_firstcoder_app_topbar_shows_a_green_provider_and_hides_session_id() -> 
         ),
     )
 
-    assert app._topbar_text() == (
-        "[#7bba55]FirstCoder[/]   [#303238]·[/]   [#7bba55]idle · ready[/]   "
-        "[#303238]·[/]   [#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]   "
-        "[#303238]·[/]   [#cfd1d6]standard[/]   [#303238]·[/]   [#6e6d72]cwd FirstCoder[/]"
-    )
+    text = app._topbar_text()
+
+    assert Text.from_markup(text).plain == "FirstCoder   ·   idle · ready   ·   yurenapi/gpt-5.5   ·   standard   ·   cwd FirstCoder"
+    assert "[#7eb6ff]r[/]" in text
+    assert "sess_test" not in text
 
 
 @pytest.mark.parametrize(
@@ -497,8 +497,9 @@ def test_supported_yuren_models_use_distinct_moving_colour_bands(model: str, col
 def test_other_provider_names_keep_the_standard_green() -> None:
     assert _provider_name_markup("OpenAI", glow_frame=4) == "[#7bba55]OpenAI[/]"
     assert _provider_model_markup("OpenAI", "gpt-5.6", glow_frame=4) == "[#7bba55]OpenAI[/][#6e6d72]/gpt-5.6[/]"
-    # Same model ids only glow under the Yuren provider display name.
-    assert _provider_model_markup("yurenapi", "gpt-5.5", glow_frame=0) == ("[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]")
+    yurenapi_glow = _provider_model_markup("yurenapi", "gpt-5.5", glow_frame=0)
+    assert Text.from_markup(yurenapi_glow).plain == "yurenapi/gpt-5.5"
+    assert yurenapi_glow != "[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]"
     assert _provider_model_markup("OpenAI", "grok-4.5", glow_frame=0) == ("[#7bba55]OpenAI[/][#6e6d72]/grok-4.5[/]")
 
 
@@ -649,7 +650,8 @@ def test_firstcoder_app_topbar_uses_spacious_two_sided_layout_when_width_is_know
     assert text.startswith("[#7bba55]FirstCoder[/]")
     assert "[#7bba55]idle · ready[/]" in text
     assert "sess_test" not in text
-    assert "[#7bba55]yurenapi[/][#6e6d72]/gpt-5.5[/]" in text
+    assert "yurenapi/gpt-5.5" in Text.from_markup(text).plain
+    assert "[#7eb6ff]r[/]" in text
     assert "[#6e6d72]cwd FirstCoder[/]" in text
     assert " " * 20 in text
 
