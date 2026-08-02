@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import platform
+import subprocess
 from inspect import isawaitable
 import threading
 import time
@@ -322,6 +324,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         result = self.action_quit()
         if isawaitable(result):
             await result
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)
+        if platform.system() == "Darwin":
+            subprocess.run(["pbcopy"], input=text, text=True, check=False)
 
     def on_paste(self, event: events.Paste) -> None:
         """Turn pasted file paths or clipboard images into pending attachments."""

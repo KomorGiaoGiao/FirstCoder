@@ -1,6 +1,7 @@
 import asyncio
 
 import threading
+from unittest.mock import Mock
 
 import pytest
 from rich.text import Text
@@ -394,6 +395,17 @@ def test_firstcoder_app_can_be_created_with_command_handler() -> None:
 
     assert app.command_handler is handler
     assert app.config.title == "TestCoder"
+
+
+def test_firstcoder_app_copies_to_macos_clipboard(monkeypatch) -> None:
+    app = FirstCoderApp()
+    pbcopy = Mock()
+    monkeypatch.setattr("firstcoder.app.tui.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("firstcoder.app.tui.subprocess.run", pbcopy)
+
+    app.copy_to_clipboard("copied text")
+
+    pbcopy.assert_called_once_with(["pbcopy"], input="copied text", text=True, check=False)
 
 
 @pytest.mark.anyio
