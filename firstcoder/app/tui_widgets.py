@@ -6,37 +6,10 @@ import asyncio
 from dataclasses import dataclass
 
 from textual import events
-from textual.await_complete import AwaitComplete
 from textual.binding import Binding
 from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Markdown, Static, TextArea
-
-
-class _FirstCoderMarkdownBlockSelection:
-    """Make a Markdown block follow its owning document's selection state."""
-
-    @property
-    def allow_select(self) -> bool:
-        parent = getattr(self, "parent", None)
-        while parent is not None:
-            if isinstance(parent, FirstCoderMarkdown):
-                return parent.allow_select
-            parent = getattr(parent, "parent", None)
-        return False
-
-
-class _FirstCoderMarkdownDescendantSelection:
-    """Make every rendered Markdown helper follow its owning document."""
-
-    @property
-    def allow_select(self) -> bool:
-        parent = getattr(self, "parent", None)
-        while parent is not None:
-            if isinstance(parent, FirstCoderMarkdown):
-                return parent.allow_select
-            parent = getattr(parent, "parent", None)
-        return super().allow_select
 
 
 class FirstCoderMarkdown(Markdown):
@@ -56,37 +29,13 @@ class FirstCoderMarkdown(Markdown):
         """Toggle selection once no more Markdown updates will replace blocks."""
 
         self._selectable = selectable
-        self._gate_rendered_descendants()
         self.refresh()
-
-    def _gate_rendered_descendants(self) -> None:
-        """Give every mounted Markdown helper a dynamic ancestor selection gate."""
-
-        for descendant in self.query("*"):
-            if isinstance(descendant, _FirstCoderMarkdownDescendantSelection):
-                continue
-            descendant.__class__ = type(
-                f"FirstCoder{type(descendant).__name__}",
-                (_FirstCoderMarkdownDescendantSelection, type(descendant)),
-                {},
-            )
-
-    def update(self, markdown: str) -> AwaitComplete:
-        """Gate helper widgets created as part of each Markdown render."""
-
-        update_result = super().update(markdown)
-
-        async def update_and_apply_selection_gate() -> None:
-            await update_result
-            self._gate_rendered_descendants()
-
-        return AwaitComplete(update_and_apply_selection_gate())
 
 
 FirstCoderMarkdown.BLOCKS = {
     name: type(
         f"FirstCoder{block.__name__}",
-        (_FirstCoderMarkdownBlockSelection, block),
+        (block,),
         {"ALLOW_SELECT": True},
     )
     for name, block in Markdown.BLOCKS.items()
@@ -182,6 +131,23 @@ class FirstCoderTuiConfig:
 
 class FirstCoderScreen(Screen[None]):
     """Notify the app after Textual has committed a new terminal size."""
+
+    @staticmethod
+    def _selection_is_blocked_by_streaming_markdown(widget) -> bool:
+        """Reject a leaf while any owning Markdown document is still updating."""
+
+        parent = widget
+        while parent is not None:
+            if isinstance(parent, FirstCoderMarkdown) and not parent.allow_select:
+                return True
+            parent = getattr(parent, "parent", None)
+        return False
+
+    def get_widget_and_offset_at(self, x: int, y: int):
+        widget, offset = super().get_widget_and_offset_at(x, y)
+        if widget is not None and self._selection_is_blocked_by_streaming_markdown(widget):
+            return None, None
+        return widget, offset
 
     def _screen_resized(self, size) -> None:
         super()._screen_resized(size)

@@ -15,7 +15,7 @@ from firstcoder.runtime.user_input import UserInputOption, UserInputRequest
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
-from firstcoder.app.tui import ComposerTextArea, FirstCoderApp, FirstCoderTuiConfig
+from firstcoder.app.tui import ComposerTextArea, FirstCoderApp, FirstCoderScreen, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _entry_renderable
 from firstcoder.app.tui import _provider_name_markup
@@ -1733,14 +1733,44 @@ async def test_streaming_markdown_selection_state_applies_to_mounted_blocks() ->
             "MarkdownTableCellContents",
         }
         assert markdown.allow_select is False
-        assert all(block.allow_select is False for block in blocks)
-        assert all(widget.allow_select is False for widget in selection_leaves)
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(block) for block in blocks)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(widget) for widget in selection_leaves)
 
         markdown.set_selectable(True)
 
         assert markdown.allow_select is True
-        assert all(block.allow_select is True for block in blocks)
-        assert all(widget.allow_select is True for widget in selection_leaves)
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(block) for block in blocks)
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(widget) for widget in selection_leaves)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_screen_rejects_all_leaves_inside_unstable_streaming_markdown() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        output = app.query_one("#output")
+        markdown = FirstCoderMarkdown(selectable=False)
+        await output.mount(markdown)
+        await markdown.update("- list\n\n| one | two |\n| --- | --- |\n| 1 | 2 |")
+        await pilot.pause()
+
+        selection_leaves = [
+            widget
+            for widget in markdown.query("*")
+            if type(widget).__name__.removeprefix("FirstCoder")
+            in {"MarkdownBullet", "MarkdownTableCellContents"}
+        ]
+        assert selection_leaves
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(leaf) for leaf in selection_leaves)
+
+        markdown.set_selectable(True)
+
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(leaf) for leaf in selection_leaves)
 
 
 @pytest.mark.anyio
@@ -1753,7 +1783,9 @@ async def test_streaming_markdown_becomes_selectable_only_after_final_update() -
         app._stream_text_started = True
         markdown = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
         assert markdown.allow_select is False
-        assert all(block.allow_select is False for block in markdown.query("MarkdownBlock"))
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(block) for block in markdown.query("MarkdownBlock"))
 
         app._stream_text_buffer = "final answer"
         app._write_chat_response(ChatResponse(provider="fake", model="fake", content="final answer"))
@@ -1762,7 +1794,7 @@ async def test_streaming_markdown_becomes_selectable_only_after_final_update() -
         await app.wait_for_stream_finalization(markdown)
         assert markdown.allow_select is True
         assert markdown._markdown == "FirstCoder:\n\nfinal answer"
-        assert all(block.allow_select is True for block in markdown.query("MarkdownBlock"))
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(block) for block in markdown.query("MarkdownBlock"))
 
 
 @pytest.mark.anyio
