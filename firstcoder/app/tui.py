@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from inspect import isawaitable
 import threading
 import time
 from dataclasses import dataclass
@@ -81,9 +82,9 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
     """最小 TUI 外壳。"""
 
     CSS_PATH = "tui.tcss"
-    ALLOW_SELECT = False
+    ALLOW_SELECT = True
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
+        ("ctrl+c", "copy_output_or_quit", "Copy output or quit"),
     ]
     STREAM_RENDER_INTERVAL_SECONDS = 0.2
     WORKING_ANIMATION_INTERVAL_SECONDS = 0.18
@@ -133,6 +134,8 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._stream_rendered_text = ""
         self._stream_flush_timer: Timer | None = None
         self._stream_markdown_update = None
+        self._stream_finalizations: dict[FirstCoderMarkdown, object] = {}
+        self._finalized_stream_widgets: set[FirstCoderMarkdown] = set()
         self._stream_event_lock = threading.Lock()
         self._stream_event_generation = 0
         self._stream_event_dispatch_scheduled = False
@@ -304,6 +307,21 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         event.prevent_default()
         input_widget.load_text(recalled)
         input_widget.cursor_location = input_widget.document.end
+
+    async def action_copy_output_or_quit(self) -> None:
+        """Copy a selection first; retain Ctrl+C as quit when nothing is selected."""
+
+        focused = self.focused
+        if isinstance(focused, TextArea) and focused.selected_text:
+            focused.action_copy()
+            return
+        selected_text = self.screen.get_selected_text()
+        if selected_text is not None:
+            self.copy_to_clipboard(selected_text)
+            return
+        result = self.action_quit()
+        if isawaitable(result):
+            await result
 
     def on_paste(self, event: events.Paste) -> None:
         """Turn pasted file paths or clipboard images into pending attachments."""
@@ -800,7 +818,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 if self._stream_text_entry is not None:
                     self._stream_text_entry.body = content
             display_lines = [line for line in display_lines if looks_like_tool_display_line(line) or normalize_stream_text(line) != normalize_stream_text(self._stream_text_buffer)]
-            self._flush_stream_text()
+            self._finalize_stream_widget()
         if self._live_tool_events_seen:
             display_lines = [line for line in display_lines if not looks_like_tool_display_line(line)]
         if self._live_tool_events_seen and self._stream_text_started:

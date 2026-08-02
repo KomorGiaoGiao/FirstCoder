@@ -6,17 +6,91 @@ import asyncio
 from dataclasses import dataclass
 
 from textual import events
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding
 from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Markdown, Static, TextArea
 
 
-class FirstCoderMarkdown(Markdown):
-    """Markdown output that avoids Textual's fragile selection path."""
+class _FirstCoderMarkdownBlockSelection:
+    """Make a Markdown block follow its owning document's selection state."""
 
-    ALLOW_SELECT = False
-    BLOCKS = {name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False}) for name, block in Markdown.BLOCKS.items()}
+    @property
+    def allow_select(self) -> bool:
+        parent = getattr(self, "parent", None)
+        while parent is not None:
+            if isinstance(parent, FirstCoderMarkdown):
+                return parent.allow_select
+            parent = getattr(parent, "parent", None)
+        return False
+
+
+class _FirstCoderMarkdownDescendantSelection:
+    """Make every rendered Markdown helper follow its owning document."""
+
+    @property
+    def allow_select(self) -> bool:
+        parent = getattr(self, "parent", None)
+        while parent is not None:
+            if isinstance(parent, FirstCoderMarkdown):
+                return parent.allow_select
+            parent = getattr(parent, "parent", None)
+        return super().allow_select
+
+
+class FirstCoderMarkdown(Markdown):
+    """Markdown output with selection gated by its render lifecycle."""
+
+    ALLOW_SELECT = True
+
+    def __init__(self, *args, selectable: bool = True, **kwargs) -> None:
+        self._selectable = selectable
+        super().__init__(*args, **kwargs)
+
+    @property
+    def allow_select(self) -> bool:
+        return self._selectable
+
+    def set_selectable(self, selectable: bool) -> None:
+        """Toggle selection once no more Markdown updates will replace blocks."""
+
+        self._selectable = selectable
+        self._gate_rendered_descendants()
+        self.refresh()
+
+    def _gate_rendered_descendants(self) -> None:
+        """Give every mounted Markdown helper a dynamic ancestor selection gate."""
+
+        for descendant in self.query("*"):
+            if isinstance(descendant, _FirstCoderMarkdownDescendantSelection):
+                continue
+            descendant.__class__ = type(
+                f"FirstCoder{type(descendant).__name__}",
+                (_FirstCoderMarkdownDescendantSelection, type(descendant)),
+                {},
+            )
+
+    def update(self, markdown: str) -> AwaitComplete:
+        """Gate helper widgets created as part of each Markdown render."""
+
+        update_result = super().update(markdown)
+
+        async def update_and_apply_selection_gate() -> None:
+            await update_result
+            self._gate_rendered_descendants()
+
+        return AwaitComplete(update_and_apply_selection_gate())
+
+
+FirstCoderMarkdown.BLOCKS = {
+    name: type(
+        f"FirstCoder{block.__name__}",
+        (_FirstCoderMarkdownBlockSelection, block),
+        {"ALLOW_SELECT": True},
+    )
+    for name, block in Markdown.BLOCKS.items()
+}
 
 
 class ComposerTextArea(TextArea):

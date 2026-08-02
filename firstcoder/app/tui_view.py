@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 
 from rich.text import Text
@@ -145,7 +146,6 @@ class FirstCoderViewMixin:
         self._stream_text_needs_newline = False
         self._stream_text_buffer = ""
         self._stream_text_widget = None
-        self._stream_markdown_finalized = False
         self._stream_text_entry = None
         self._stream_rendered_text = ""
         self._stream_flush_timer = None
@@ -659,7 +659,10 @@ class FirstCoderViewMixin:
         output = self.query_one("#output")
         if hasattr(output, "mount"):
             if self._stream_text_widget is None:
-                self._stream_text_widget = FirstCoderMarkdown(classes="message assistant-message streaming")
+                self._stream_text_widget = FirstCoderMarkdown(
+                    classes="message assistant-message streaming",
+                    selectable=False,
+                )
                 output.mount(self._stream_text_widget)
             if not self._stream_rendered_text:
                 self._flush_stream_text()
@@ -674,8 +677,62 @@ class FirstCoderViewMixin:
         self._drain_stream_deltas()
         if self._stream_text_widget is None and not self._stream_text_buffer:
             return
-        self._flush_stream_text()
+        self._finalize_stream_widget()
         self._stream_segment_closed_for_tool = True
+
+    def _finalize_stream_widget(self) -> None:
+        """Finish a closed stream segment before allowing its Markdown selection."""
+
+        widget = self._stream_text_widget
+        if widget is None:
+            return
+        if widget in self._stream_finalizations or widget in self._finalized_stream_widgets:
+            return
+        timer = self._stream_flush_timer
+        if timer is not None:
+            timer.stop()
+        self._stream_flush_timer = None
+        final_markdown = f"FirstCoder:\n\n{self._stream_text_buffer}"
+        pending_update = self._stream_markdown_update
+        self._stream_markdown_update = None
+        self._stream_rendered_text = self._stream_text_buffer
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            update_result = widget.update(final_markdown)
+            _observe_markdown_update(update_result)
+            widget.set_selectable(True)
+            self._finalized_stream_widgets.add(widget)
+            return
+        completion = loop.create_future()
+        self._stream_finalizations[widget] = completion
+
+        async def finalize() -> None:
+            try:
+                if pending_update is not None:
+                    await pending_update
+                await widget.update(final_markdown)
+                widget.set_selectable(True)
+            except BaseException as error:
+                if not completion.done():
+                    completion.set_exception(error)
+            else:
+                if not completion.done():
+                    completion.set_result(None)
+
+        self.run_worker(
+            finalize(),
+            exclusive=False,
+            group="stream-finalization",
+            exit_on_error=False,
+        )
+
+    async def wait_for_stream_finalization(self, widget: FirstCoderMarkdown) -> None:
+        """Wait until a closed stream widget has its final Markdown and selection state."""
+
+        completion = self._stream_finalizations.get(widget)
+        if completion is not None:
+            await completion
 
     def _start_new_stream_segment(self) -> None:
         self._stream_text_buffer = ""
