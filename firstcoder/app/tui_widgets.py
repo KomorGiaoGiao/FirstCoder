@@ -23,12 +23,12 @@ class ComposerTextArea(TextArea):
     """Multiline composer where Enter submits and Shift+Enter inserts a newline."""
 
     # TextArea owns Ctrl+V, so an App binding is not invoked while the composer
-    # has focus. Route the key through this widget before falling back to the
-    # regular text-paste behavior.
+    # has focus. Route the key through this widget to stage clipboard images;
+    # terminal Paste events remain responsible for inserting plain text.
     BINDINGS = [
         Binding("ctrl+v", "paste", show=False, priority=True),
         Binding("super+v", "paste", show=False, priority=True),
-        Binding("f8", "paste", show=False, priority=True),
+        Binding("f8", "paste_image", show=False, priority=True),
     ]
 
     class Submitted(Message):
@@ -58,15 +58,21 @@ class ComposerTextArea(TextArea):
         await super()._on_paste(event)
 
     def action_paste(self) -> None:
-        """Attach an OS clipboard image, otherwise retain TextArea text paste."""
+        """Attach an OS clipboard image before the terminal emits its Paste event."""
 
         paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
-        if paste_attachment is not None and paste_attachment():
+        if callable(paste_attachment) and paste_attachment():
+            return
+
+    def action_paste_image(self) -> None:
+        """Attach an OS clipboard image and report when no image is available."""
+
+        paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
+        if callable(paste_attachment) and paste_attachment():
             return
         paste_unavailable = getattr(self.app, "_notify_clipboard_image_unavailable", None)
         if callable(paste_unavailable):
             paste_unavailable()
-        super().action_paste()
 
 
 def _plain_static(content: object = "", *args, **kwargs) -> Static:

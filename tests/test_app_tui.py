@@ -1190,6 +1190,24 @@ async def test_composer_advertises_ctrl_or_cmd_v_for_image_paste() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v"])
+async def test_composer_paste_shortcut_leaves_plain_text_for_terminal_paste_event(monkeypatch, paste_key) -> None:
+    monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        app.copy_to_clipboard("hello")
+        await pilot.press(paste_key)
+        composer = app.query_one("#input", ComposerTextArea)
+        await composer._on_paste(events.Paste("hello"))
+
+        assert composer.text == "hello"
+        assert app._staged_attachments == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
 async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_composer_is_focused(tmp_path, monkeypatch, paste_key) -> None:
     image = tmp_path / "clipboard.png"
@@ -1209,14 +1227,28 @@ async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_compos
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
-async def test_firstcoder_app_paste_shortcut_reports_missing_clipboard_image_while_composer_is_focused(monkeypatch, paste_key) -> None:
+@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v"])
+async def test_composer_paste_shortcut_does_not_report_missing_clipboard_image(monkeypatch, paste_key) -> None:
     monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
     app = FirstCoderApp()
 
     async with app.run_test() as pilot:
         await pilot.click("#input")
         await pilot.press(paste_key)
+        await pilot.pause()
+
+        assert "No clipboard image found" not in _static_output_text(app)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_composer_image_paste_shortcut_reports_missing_clipboard_image(monkeypatch) -> None:
+    monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press("f8")
         await pilot.pause()
 
         assert "No clipboard image found" in _static_output_text(app)
