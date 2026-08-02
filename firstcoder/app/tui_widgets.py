@@ -13,22 +13,45 @@ from textual.widgets import Markdown, Static, TextArea
 
 
 class FirstCoderMarkdown(Markdown):
-    """Markdown output that avoids Textual's fragile selection path."""
+    """Markdown output with selection gated by its render lifecycle."""
 
-    ALLOW_SELECT = False
-    BLOCKS = {name: type(f"FirstCoder{block.__name__}", (block,), {"ALLOW_SELECT": False}) for name, block in Markdown.BLOCKS.items()}
+    ALLOW_SELECT = True
+
+    def __init__(self, *args, selectable: bool = True, **kwargs) -> None:
+        self._selectable = selectable
+        super().__init__(*args, **kwargs)
+
+    @property
+    def allow_select(self) -> bool:
+        return self._selectable
+
+    def set_selectable(self, selectable: bool) -> None:
+        """Toggle selection once no more Markdown updates will replace blocks."""
+
+        self._selectable = selectable
+        self.refresh()
+
+
+FirstCoderMarkdown.BLOCKS = {
+    name: type(
+        f"FirstCoder{block.__name__}",
+        (block,),
+        {"ALLOW_SELECT": True},
+    )
+    for name, block in Markdown.BLOCKS.items()
+}
 
 
 class ComposerTextArea(TextArea):
     """Multiline composer where Enter submits and Shift+Enter inserts a newline."""
 
     # TextArea owns Ctrl+V, so an App binding is not invoked while the composer
-    # has focus. Route the key through this widget before falling back to the
-    # regular text-paste behavior.
+    # has focus. Route the key through this widget to stage clipboard images;
+    # terminal Paste events remain responsible for inserting plain text.
     BINDINGS = [
         Binding("ctrl+v", "paste", show=False, priority=True),
         Binding("super+v", "paste", show=False, priority=True),
-        Binding("f8", "paste", show=False, priority=True),
+        Binding("f8", "paste_image", show=False, priority=True),
     ]
 
     class Submitted(Message):
@@ -58,15 +81,21 @@ class ComposerTextArea(TextArea):
         await super()._on_paste(event)
 
     def action_paste(self) -> None:
-        """Attach an OS clipboard image, otherwise retain TextArea text paste."""
+        """Attach an OS clipboard image before the terminal emits its Paste event."""
 
         paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
-        if paste_attachment is not None and paste_attachment():
+        if callable(paste_attachment) and paste_attachment():
+            return
+
+    def action_paste_image(self) -> None:
+        """Attach an OS clipboard image and report when no image is available."""
+
+        paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
+        if callable(paste_attachment) and paste_attachment():
             return
         paste_unavailable = getattr(self.app, "_notify_clipboard_image_unavailable", None)
         if callable(paste_unavailable):
             paste_unavailable()
-        super().action_paste()
 
 
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
@@ -102,6 +131,23 @@ class FirstCoderTuiConfig:
 
 class FirstCoderScreen(Screen[None]):
     """Notify the app after Textual has committed a new terminal size."""
+
+    @staticmethod
+    def _selection_is_blocked_by_streaming_markdown(widget) -> bool:
+        """Reject a leaf while any owning Markdown document is still updating."""
+
+        parent = widget
+        while parent is not None:
+            if isinstance(parent, FirstCoderMarkdown) and not parent.allow_select:
+                return True
+            parent = getattr(parent, "parent", None)
+        return False
+
+    def get_widget_and_offset_at(self, x: int, y: int):
+        widget, offset = super().get_widget_and_offset_at(x, y)
+        if widget is not None and self._selection_is_blocked_by_streaming_markdown(widget):
+            return None, None
+        return widget, offset
 
     def _screen_resized(self, size) -> None:
         super()._screen_resized(size)

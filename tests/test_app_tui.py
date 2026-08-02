@@ -15,7 +15,7 @@ from firstcoder.runtime.user_input import UserInputOption, UserInputRequest
 from firstcoder.app.router import CompositeCommandHandler
 from firstcoder.app.runtime import CurrentSessionState
 from firstcoder.app.session_commands import SessionCommandHandler
-from firstcoder.app.tui import ComposerTextArea, FirstCoderApp, FirstCoderTuiConfig
+from firstcoder.app.tui import ComposerTextArea, FirstCoderApp, FirstCoderScreen, FirstCoderTuiConfig
 from firstcoder.app.tui import FirstCoderMarkdown
 from firstcoder.app.tui import _entry_renderable
 from firstcoder.app.tui import _provider_name_markup
@@ -546,15 +546,77 @@ def test_observe_markdown_update_does_not_consume_unexpected_update_errors() -> 
         result.finish()
 
 
-def test_firstcoder_markdown_does_not_enter_textual_selection_path() -> None:
+def test_stable_firstcoder_markdown_and_blocks_allow_selection() -> None:
     markdown = FirstCoderMarkdown()
 
-    assert markdown.allow_select is False
-
-
-def test_firstcoder_markdown_blocks_do_not_enter_textual_selection_path() -> None:
+    assert markdown.allow_select is True
     assert FirstCoderMarkdown.BLOCKS
-    assert all(block.ALLOW_SELECT is False for block in FirstCoderMarkdown.BLOCKS.values())
+    assert all(block.ALLOW_SELECT is True for block in FirstCoderMarkdown.BLOCKS.values())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_static_and_completed_markdown_output_allow_selection() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        app._write_line("plain output", kind=TuiEntryKind.SYSTEM)
+        app._write_markdown_message("paragraph\n\n- list\n\n```python\nprint('ok')\n```")
+        await pilot.pause()
+
+        assert app.ALLOW_SELECT is True
+        assert all(widget.allow_select for widget in app.query("#output Static"))
+        markdown = app.query_one("FirstCoderMarkdown", FirstCoderMarkdown)
+        assert markdown.allow_select is True
+        assert all(block.allow_select for block in markdown.query("*"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_ctrl_c_copies_when_screen_has_selected_output(monkeypatch) -> None:
+    app = FirstCoderApp()
+    copied: list[str] = []
+    quit_calls: list[bool] = []
+
+    async with app.run_test():
+        monkeypatch.setattr(app.screen, "get_selected_text", lambda: "selected output")
+        monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+        monkeypatch.setattr(app, "action_quit", lambda: quit_calls.append(True))
+        await app.action_copy_output_or_quit()
+
+    assert copied == ["selected output"]
+    assert quit_calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_ctrl_c_quits_when_screen_has_no_selected_output(monkeypatch) -> None:
+    app = FirstCoderApp()
+    quit_calls: list[bool] = []
+
+    async with app.run_test():
+        monkeypatch.setattr(app.screen, "get_selected_text", lambda: None)
+        monkeypatch.setattr(app, "action_quit", lambda: quit_calls.append(True))
+        await app.action_copy_output_or_quit()
+
+    assert quit_calls == [True]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("copy_key", ["ctrl+c", "super+c"])
+async def test_composer_selection_copy_does_not_quit(copy_key) -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#input", ComposerTextArea)
+        composer.load_text("copy me")
+        await pilot.click("#input")
+        composer.selection = ((0, 0), (0, 7))
+        await pilot.press(copy_key)
+
+        assert app.clipboard == "copy me"
+        assert app.is_running is True
 
 
 def test_welcome_renderable_uses_colored_full_block_pixels() -> None:
@@ -1190,6 +1252,24 @@ async def test_composer_advertises_ctrl_or_cmd_v_for_image_paste() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v"])
+async def test_composer_paste_shortcut_leaves_plain_text_for_terminal_paste_event(monkeypatch, paste_key) -> None:
+    monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        app.copy_to_clipboard("hello")
+        await pilot.press(paste_key)
+        composer = app.query_one("#input", ComposerTextArea)
+        await composer._on_paste(events.Paste("hello"))
+
+        assert composer.text == "hello"
+        assert app._staged_attachments == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
 async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_composer_is_focused(tmp_path, monkeypatch, paste_key) -> None:
     image = tmp_path / "clipboard.png"
@@ -1209,14 +1289,28 @@ async def test_firstcoder_app_paste_shortcut_stages_clipboard_image_while_compos
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v", "f8"])
-async def test_firstcoder_app_paste_shortcut_reports_missing_clipboard_image_while_composer_is_focused(monkeypatch, paste_key) -> None:
+@pytest.mark.parametrize("paste_key", ["ctrl+v", "super+v"])
+async def test_composer_paste_shortcut_does_not_report_missing_clipboard_image(monkeypatch, paste_key) -> None:
     monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
     app = FirstCoderApp()
 
     async with app.run_test() as pilot:
         await pilot.click("#input")
         await pilot.press(paste_key)
+        await pilot.pause()
+
+        assert "No clipboard image found" not in _static_output_text(app)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_composer_image_paste_shortcut_reports_missing_clipboard_image(monkeypatch) -> None:
+    monkeypatch.setattr("firstcoder.app.tui.resolve_paste_attachments", lambda text: [])
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        await pilot.click("#input")
+        await pilot.press("f8")
         await pilot.pause()
 
         assert "No clipboard image found" in _static_output_text(app)
@@ -1587,7 +1681,9 @@ async def test_firstcoder_app_right_clicking_markdown_output_does_not_crash_sele
         await pilot.press("enter")
         await pilot.pause()
         markdown = app.query_one("FirstCoderMarkdown")
-        assert markdown.allow_select is False
+        assert app.ALLOW_SELECT is True
+        assert markdown.allow_select is True
+        assert all(block.allow_select for block in markdown.query("*"))
         await pilot.click(markdown, button=3)
         await pilot.pause()
 
@@ -1601,9 +1697,220 @@ async def test_firstcoder_app_right_clicking_markdown_code_block_does_not_crash_
 
     async with app.run_test() as pilot:
         app._write_markdown_message("```text\nIt was the best of times\n```")
-        assert app.ALLOW_SELECT is False
-        await pilot.click("FirstCoderMarkdown", button=3)
         await pilot.pause()
+        markdown = app.query_one("FirstCoderMarkdown", FirstCoderMarkdown)
+        assert app.ALLOW_SELECT is True
+        assert markdown.allow_select is True
+        assert all(block.allow_select for block in markdown.query("*"))
+        await pilot.click(markdown, button=3)
+        await pilot.pause()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_streaming_markdown_selection_state_applies_to_mounted_blocks() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        output = app.query_one("#output")
+        markdown = FirstCoderMarkdown(selectable=False)
+        await output.mount(markdown)
+        await markdown.update(
+            "paragraph\n\n- list\n\n| one | two |\n| --- | --- |\n| 1 | 2 |\n\n```python\nprint('ok')\n```"
+        )
+        await pilot.pause()
+
+        blocks = list(markdown.query("MarkdownBlock"))
+        selection_leaves = [
+            widget
+            for widget in markdown.query("*")
+            if type(widget).__name__.removeprefix("FirstCoder")
+            in {"MarkdownBullet", "MarkdownTableCellContents"}
+        ]
+        assert blocks
+        assert {type(widget).__name__.removeprefix("FirstCoder") for widget in selection_leaves} == {
+            "MarkdownBullet",
+            "MarkdownTableCellContents",
+        }
+        assert markdown.allow_select is False
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(block) for block in blocks)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(widget) for widget in selection_leaves)
+
+        markdown.set_selectable(True)
+
+        assert markdown.allow_select is True
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(block) for block in blocks)
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(widget) for widget in selection_leaves)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_screen_rejects_all_leaves_inside_unstable_streaming_markdown() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        output = app.query_one("#output")
+        markdown = FirstCoderMarkdown(selectable=False)
+        await output.mount(markdown)
+        await markdown.update("- list\n\n| one | two |\n| --- | --- |\n| 1 | 2 |")
+        await pilot.pause()
+
+        selection_leaves = [
+            widget
+            for widget in markdown.query("*")
+            if type(widget).__name__.removeprefix("FirstCoder")
+            in {"MarkdownBullet", "MarkdownTableCellContents"}
+        ]
+        assert selection_leaves
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(leaf) for leaf in selection_leaves)
+
+        markdown.set_selectable(True)
+
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(leaf) for leaf in selection_leaves)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_streaming_markdown_becomes_selectable_only_after_final_update() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        app._append_stream_text("partial")
+        app._stream_text_started = True
+        markdown = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
+        assert markdown.allow_select is False
+        screen = app.screen
+        assert isinstance(screen, FirstCoderScreen)
+        assert all(screen._selection_is_blocked_by_streaming_markdown(block) for block in markdown.query("MarkdownBlock"))
+
+        app._stream_text_buffer = "final answer"
+        app._write_chat_response(ChatResponse(provider="fake", model="fake", content="final answer"))
+        assert markdown.allow_select is False
+
+        await app.wait_for_stream_finalization(markdown)
+        assert markdown.allow_select is True
+        assert markdown._markdown == "FirstCoder:\n\nfinal answer"
+        assert all(not screen._selection_is_blocked_by_streaming_markdown(block) for block in markdown.query("MarkdownBlock"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_closing_one_stream_segment_twice_runs_one_final_markdown_update(monkeypatch) -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        app._append_stream_text("final answer")
+        markdown = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
+        await pilot.pause()
+        original_update = markdown.update
+        final_updates: list[str] = []
+
+        def count_final_update(source: str):
+            final_updates.append(source)
+            return original_update(source)
+
+        monkeypatch.setattr(markdown, "update", count_final_update)
+
+        app._close_stream_segment_for_tool()
+        app._close_stream_segment_for_tool()
+
+        assert markdown.allow_select is False
+        await app.wait_for_stream_finalization(markdown)
+
+        assert final_updates == ["FirstCoder:\n\nfinal answer"]
+        assert markdown.allow_select is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_stream_finalization_records_update_error_without_exiting_tui(monkeypatch) -> None:
+    app = FirstCoderApp()
+    workers: list[tuple[asyncio.Task[object], dict[str, object]]] = []
+
+    async with app.run_test() as pilot:
+        app._append_stream_text("final answer")
+        markdown = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
+        await pilot.pause()
+
+        async def failed_update(_source: str) -> None:
+            raise RuntimeError("final markdown failed")
+
+        def run_worker(coro, **kwargs):
+            task = asyncio.create_task(coro)
+            workers.append((task, kwargs))
+            return task
+
+        monkeypatch.setattr(markdown, "update", failed_update)
+        monkeypatch.setattr(app, "run_worker", run_worker)
+
+        app._close_stream_segment_for_tool()
+
+        with pytest.raises(RuntimeError, match="final markdown failed"):
+            await app.wait_for_stream_finalization(markdown)
+        await workers[0][0]
+
+        assert workers[0][1]["exit_on_error"] is False
+        assert app.is_running is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_starting_a_new_stream_keeps_an_old_stream_finalization_waitable(monkeypatch) -> None:
+    runner = FakeStreamingAsyncChatRunner()
+    app = FirstCoderApp(chat_runner=runner)
+    update_started = asyncio.Event()
+    release_update = asyncio.Event()
+
+    async with app.run_test() as pilot:
+        app._append_stream_text("first answer")
+        markdown = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
+        await pilot.pause()
+
+        async def delayed_update(_source: str) -> None:
+            update_started.set()
+            await release_update.wait()
+
+        monkeypatch.setattr(markdown, "update", delayed_update)
+        app._close_stream_segment_for_tool()
+        await update_started.wait()
+
+        app._install_stream_event_handler()
+        finalization_wait = asyncio.create_task(app.wait_for_stream_finalization(markdown))
+        await pilot.pause()
+        assert finalization_wait.done() is False
+
+        release_update.set()
+        await finalization_wait
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_stream_segments_on_both_sides_of_tool_become_selectable() -> None:
+    app = FirstCoderApp()
+
+    async with app.run_test() as pilot:
+        app._append_stream_text("before tool")
+        first = app.query_one("FirstCoderMarkdown.streaming", FirstCoderMarkdown)
+        app._close_stream_segment_for_tool()
+        await app.wait_for_stream_finalization(first)
+        assert first.allow_select is True
+        assert first._markdown == "FirstCoder:\n\nbefore tool"
+
+        app._append_stream_text("after tool")
+        app._stream_text_started = True
+        widgets = list(app.query("FirstCoderMarkdown.streaming"))
+        second = widgets[-1]
+        assert second is not first
+        assert second.allow_select is False
+
+        app._write_chat_response(ChatResponse(provider="fake", model="fake", content="after tool"))
+        await app.wait_for_stream_finalization(second)
+        assert second.allow_select is True
+        assert second._markdown == "FirstCoder:\n\nafter tool"
 
 
 def test_firstcoder_app_installs_and_restores_stream_event_handler() -> None:
@@ -1633,13 +1940,40 @@ def test_firstcoder_app_streams_text_delta_without_repeating_final_text(monkeypa
     app._restore_stream_event_handler(previous_handler)
 
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
-    assert output.mounted[0].allow_select is False
+    assert output.mounted[0].allow_select is True
     assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
     assert app._stream_text_buffer == "hello"
     assert runner.seen == [
         ChatStreamEvent(kind="text_delta", text="he"),
         ChatStreamEvent(kind="text_delta", text="llo"),
     ]
+
+
+def test_closing_stream_segment_twice_without_event_loop_updates_final_snapshot_once(monkeypatch) -> None:
+    output = FakeOutput()
+    app = FirstCoderApp()
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: output)
+
+    app._append_stream_text("final answer")
+    markdown = output.mounted[0]
+    initial_snapshot = "FirstCoder:\n\nfinal answer"
+    assert markdown.updates == [initial_snapshot]
+
+    original_update = markdown.update
+    final_updates: list[str] = []
+
+    def count_final_update(source: str):
+        final_updates.append(source)
+        return original_update(source)
+
+    monkeypatch.setattr(markdown, "update", count_final_update)
+
+    app._close_stream_segment_for_tool()
+    app._close_stream_segment_for_tool()
+
+    assert final_updates == [initial_snapshot]
+    assert markdown.updates == [initial_snapshot, initial_snapshot]
+    assert markdown.allow_select is True
 
 
 def test_firstcoder_app_streaming_skips_normalized_duplicate_assistant_line(monkeypatch) -> None:
@@ -1656,7 +1990,7 @@ def test_firstcoder_app_streaming_skips_normalized_duplicate_assistant_line(monk
     app._restore_stream_event_handler(previous_handler)
 
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown"]
-    assert output.mounted[0].allow_select is False
+    assert output.mounted[0].allow_select is True
     assert output.mounted[0].updates[-1] == "FirstCoder:\n\nhello"
 
 
@@ -1926,7 +2260,7 @@ def test_firstcoder_app_streaming_final_response_skips_assistant_display_line(mo
 
     assert sum(isinstance(widget, Markdown) for widget in output.mounted) == 1
     assert [type(widget).__name__ for widget in output.mounted] == ["FirstCoderMarkdown", "Static"]
-    assert output.mounted[0].allow_select is False
+    assert output.mounted[0].allow_select is True
 
 
 def test_firstcoder_app_replaces_partial_stream_when_final_response_differs(monkeypatch) -> None:
@@ -2524,7 +2858,7 @@ def test_firstcoder_app_live_tool_events_filter_final_tool_summary(monkeypatch) 
     assert "Tool call:" not in rendered
     assert "Tool result:" not in rendered
     assert [type(widget).__name__ for widget in output.mounted] == ["Static", "FirstCoderMarkdown"]
-    assert output.mounted[1].allow_select is False
+    assert output.mounted[1].allow_select is True
 
 
 def test_firstcoder_app_starts_new_stream_block_after_tool_event(monkeypatch) -> None:
@@ -2550,7 +2884,7 @@ def test_firstcoder_app_starts_new_stream_block_after_tool_event(monkeypatch) ->
     mounted_types = [type(widget).__name__ for widget in output.mounted]
     assert mounted_types == ["FirstCoderMarkdown", "Static", "FirstCoderMarkdown"]
     first_markdown, _, second_markdown = output.mounted
-    assert first_markdown.allow_select is False
+    assert first_markdown.allow_select is True
     assert second_markdown.allow_select is False
     assert first_markdown.updates[-1] == "FirstCoder:\n\n我先看看。"
     assert second_markdown.updates[-1] == "FirstCoder:\n\n看完了。"
