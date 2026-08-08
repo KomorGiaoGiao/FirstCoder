@@ -165,6 +165,16 @@ def test_v2_placeholder_normalizes_unknown_status_to_success(tmp_path) -> None:
     assert "status=success" in archive.make_placeholder(part, record).content
 
 
+def test_v2_placeholder_default_summary_is_short_english(tmp_path) -> None:
+    part = _part("result")
+    archive = ToolResultArchive(tmp_path)
+    record = archive.store_original("sess_test", part)
+
+    placeholder = archive.make_placeholder(part, record)
+
+    assert f"summary=Large shell result ({record.original_tokens} tokens)" in placeholder.content
+
+
 def test_v2_read_rejects_non_content_addressed_id(tmp_path) -> None:
     path = tmp_path / "archives" / "sess_test"
     path.mkdir(parents=True)

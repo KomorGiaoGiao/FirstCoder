@@ -305,4 +305,7 @@ def _fit_placeholder(lines: list[str], *, maximum: int) -> str:
 
 def _default_summary(part: MessagePart, *, original_tokens: int) -> str:
     tool_name = str(part.metadata.get("tool_name") or "tool")
-    return f"{tool_name} 输出过大，已归档。原始估算 {original_tokens} tokens。"
+    # Keep the automatic summary short and language-stable.  The full output
+    # remains in the archive; the placeholder only needs enough context for
+    # the model to decide whether retrieval is worthwhile.
+    return f"Large {tool_name} result ({original_tokens} tokens)"
