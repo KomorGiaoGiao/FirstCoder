@@ -617,7 +617,10 @@ def test_agent_loop_projects_image_attachment_into_provider_request(tmp_path) ->
     image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01")
     store = JsonlSessionStore(tmp_path / ".firstcoder")
     session = AgentSession.create(store=store, session_id="sess_image_request")
-    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="收到图片")])
+    provider = FakeProvider(
+        [ChatResponse(provider="fake", model="fake-model", content="收到图片")],
+        capabilities=ProviderCapabilities(supports_vision=True),
+    )
 
     AgentLoop(session=session, provider=provider)._run_user_turn_sync(
         "描述图片",
@@ -630,6 +633,22 @@ def test_agent_loop_projects_image_attachment_into_provider_request(tmp_path) ->
     image_part = next(part for part in user_message.content_parts if part.type == "image")
     assert image_part.media_type == "image/png"
     assert image_part.data_base64
+
+
+def test_agent_loop_rejects_image_when_provider_does_not_declare_vision(tmp_path) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    store = JsonlSessionStore(tmp_path / ".firstcoder")
+    session = AgentSession.create(store=store, session_id="sess_image_unsupported")
+    provider = FakeProvider([ChatResponse(provider="fake", model="fake-model", content="unused")])
+
+    with pytest.raises(ValueError, match="vision = true"):
+        AgentLoop(session=session, provider=provider)._run_user_turn_sync(
+            "描述图片",
+            attachments=[attach_path(image)],
+        )
+
+    assert session.rebuild_view().messages == []
 
 
 def test_agent_loop_builds_context_with_system_prefix_without_storing_it(tmp_path) -> None:
@@ -1098,7 +1117,13 @@ def test_agent_loop_streaming_retries_retryable_network_error_once(tmp_path) -> 
             ChatResponse(provider="fake-stream", model="fake-stream-model", content="ok"),
         ]
     )
-    loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
+    retry_delays: list[float] = []
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=RecordingContextManager(),
+        provider_retry_sleeper=retry_delays.append,
+    )
 
     result = _run_streaming(loop, "问题")
 
@@ -1115,6 +1140,7 @@ def test_agent_loop_streaming_retries_retryable_network_error_once(tmp_path) -> 
         "user",
         "assistant",
     ]
+    assert retry_delays == [1.0]
 
 
 def test_agent_loop_streaming_falls_back_to_non_streaming_after_retryable_stream_failures(tmp_path) -> None:
@@ -1127,7 +1153,13 @@ def test_agent_loop_streaming_falls_back_to_non_streaming_after_retryable_stream
         ],
         complete_response=ChatResponse(provider="fallback-stream", model="fallback-stream-model", content="complete ok"),
     )
-    loop = AgentLoop(session=session, provider=provider, context_manager=RecordingContextManager())
+    retry_delays: list[float] = []
+    loop = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=RecordingContextManager(),
+        provider_retry_sleeper=retry_delays.append,
+    )
 
     result = _run_streaming(loop, "问题")
 
@@ -1138,6 +1170,7 @@ def test_agent_loop_streaming_falls_back_to_non_streaming_after_retryable_stream
     view = store.rebuild_session_view("sess_stream_fallback")
     assert [message.role for message in view.messages] == ["user", "assistant"]
     assert view.messages[-1].parts[0].content == "complete ok"
+    assert retry_delays == [1.0, 2.0]
 
 
 def test_agent_loop_streaming_ignores_returned_tool_calls_when_provider_without_tool_support(tmp_path) -> None:
@@ -1658,6 +1691,54 @@ def test_agent_loop_prompt_too_long_retries_only_once(tmp_path) -> None:
         ContextWindowTrigger.AUTO,
     ]
     assert [message.role for message in store.rebuild_session_view("sess_retry_once").messages] == ["user"]
+
+
+def test_agent_loop_sync_retries_transient_provider_errors_with_backoff(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_sync_transient_retry", agents_md="")
+    provider = FakeProvider(
+        [
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "connection closed"),
+            ProviderError(ProviderErrorKind.SERVER_ERROR, "server unavailable"),
+            ChatResponse(provider="fake", model="fake-model", content="ok"),
+        ]
+    )
+    retry_delays: list[float] = []
+
+    result = AgentLoop(
+        session=session,
+        provider=provider,
+        context_manager=RecordingContextManager(),
+        provider_retry_sleeper=retry_delays.append,
+    )._run_user_turn_sync("问题")
+
+    assert result.content == "ok"
+    assert len(provider.requests) == 3
+    assert retry_delays == [1.0, 2.0]
+
+
+def test_agent_loop_sync_stops_after_transient_retry_budget(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="sess_sync_retry_exhausted", agents_md="")
+    provider = FakeProvider(
+        [
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "one"),
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "two"),
+            ProviderError(ProviderErrorKind.NETWORK_ERROR, "three"),
+        ]
+    )
+    retry_delays: list[float] = []
+
+    with pytest.raises(ProviderError, match="three"):
+        AgentLoop(
+            session=session,
+            provider=provider,
+            context_manager=RecordingContextManager(),
+            provider_retry_sleeper=retry_delays.append,
+        )._run_user_turn_sync("问题")
+
+    assert len(provider.requests) == 3
+    assert retry_delays == [1.0, 2.0]
 
 
 def test_agent_loop_prompt_too_long_does_not_retry_when_compaction_fails(tmp_path) -> None:

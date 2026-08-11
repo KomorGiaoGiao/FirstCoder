@@ -6,11 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.file_feedback import format_change_content, render_text_diff
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.sandbox_access import SandboxAccess
-from firstcoder.utils.text import safe_read_text
+from firstcoder.utils.text import safe_read_text, truncate_head_tail
 
 BEGIN_MARKER = "*** Begin Patch"
 END_MARKER = "*** End Patch"
@@ -54,16 +55,24 @@ def create_apply_patch_tool(root: str | Path, *, access: SandboxAccess | None = 
             plan = parse_patch(patch)
             outcome = _apply_plan(sandbox, plan, dry_run=dry_run)
         except ValueError as exc:
-            return make_error_result("apply_patch", str(exc))
+            message = str(exc)
+            if message == "没有找到要替换的内容":
+                message += "。请先用 view 重新读取目标区域，必要时用 grep 定位最新文本后重建 patch。"
+            return make_error_result("apply_patch", message)
 
+        no_op = not outcome["changed_files"]
+        summary = "补丁可应用。" if dry_run else "补丁已应用。"
         return make_text_result(
             "apply_patch",
-            "补丁可应用。" if dry_run else "补丁已应用。",
+            format_change_content(summary, outcome["diff"], no_op=no_op),
             dry_run=dry_run,
             changed_files=outcome["changed_files"],
             created_files=outcome["created_files"],
             deleted_files=outcome["deleted_files"],
             moved_files=outcome["moved_files"],
+            no_op=no_op,
+            diff=outcome["diff"],
+            diff_truncated=outcome["diff_truncated"],
         )
 
     tool = tool_from_function(apply_patch)
@@ -206,7 +215,7 @@ def _parse_delete_file(lines: list[str], index: int) -> tuple[PatchOperation, in
     return PatchOperation(action="delete", path=path), index + 1
 
 
-def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> dict[str, list[str]]:
+def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> dict[str, object]:
     """应用解析后的补丁计划。"""
 
     changed_files: list[str] = []
@@ -215,6 +224,7 @@ def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> dict
     pending_writes: list[tuple[Path, str]] = []
     pending_deletes: list[Path] = []
     moved_files: list[dict[str, str]] = []
+    diff_sections: list[str] = []
 
     for operation in plan.operations:
         target = sandbox.resolve(operation.path)
@@ -224,32 +234,67 @@ def _apply_plan(sandbox: PathSandbox, plan: PatchPlan, *, dry_run: bool) -> dict
             _plan_add_file(target, operation, pending_writes)
             created_files.append(relative)
             changed_files.append(relative)
+            after = _join_lines(operation.add_lines)
+            diff, _ = render_text_diff(relative, None, after)
+            if diff:
+                diff_sections.append(diff)
         elif operation.action == "update":
             destination = sandbox.resolve(operation.move_to) if operation.move_to else target
-            _plan_update_file(target, destination, operation, pending_writes, pending_deletes)
+            before, after = _plan_update_file(
+                target,
+                destination,
+                operation,
+                pending_writes,
+                pending_deletes,
+            )
             destination_relative = sandbox.relative(destination)
-            changed_files.append(destination_relative)
+            changed = before != after or destination != target
+            if changed:
+                changed_files.append(destination_relative)
             if operation.move_to:
                 moved_files.append({"source": relative, "destination": destination_relative})
+            diff, _ = render_text_diff(
+                destination_relative,
+                before,
+                after,
+                source_path=relative if destination != target else None,
+            )
+            if diff:
+                diff_sections.append(diff)
         elif operation.action == "delete":
-            _plan_delete_file(target, pending_deletes)
+            before = _plan_delete_file(target, pending_deletes)
             deleted_files.append(relative)
             changed_files.append(relative)
+            diff, _ = render_text_diff(relative, before, None)
+            if diff:
+                diff_sections.append(diff)
         else:
             raise ValueError(f"未知 patch 操作：{operation.action}")
 
     if not dry_run:
         for target, text in pending_writes:
+            if target.exists():
+                try:
+                    if safe_read_text(target) == text:
+                        continue
+                except UnicodeDecodeError:
+                    pass
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
         for target in pending_deletes:
             target.unlink()
 
+    combined_diff, diff_truncated = truncate_head_tail(
+        "\n\n".join(diff_sections),
+        20000,
+    )
     return {
         "changed_files": changed_files,
         "created_files": created_files,
         "deleted_files": deleted_files,
         "moved_files": moved_files,
+        "diff": combined_diff,
+        "diff_truncated": diff_truncated,
     }
 
 
@@ -267,7 +312,7 @@ def _plan_update_file(
     operation: PatchOperation,
     pending_writes: list[tuple[Path, str]],
     pending_deletes: list[Path],
-) -> None:
+) -> tuple[str, str]:
     """准备更新文件写入。"""
 
     if not target.exists():
@@ -282,6 +327,7 @@ def _plan_update_file(
     except UnicodeDecodeError as exc:
         raise ValueError(f"文件不是 UTF-8 文本或无法作为文本读取：{operation.path}") from exc
 
+    original_text = text
     for hunk in operation.hunks:
         old_text = _join_lines(hunk.old_lines)
         new_text = _join_lines(hunk.new_lines)
@@ -295,16 +341,22 @@ def _plan_update_file(
     pending_writes.append((destination, text))
     if destination != target:
         pending_deletes.append(target)
+    return original_text, text
 
 
-def _plan_delete_file(target: Path, pending_deletes: list[Path]) -> None:
+def _plan_delete_file(target: Path, pending_deletes: list[Path]) -> str | None:
     """准备删除文件。"""
 
     if not target.exists():
         raise ValueError("文件不存在")
     if not target.is_file():
         raise ValueError("Delete File 只能删除文件")
+    try:
+        text = safe_read_text(target)
+    except UnicodeDecodeError:
+        text = None
     pending_deletes.append(target)
+    return text
 
 
 def _join_lines(lines: list[str]) -> str:

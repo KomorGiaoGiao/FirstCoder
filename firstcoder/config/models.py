@@ -56,6 +56,7 @@ class ModelProfile:
     provider: ProviderProfile
     request: ModelRequestOptions
     context_window: int | None = None
+    vision: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +209,7 @@ def build_model_catalog(
             raw.get("context_window"),
             f"模型 {ref}.context_window",
         )
+        vision = _optional_bool(raw.get("vision"), f"模型 {ref}.vision")
         _validate_context_capacity(
             ref=ref,
             context_window=context_window,
@@ -222,6 +224,7 @@ def build_model_catalog(
                 provider=provider,
                 request=request,
                 context_window=context_window,
+                vision=vision,
             )
         )
     default_ref = _config_value(project_config, "default_model") or _config_value(global_config, "default_model")

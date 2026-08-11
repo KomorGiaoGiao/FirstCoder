@@ -13,7 +13,12 @@ from firstcoder.runtime.cancellation import AgentCancelledError, CancellationTok
 from firstcoder.runtime.user_input import UserInputRequest
 from firstcoder.agent.ports import ContextManagerLike
 from firstcoder.agent.loop_limits import AgentLoopLimits, AgentLoopStopReason
+from firstcoder.agent.provider_retry import DEFAULT_PROVIDER_RETRY_POLICY, ProviderRetryPolicy
+from firstcoder.agent.execution_evidence import ExecutionEvidence, is_mutation_result
+from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities, PLANNING_TOOL_NAMES
 from firstcoder.agent.session import AgentSession, PendingPermissionExecution
+from firstcoder.agent.stagnation import StagnationGuard, append_guidance
+from firstcoder.agent.telemetry import AgentTurnTelemetry
 from firstcoder.agent.task_boundary_classifier import TaskBoundaryClassifier
 from firstcoder.agent.task_plan_policy import TaskPlanPolicy, render_current_task_plan_snapshot
 from firstcoder.agent.tool_execution import ToolExecutionEvent, ToolExecutor
@@ -48,6 +53,9 @@ from firstcoder.agent.subagent import SubagentRunner
 from firstcoder.tools.delegate import create_delegate_tool
 from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.tools.types import Tool, ToolResult, make_error_result
+
+
+MAX_COMPLETION_GATE_ATTEMPTS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +99,10 @@ class AgentLoop:
         context_window: int | None = None,
         background_manager: BackgroundJobManager | None = None,
         background_tool_names: frozenset[str] | None = None,
-        enable_delegate_tool: bool = True,
+        enable_delegate_tool: bool | None = None,
+        runtime_capabilities: AgentRuntimeCapabilities | None = None,
+        provider_retry_policy: ProviderRetryPolicy | None = None,
+        provider_retry_sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self.session = session
         self.tool_settlement = ToolCallSettlement(session)
@@ -104,18 +115,41 @@ class AgentLoop:
         self.limits = limits or AgentLoopLimits.default()
         self.max_tool_rounds = self.limits.max_tool_rounds
         self.clock = clock
+        self.telemetry_clock = time.monotonic
         self.provider_call_count = 0
         self.turn_started_at: float | None = None
+        self.telemetry_started_at: float | None = None
         self.last_stream_events: list[ChatStreamEvent] = []
         self.stream_event_handler = stream_event_handler
         self.tool_event_handler = tool_event_handler
         self.guidance_provider = guidance_provider
         self.cancellation_token = cancellation_token
+        self.provider_retry_policy = provider_retry_policy or DEFAULT_PROVIDER_RETRY_POLICY
+        self.provider_retry_sleeper = provider_retry_sleeper or time.sleep
         self.background_manager = background_manager
-        self.background_tool_names = background_tool_names if background_tool_names is not None else DEFAULT_BACKGROUND_TOOL_NAMES
-        self.enable_delegate_tool = enable_delegate_tool
+        self.runtime_capabilities = runtime_capabilities or (
+            AgentRuntimeCapabilities.benchmark(session.benchmark_task)
+            if session.benchmark_task
+            else AgentRuntimeCapabilities.interactive()
+        )
+        configured_background_names = self.runtime_capabilities.background_tool_names
+        self.background_tool_names = (
+            background_tool_names
+            if background_tool_names is not None
+            else configured_background_names or DEFAULT_BACKGROUND_TOOL_NAMES
+        )
+        self.enable_delegate_tool = (
+            self.runtime_capabilities.enable_delegate_tool
+            if enable_delegate_tool is None
+            else enable_delegate_tool
+        )
         self._task_plan_reconciliation_attempted = False
+        self._completion_gate_attempted = False
+        self._completion_gate_attempt_count = 0
         self._tool_rounds_completed = 0
+        self.execution_evidence = ExecutionEvidence.for_task(session.benchmark_task)
+        self.stagnation_guard = StagnationGuard()
+        self.turn_telemetry = AgentTurnTelemetry()
         self.task_boundary_classifier = TaskBoundaryClassifier(
             session=session,
             provider=provider,
@@ -146,8 +180,8 @@ class AgentLoop:
             cancellation_token=self.cancellation_token,
             tag_task_boundary_messages=self._tag_task_boundary_messages_with_active_hash,
             emit_settlements=self._emit_settlements,
-            validate_tool_call=self._validate_mcp_tool_call,
-            observe_tool_result=self._observe_mcp_search_result,
+            validate_tool_call=self._validate_tool_call,
+            observe_tool_result=self._observe_tool_result,
             background_manager=self.background_manager,
             background_tool_names=self.background_tool_names,
         )
@@ -178,6 +212,23 @@ class AgentLoop:
     def clear_stream_events(self) -> None:
         self.last_stream_events = []
 
+    def _validate_attachments(self, attachments: list[UserAttachment] | None) -> None:
+        """在消息落库前确认 provider 能消费本轮附件。
+
+        文件附件可以继续以内联文本或路径引用进入上下文；图片则必须由当前模型显式声明
+        视觉能力，避免 provider 静默忽略图片后让 agent 在错误前提下执行任务。
+        """
+
+        if not attachments or not any(item.kind == "image" for item in attachments):
+            return
+        capabilities = getattr(self.provider, "capabilities", None)
+        if bool(getattr(capabilities, "supports_vision", False)):
+            return
+        raise ValueError(
+            f"模型 {self.provider.name}/{self.provider.model} 未声明视觉能力，"
+            "无法发送图片附件；请在对应 [models] 配置中设置 vision = true。"
+        )
+
     def _run_user_turn_sync(
         self,
         content: str,
@@ -185,6 +236,19 @@ class AgentLoop:
         attachments: list[UserAttachment] | None = None,
     ) -> AgentTurnResult:
         """Synchronous implementation kept private behind ``run_user_turn``."""
+
+        try:
+            return self._run_user_turn_sync_impl(content, attachments=attachments)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
+
+    def _run_user_turn_sync_impl(
+        self,
+        content: str,
+        *,
+        attachments: list[UserAttachment] | None = None,
+    ) -> AgentTurnResult:
 
         if self.session.pending_permission_execution is not None:
             # 上一轮已经把 assistant tool_call 写进历史，但还缺一个匹配的 tool_result。
@@ -195,6 +259,7 @@ class AgentLoop:
                 pending_input=self.tool_executor.permission_input_request_from_pending(pending),
             )
 
+        self._validate_attachments(attachments)
         self._begin_turn()
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
@@ -235,6 +300,16 @@ class AgentLoop:
         """
 
         try:
+            return self._resume_with_user_input_sync_impl(request_id, answer)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
+
+    def _resume_with_user_input_sync_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        pending = self.session.pending_permission_execution
+        if pending is not None and pending.request_id == request_id:
+            self._begin_turn(new_user_turn=False)
+        try:
             self._check_turn_timeout()
             self._check_cancelled()
         except _AgentLoopLimitReached as exc:
@@ -244,7 +319,6 @@ class AgentLoop:
         result = self._append_permission_resume_result(request_id, answer)
         if result is not None:
             return result
-        self._begin_turn(new_user_turn=False)
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
@@ -252,6 +326,16 @@ class AgentLoop:
     async def _resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
         """流式模式下恢复权限确认，并继续消费 provider stream。"""
 
+        try:
+            return await self._resume_with_user_input_streaming_impl(request_id, answer)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
+
+    async def _resume_with_user_input_streaming_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        pending = self.session.pending_permission_execution
+        if pending is not None and pending.request_id == request_id:
+            self._begin_turn(new_user_turn=False)
         try:
             self._check_turn_timeout()
             self._check_cancelled()
@@ -262,7 +346,6 @@ class AgentLoop:
         result = await self._append_permission_resume_result_async(request_id, answer)
         if result is not None:
             return result
-        self._begin_turn(new_user_turn=False)
         self._check_cancelled()
         return await self._run_tool_loop_interactive_async(self._stream_once_with_recovery)
 
@@ -278,6 +361,18 @@ class AgentLoop:
         返回完整 `ChatResponse.tool_calls` 后，才写入 assistant message 并执行工具。
         """
 
+        try:
+            return await self._run_user_turn_streaming_impl(content, attachments=attachments)
+        except BaseException as exc:
+            self._persist_errored_turn(exc)
+            raise
+
+    async def _run_user_turn_streaming_impl(
+        self,
+        content: str,
+        *,
+        attachments: list[UserAttachment] | None = None,
+    ) -> AgentTurnResult:
         self.last_stream_events = []
         if self.session.pending_permission_execution is not None:
             pending = self.session.pending_permission_execution
@@ -287,6 +382,7 @@ class AgentLoop:
                 pending_input=pending_input,
             )
 
+        self._validate_attachments(attachments)
         self._begin_turn()
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
@@ -431,6 +527,7 @@ class AgentLoop:
 
     def _finish_permission_resume(self, pending: PendingPermissionExecution, result: ToolResult) -> None:
         self.session.pending_permission_execution = None
+        self._observe_tool_result(pending.tool_call, result)
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
         self._tool_rounds_completed += 1
@@ -528,23 +625,29 @@ class AgentLoop:
         这时可以先触发 blocking compact，再重建 provider messages 重试一次。
         """
 
-        try:
-            return self._complete_once(
-                tool_choice=tool_choice,
-                runtime_instruction=runtime_instruction,
-            )
-        except ProviderError as exc:
-            if not exc.requires_compaction:
+        transient_retries = 0
+        compaction_attempted = False
+        while True:
+            try:
+                return self._complete_once(
+                    tool_choice=tool_choice,
+                    runtime_instruction=runtime_instruction,
+                )
+            except ProviderError as exc:
+                if exc.retryable and transient_retries < self.provider_retry_policy.max_retries:
+                    transient_retries += 1
+                    self.turn_telemetry.observe_provider_retry(exc.kind)
+                    self._wait_before_provider_retry(transient_retries)
+                    continue
+                if exc.requires_compaction and not compaction_attempted:
+                    compaction_attempted = True
+                    result = self._compact_for_prompt_too_long(
+                        runtime_instruction=runtime_instruction
+                    )
+                    if result is not None and result.status == "success":
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        continue
                 raise
-            result = self._compact_for_prompt_too_long(
-                runtime_instruction=runtime_instruction
-            )
-            if result is None or result.status != "success":
-                raise
-            return self._complete_once(
-                tool_choice=tool_choice,
-                runtime_instruction=runtime_instruction,
-            )
 
     async def _stream_once(
         self,
@@ -587,7 +690,8 @@ class AgentLoop:
         tool_choice="auto",
         runtime_instruction: str | None = None,
     ) -> ChatResponse:
-        retryable_failures = 0
+        transient_retries = 0
+        compaction_attempted = False
         while True:
             try:
                 return await self._stream_once_attempt(
@@ -596,24 +700,41 @@ class AgentLoop:
                 )
             except ProviderError as exc:
                 if exc.retryable:
-                    if retryable_failures == 0:
-                        retryable_failures += 1
+                    transient_retries += 1
+                    if transient_retries <= self.provider_retry_policy.max_retries:
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        await self._wait_before_provider_retry_async(transient_retries)
+                    if transient_retries < self.provider_retry_policy.max_retries:
                         continue
-                    return self._complete_once(
+                    return self._complete_once_with_recovery(
                         tool_choice=tool_choice,
                         runtime_instruction=runtime_instruction,
                     )
-                if not exc.requires_compaction:
-                    raise
-                result = self._compact_for_prompt_too_long(
-                    runtime_instruction=runtime_instruction
-                )
-                if result is None or result.status != "success":
-                    raise
-                return await self._stream_once_attempt(
-                    tool_choice=tool_choice,
-                    runtime_instruction=runtime_instruction,
-                )
+                if exc.requires_compaction and not compaction_attempted:
+                    compaction_attempted = True
+                    result = self._compact_for_prompt_too_long(
+                        runtime_instruction=runtime_instruction
+                    )
+                    if result is not None and result.status == "success":
+                        self.turn_telemetry.observe_provider_retry(exc.kind)
+                        continue
+                raise
+
+    def _wait_before_provider_retry(self, retry_number: int) -> None:
+        self._check_turn_timeout()
+        self._check_cancelled()
+        delay = self.provider_retry_policy.delay_for_retry(retry_number)
+        self.provider_retry_sleeper(delay)
+        self._check_turn_timeout()
+        self._check_cancelled()
+
+    async def _wait_before_provider_retry_async(self, retry_number: int) -> None:
+        self._check_turn_timeout()
+        self._check_cancelled()
+        delay = self.provider_retry_policy.delay_for_retry(retry_number)
+        await anyio.to_thread.run_sync(self.provider_retry_sleeper, delay)
+        self._check_turn_timeout()
+        self._check_cancelled()
 
     async def _stream_once_attempt(
         self,
@@ -656,7 +777,14 @@ class AgentLoop:
             if pending_input is not None:
                 return self._pending_turn_result(pending_input)
             if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
-                response, pending_input, _ = self._run_task_plan_reconciliation_if_needed(
+                response, pending_input, tool_rounds = self._run_task_plan_reconciliation_if_needed(
+                    response,
+                    complete_once,
+                    tool_rounds,
+                )
+                if pending_input is not None:
+                    return self._pending_turn_result(pending_input)
+                response, pending_input, _ = self._run_completion_gate_if_needed(
                     response,
                     complete_once,
                     tool_rounds,
@@ -698,7 +826,14 @@ class AgentLoop:
             if pending_input is not None:
                 return self._pending_turn_result(pending_input)
             if response.finish_reason != AgentLoopStopReason.TOOL_ROUND_LIMIT.value:
-                response, pending_input, _ = await self._run_task_plan_reconciliation_if_needed_async(
+                response, pending_input, tool_rounds = await self._run_task_plan_reconciliation_if_needed_async(
+                    response,
+                    complete_once,
+                    tool_rounds,
+                )
+                if pending_input is not None:
+                    return self._pending_turn_result(pending_input)
+                response, pending_input, _ = await self._run_completion_gate_if_needed_async(
                     response,
                     complete_once,
                     tool_rounds,
@@ -721,12 +856,30 @@ class AgentLoop:
 
         return self._complete_turn(response)
 
-    @staticmethod
-    def _pending_turn_result(pending_input: UserInputRequest) -> AgentTurnResult:
+    def _pending_turn_result(self, pending_input: UserInputRequest) -> AgentTurnResult:
+        self._persist_turn_telemetry(
+            status="paused",
+            stop_reason=pending_input.kind,
+            finalize=False,
+        )
         return AgentTurnResult(status=AgentTurnStatus.WAITING_FOR_USER_INPUT, pending_input=pending_input)
 
     def _complete_turn(self, response: ChatResponse) -> AgentTurnResult:
         self.session.append_assistant_response(response)
+        status = "completed"
+        if response.finish_reason == "interrupted":
+            status = "interrupted"
+        elif response.finish_reason == "length" or response.finish_reason in {
+            reason.value for reason in AgentLoopStopReason
+        }:
+            status = "limited"
+        elif response.finish_reason in {"error", "content_filter"}:
+            status = "errored"
+        self._persist_turn_telemetry(
+            status=status,
+            stop_reason=response.finish_reason or "completed",
+            finalize=True,
+        )
         return AgentTurnResult(status=AgentTurnStatus.COMPLETED, response=response)
 
     def _continue_tool_loop_from_response(
@@ -788,6 +941,68 @@ class AgentLoop:
         if instruction is None:
             return None
         self._task_plan_reconciliation_attempted = True
+        return instruction
+
+    def _run_completion_gate_if_needed(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        while True:
+            instruction = self._completion_gate_instruction()
+            if instruction is None:
+                return response, None, tool_rounds
+            response = self._drop_unsupported_tool_calls(
+                complete_once(runtime_instruction=instruction)
+            )
+            response, pending_input, tool_rounds = self._continue_tool_loop_from_response(
+                response,
+                complete_once,
+                tool_rounds,
+            )
+            if pending_input is not None:
+                return response, pending_input, tool_rounds
+
+    async def _run_completion_gate_if_needed_async(
+        self,
+        response: ChatResponse,
+        complete_once,
+        tool_rounds: int,
+    ) -> tuple[ChatResponse, UserInputRequest | None, int]:
+        while True:
+            instruction = self._completion_gate_instruction()
+            if instruction is None:
+                return response, None, tool_rounds
+            response = self._drop_unsupported_tool_calls(
+                await complete_once(runtime_instruction=instruction)
+            )
+            response, pending_input, tool_rounds = await self._continue_tool_loop_from_response_async(
+                response,
+                complete_once,
+                tool_rounds,
+            )
+            if pending_input is not None:
+                return response, pending_input, tool_rounds
+
+    def _completion_gate_instruction(self) -> str | None:
+        if (
+            not self.runtime_capabilities.enable_completion_gate
+            or self._completion_gate_attempted
+            or self._completion_gate_attempt_count >= MAX_COMPLETION_GATE_ATTEMPTS
+        ):
+            return None
+        jobs = ()
+        if self.background_manager is not None:
+            jobs = self.background_manager.list(session_id=self.session.session_id)
+        decision = self.execution_evidence.completion_decision(
+            background_jobs=jobs,
+        )
+        instruction = decision.render_instruction()
+        if instruction is not None:
+            self._completion_gate_attempted = True
+            self._completion_gate_attempt_count += 1
+            self.turn_telemetry.observe_completion_gate(reason_count=len(decision.reasons))
         return instruction
 
     async def _continue_tool_loop_from_response_async(
@@ -1007,6 +1222,12 @@ class AgentLoop:
                 *system_prefix,
                 ChatMessage(role="system", content=runtime_instruction),
             ]
+        acceptance_contract = self.execution_evidence.render_acceptance_contract()
+        if acceptance_contract:
+            system_prefix = [
+                *system_prefix,
+                ChatMessage(role="system", content=acceptance_contract),
+            ]
         if resolved_view.task_plan is not None:
             system_prefix = [
                 *system_prefix,
@@ -1033,6 +1254,24 @@ class AgentLoop:
             if (
                 definition.name in self._mcp_tool_names
                 and definition.name not in self._active_mcp_tool_names
+            ):
+                continue
+            if definition.name == "think" and not self.runtime_capabilities.expose_think_tool:
+                continue
+            if (
+                definition.name == "web_search"
+                and not self.runtime_capabilities.expose_web_search_tool
+            ):
+                continue
+            if (
+                definition.name == "ask_user"
+                and not self.runtime_capabilities.allow_user_input
+            ):
+                continue
+            if (
+                definition.name in PLANNING_TOOL_NAMES
+                and not self.runtime_capabilities.expose_planning_tools
+                and self.session.rebuild_view().task_plan is None
             ):
                 continue
             definitions.append(self._augment_tool_definition(definition))
@@ -1096,8 +1335,104 @@ class AgentLoop:
             self._active_mcp_tool_names.clear()
             self.provider_call_count = 0
             self.turn_started_at = self.clock()
+            self.telemetry_started_at = self.telemetry_clock()
             self._task_plan_reconciliation_attempted = False
+            self._completion_gate_attempted = False
+            self._completion_gate_attempt_count = 0
             self._tool_rounds_completed = 0
+            self.execution_evidence.reset()
+            self.stagnation_guard.reset()
+            self.turn_telemetry.begin(
+                turn_number=self.session.current_turn + 1,
+                started_at=self.telemetry_started_at,
+            )
+        elif not self.turn_telemetry.active:
+            self.turn_started_at = self.clock()
+            self.telemetry_started_at = self.telemetry_clock()
+            self.turn_telemetry.begin(
+                turn_number=self.session.current_turn,
+                started_at=self.telemetry_started_at,
+            )
+
+    def _validate_tool_call(self, tool_call: ToolCall) -> ToolResult | None:
+        validation_error = self._validate_mcp_tool_call(tool_call)
+        if validation_error is not None:
+            return validation_error
+        route_error = self._runtime_tool_visibility_error(tool_call)
+        if route_error is not None:
+            return route_error
+        if not self.runtime_capabilities.enable_stagnation_guard:
+            return None
+        return self.stagnation_guard.validate(tool_call)
+
+    def _observe_tool_result(self, tool_call: ToolCall, result: ToolResult) -> None:
+        self._observe_mcp_search_result(tool_call, result)
+        self.turn_telemetry.observe_tool_result(
+            tool_call,
+            result,
+            elapsed_seconds=self._turn_elapsed_seconds(),
+        )
+        if not (
+            self.runtime_capabilities.enable_completion_gate
+            or self.runtime_capabilities.enable_stagnation_guard
+        ):
+            return
+        if (
+            tool_call.name == "task_boundary"
+            and result.ok
+            and result.data.get("should_trigger_compaction")
+        ):
+            self.execution_evidence.reset()
+            self.stagnation_guard.reset()
+            self._completion_gate_attempted = False
+            self._completion_gate_attempt_count = 0
+            return
+        if self.runtime_capabilities.enable_completion_gate:
+            self.execution_evidence.observe(tool_call, result)
+            if self._completion_gate_attempted and is_mutation_result(tool_call, result):
+                self._completion_gate_attempted = False
+        if self.runtime_capabilities.enable_stagnation_guard:
+            append_guidance(result, self.stagnation_guard.observe(tool_call, result))
+
+    def _runtime_tool_visibility_error(self, tool_call: ToolCall) -> ToolResult | None:
+        if tool_call.name == "think" and not self.runtime_capabilities.expose_think_tool:
+            return make_error_result(
+                tool_call.name,
+                "当前运行模式未暴露 think 工具。",
+                tool_not_routed=True,
+            )
+        if tool_call.name == "ask_user" and not self.runtime_capabilities.allow_user_input:
+            return make_error_result(
+                tool_call.name,
+                "当前运行模式为非交互 benchmark，未暴露 ask_user；请基于题面自主决策并验证目标。",
+                tool_not_routed=True,
+            )
+        if (
+            tool_call.name == "web_search"
+            and not self.runtime_capabilities.expose_web_search_tool
+        ):
+            return make_error_result(
+                tool_call.name,
+                "当前 benchmark 协议未暴露 web_search；只能 fetch 题面已知的明确 URL。",
+                tool_not_routed=True,
+            )
+        if (
+            tool_call.name in PLANNING_TOOL_NAMES
+            and not self.runtime_capabilities.expose_planning_tools
+            and self.session.rebuild_view().task_plan is None
+        ):
+            return make_error_result(
+                tool_call.name,
+                "当前任务被路由为简单单任务，未暴露 TaskPlan 工具；请直接完成并验证目标。",
+                tool_not_routed=True,
+            )
+        if tool_call.name == "delegate" and not self.enable_delegate_tool:
+            return make_error_result(
+                tool_call.name,
+                "当前任务未启用子代理；请使用主代理工具直接完成。",
+                tool_not_routed=True,
+            )
+        return None
 
     def _validate_mcp_tool_call(self, tool_call: ToolCall) -> ToolResult | None:
         if tool_call.name not in self._mcp_tool_names:
@@ -1166,6 +1501,52 @@ class AgentLoop:
     def _reserve_provider_call(self) -> None:
         self._check_provider_call_limit()
         self.provider_call_count += 1
+        self.turn_telemetry.observe_provider_call()
+
+    def _turn_elapsed_seconds(self) -> float:
+        if self.telemetry_started_at is None:
+            return 0.0
+        return max(0.0, self.telemetry_clock() - self.telemetry_started_at)
+
+    def _persist_turn_telemetry(
+        self,
+        *,
+        status: str,
+        stop_reason: str,
+        finalize: bool,
+        provider_failure_category: str | None = None,
+    ) -> None:
+        payload = self.turn_telemetry.snapshot(
+            status=status,
+            stop_reason=stop_reason,
+            elapsed_seconds=self._turn_elapsed_seconds(),
+            provider_failure_category=provider_failure_category,
+            finalize=finalize,
+        )
+        if payload is not None:
+            self.session.writer.append_agent_turn_telemetry(payload)
+
+    def _persist_errored_turn(self, exc: BaseException) -> None:
+        if not self.turn_telemetry.active:
+            return
+        if (
+            isinstance(exc, AgentCancelledError | KeyboardInterrupt)
+            or type(exc).__name__ == "CancelledError"
+        ):
+            self._persist_turn_telemetry(
+                status="interrupted",
+                stop_reason="interrupted",
+                finalize=True,
+            )
+            return
+        provider_category = exc.kind.value if isinstance(exc, ProviderError) else None
+        stop_reason = provider_category or type(exc).__name__
+        self._persist_turn_telemetry(
+            status="errored",
+            stop_reason=stop_reason,
+            provider_failure_category=provider_category,
+            finalize=True,
+        )
 
     def _check_turn_timeout(self) -> None:
         limit = self.limits.max_turn_seconds

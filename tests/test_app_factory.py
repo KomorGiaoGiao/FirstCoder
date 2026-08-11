@@ -6,6 +6,7 @@ import pytest
 
 from firstcoder.agent.loop import AgentLoop
 from firstcoder.agent.loop_limits import AgentLoopLimits
+from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.agent.session import AgentSession
 from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.app.model_state import ModelStateStore
@@ -105,6 +106,44 @@ def test_factory_keeps_builtin_tools_when_mcp_connection_fails(tmp_path: Path) -
     assert "write" in [tool.name for tool in app.current_session.session.tool_registry.tools()]
     assert "mcp__demo__ping" not in [tool.name for tool in app.current_session.session.tool_registry.tools()]
     assert "mcp_tool_search" not in app.current_session.session.tool_registry.names()
+
+
+def test_factory_can_disable_ask_user_for_noninteractive_runtime(tmp_path: Path) -> None:
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_noninteractive",
+        allow_user_input=False,
+        mcp_manager_factory=lambda configs: FakeMcpManager(),
+    )
+
+    assert "ask_user" not in app.current_session.session.tool_registry.names()
+
+
+def test_factory_keeps_ask_user_enabled_by_default(tmp_path: Path) -> None:
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_interactive",
+        mcp_manager_factory=lambda configs: FakeMcpManager(),
+    )
+
+    assert "ask_user" in app.current_session.session.tool_registry.names()
+
+
+def test_factory_benchmark_runtime_keeps_fetch_but_hides_web_search(tmp_path: Path) -> None:
+    capabilities = AgentRuntimeCapabilities.benchmark("Configure and verify the server")
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        provider=FakeProvider([]),
+        session_id="sess_benchmark_tools",
+        runtime_capabilities=capabilities,
+        mcp_manager_factory=lambda configs: FakeMcpManager(),
+    )
+
+    names = app.current_session.session.tool_registry.names()
+    assert "fetch" in names
+    assert "web_search" not in names
 
 
 def test_factory_custom_tools_mode_does_not_append_mcp_tools(tmp_path: Path) -> None:

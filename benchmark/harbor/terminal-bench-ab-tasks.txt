@@ -1,0 +1,6 @@
+chess-best-move
+configure-git-webserver
+compile-compcert
+qemu-alpine-ssh
+adaptive-rejection-sampler
+tune-mjcf

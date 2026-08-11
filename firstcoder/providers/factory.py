@@ -44,6 +44,8 @@ def _catalog_capabilities(base: ProviderCapabilities, profile: ModelProfile) -> 
         overrides["supports_parallel_tool_calls"] = profile.provider.parallel_tool_calls
     if profile.provider.streaming is not None:
         overrides["supports_streaming"] = profile.provider.streaming
+    if profile.vision is not None:
+        overrides["supports_vision"] = profile.vision
     return replace(base, **overrides) if overrides else base
 
 

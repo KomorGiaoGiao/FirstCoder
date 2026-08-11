@@ -260,7 +260,7 @@ def test_create_provider_for_model_uses_profile_provider_and_model_options() -> 
                     "streaming": False,
                 }
             },
-            "models": {"yuren/gpt-test": {}},
+            "models": {"yuren/gpt-test": {"vision": True}},
         },
     )
 
@@ -272,6 +272,7 @@ def test_create_provider_for_model_uses_profile_provider_and_model_options() -> 
     assert provider.base_url == "https://example.test/v1"
     assert provider.capabilities.supports_parallel_tool_calls is True
     assert provider.capabilities.supports_streaming is False
+    assert provider.capabilities.supports_vision is True
 
 
 def test_create_provider_for_model_supports_anthropic_profile() -> None:

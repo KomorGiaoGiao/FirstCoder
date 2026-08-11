@@ -64,6 +64,11 @@ class SessionEventWriter:
 
         self.append_event("session_metadata_updated", metadata_without_reserved_keys(metadata))
 
+    def append_agent_turn_telemetry(self, payload: dict[str, Any]) -> None:
+        """持久化 agent 控制循环指标，不把它投影成 provider 消息。"""
+
+        self.append_event("agent_turn_telemetry", dict(payload))
+
     def append_message_part_metadata_updated(self, *, message_id: str, part_id: str, metadata: dict[str, Any]) -> None:
         self.append_event(
             "message_part_metadata_updated",

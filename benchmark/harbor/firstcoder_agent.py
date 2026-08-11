@@ -8,6 +8,9 @@ hints into the task instruction.
 
 from __future__ import annotations
 
+import base64
+import json
+import math
 import shutil
 import shlex
 from pathlib import Path
@@ -16,6 +19,8 @@ from typing import Final, override
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+from firstcoder.input.attachments import extract_explicit_image_references
 
 
 _AGENT_ROOT: Final = "/opt/firstcoder-agent"
@@ -26,6 +31,7 @@ _CONFIG_ROOT: Final = "/tmp/firstcoder-harbor-config"
 # ``--mounts``) so FirstCoder's dependencies download once and are reused
 # across trials and containers instead of being fetched for every task.
 _CACHE_DIR: Final = "/opt/firstcoder-cache"
+_WHEELHOUSE_DIR: Final = "/opt/firstcoder-wheelhouse"
 _DEFAULT_PACKAGE: Final = (
     "https://github.com/KomorGiaoGiao/FirstCoder/archive/refs/heads/main.zip"
 )
@@ -45,14 +51,18 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         self,
         *args,
         max_tool_rounds: int | str = 90,
+        max_turn_seconds: float | str = 1800,
         reasoning_effort: str | None = None,
+        supports_vision: bool | str = True,
         source_dir: str | Path | None = None,
         package: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._max_tool_rounds = _positive_int(max_tool_rounds, "max_tool_rounds")
+        self._max_turn_seconds = _positive_float(max_turn_seconds, "max_turn_seconds")
         self._reasoning_effort = _optional_nonblank(reasoning_effort, "reasoning_effort")
+        self._supports_vision = _bool_value(supports_vision, "supports_vision")
         self._source_dir = (
             Path(source_dir).expanduser().resolve()
             if source_dir is not None
@@ -84,7 +94,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
             command=(
                 "set -euo pipefail; "
                 f"mkdir -p {shlex.quote(_AGENT_ROOT)} {shlex.quote(_AGENT_ROOT + '/bin')} "
-                f"{shlex.quote(_CACHE_DIR)}; "
+                f"{shlex.quote(_CACHE_DIR)} {shlex.quote(_WHEELHOUSE_DIR)}; "
                 f"chown -R {quoted_user}:{quoted_user} {shlex.quote(_AGENT_ROOT)}; "
                 # The cache may be a shared bind mount; only fix ownership of the
                 # mount point itself so a pre-populated host cache is left intact.
@@ -111,10 +121,17 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         """Run one FirstCoder benchmark turn in Harbor's configured workdir."""
 
         del context  # FirstCoder persists its own local benchmark transcript.
+        resume_session = instruction.startswith("The tests are correct. Do not modify the tests.")
+        attachments = (
+            []
+            if resume_session
+            else await self._resolve_instruction_image_paths(instruction, environment)
+        )
         command = self._run_command(
             instruction,
             session_id=environment.session_id,
-            resume_session=instruction.startswith("The tests are correct. Do not modify the tests."),
+            resume_session=resume_session,
+            attachments=attachments,
         )
         await self.exec_as_agent(
             environment,
@@ -151,6 +168,32 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         )
         return _REMOTE_SOURCE_DIR
 
+    async def _resolve_instruction_image_paths(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+    ) -> list[str]:
+        """在任务容器中解析题面明确引用且实际存在的工作区图片。
+
+        Harbor 的任务文件只存在于容器内，主机 adapter 不能安全假设 `/app` 的内容。
+        因此这里只在题面出现图片路径字面量时启动一次轻量探测，并复用 FirstCoder 自身
+        的附件校验逻辑。缺失的输出示例不会被附加，工作区外路径也会被忽略。
+        """
+
+        if not extract_explicit_image_references(instruction):
+            return []
+        result = await self.exec_as_agent(
+            environment,
+            command=_attachment_discovery_command(instruction),
+        )
+        try:
+            paths = json.loads(result.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("FirstCoder Harbor attachment discovery returned invalid JSON") from exc
+        if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+            raise RuntimeError("FirstCoder Harbor attachment discovery returned invalid paths")
+        return paths
+
     def _stage_local_source(self) -> Path:
         """Create the minimal host-side package tree copied into a task image."""
 
@@ -183,6 +226,7 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
         *,
         session_id: str,
         resume_session: bool = False,
+        attachments: list[str] | None = None,
     ) -> str:
         """运行 agent 并将会话副本导出为 Harbor 可收集的日志文件。"""
 
@@ -191,9 +235,12 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
 
         effort = f"--reasoning-effort {shlex.quote(self._reasoning_effort)} " if self._reasoning_effort else ""
         resume = "--resume-session " if resume_session else ""
+        attachment_args = "".join(
+            f"--attachment {shlex.quote(path)} " for path in (attachments or [])
+        )
         return (
             "set -o pipefail; "
-            f"{_catalog_bootstrap_command()}"
+            f"{_catalog_bootstrap_command(supports_vision=self._supports_vision)}"
             f"XDG_CONFIG_HOME={shlex.quote(_CONFIG_ROOT)} "
             f"{shlex.quote(_venv_python())} -m firstcoder "
             "--benchmark --project . "
@@ -202,7 +249,9 @@ class FirstCoderHarborAgent(BaseInstalledAgent):
             f"--session-id {shlex.quote(safe_session_id)} "
             f"{resume}"
             f"--max-tool-rounds {self._max_tool_rounds} "
+            f"--max-turn-seconds {_format_number(self._max_turn_seconds)} "
             f"{effort}"
+            f"{attachment_args}"
             f"--message {shlex.quote(instruction)} "
             "2>&1 | tee /logs/agent/firstcoder.txt; "
             'FIRSTCODER_EXIT="${PIPESTATUS[0]}"; '
@@ -341,8 +390,19 @@ fi
 """
 
 
-def _catalog_bootstrap_command() -> str:
-    script = r"""import json
+def _catalog_bootstrap_command(*, supports_vision: bool = True) -> str:
+    script = _catalog_bootstrap_script(supports_vision=supports_vision)
+    return (
+        f"XDG_CONFIG_HOME={shlex.quote(_CONFIG_ROOT)} "
+        f"{shlex.quote(_venv_python())} - <<'PY'\n{script}PY\n"
+    )
+
+
+def _catalog_bootstrap_script(*, supports_vision: bool = True) -> str:
+    """生成可独立执行的 Harbor 模型目录初始化脚本。"""
+
+    vision_literal = "true" if supports_vision else "false"
+    return rf"""import json
 import os
 
 required = ("FIRSTCODER_PROVIDER_NAME", "FIRSTCODER_MODEL", "FIRSTCODER_BASE_URL")
@@ -361,16 +421,26 @@ config = (
     + 'api_key_env = "FIRSTCODER_API_KEY"\n'
     + "parallel_tool_calls = true\n"
     + "[models." + quote(ref) + "]\n"
+    + "vision = {vision_literal}\n"
 )
 root = os.environ.get("XDG_CONFIG_HOME", "/tmp/firstcoder-harbor-config")
 path = os.path.join(root, "firstcoder", "config.toml")
 os.makedirs(os.path.dirname(path), exist_ok=True)
 open(path, "w", encoding="utf-8").write(config)
 """
-    return (
-        f"XDG_CONFIG_HOME={shlex.quote(_CONFIG_ROOT)} "
-        f"{shlex.quote(_venv_python())} - <<'PY'\n{script}PY\n"
+
+
+def _attachment_discovery_command(instruction: str) -> str:
+    encoded = base64.b64encode(instruction.encode("utf-8")).decode("ascii")
+    script = (
+        "import base64, json; "
+        "from pathlib import Path; "
+        "from firstcoder.input.attachments import resolve_explicit_image_references; "
+        f"text = base64.b64decode({encoded!r}).decode('utf-8'); "
+        "paths = resolve_explicit_image_references(text, workspace_root=Path.cwd()); "
+        "print(json.dumps([str(path) for path in paths]))"
     )
+    return f"{shlex.quote(_venv_python())} -c {shlex.quote(script)}"
 
 
 def _default_source_dir() -> Path | None:
@@ -389,11 +459,13 @@ def _ignore_source_artifacts(_directory: str, names: list[str]) -> set[str]:
 def _install_command(install_spec: str) -> str:
     quoted_root = shlex.quote(_AGENT_ROOT)
     quoted_cache = shlex.quote(_CACHE_DIR)
+    quoted_wheelhouse = shlex.quote(_WHEELHOUSE_DIR)
     quoted_spec = shlex.quote(install_spec)
     return (
         "set -euo pipefail; "
         f"AGENT_ROOT={quoted_root}; "
         f"CACHE_DIR={quoted_cache}; "
+        f"WHEELHOUSE_DIR={quoted_wheelhouse}; "
         'UV_BIN="$AGENT_ROOT/bin/uv"; '
         'PYTHON_BIN=""; '
         'if [ -x "$UV_BIN" ]; then PYTHON_BIN="$("$UV_BIN" python find 3.11)"; fi; '
@@ -410,14 +482,28 @@ def _install_command(install_spec: str) -> str:
         # The download cache is shared across concurrent trials; retry the
         # install with backoff so a single flaky fetch does not error the trial.
         'mkdir -p "$CACHE_DIR"; '
+        'PIP_FIND_LINKS_ARGS=""; '
+        'PIP_INDEX_ARGS=""; '
+        'if find "$WHEELHOUSE_DIR" -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then '
+        '  PIP_FIND_LINKS_ARGS="--find-links $WHEELHOUSE_DIR"; '
+        '  export PIP_FIND_LINKS="$WHEELHOUSE_DIR" UV_FIND_LINKS="$WHEELHOUSE_DIR"; '
+        'fi; '
+        'if [ "${FIRSTCODER_WHEELHOUSE_ONLY:-0}" = "1" ]; then '
+        '  if [ -z "$PIP_FIND_LINKS_ARGS" ]; then '
+        '    echo "FIRSTCODER_WHEELHOUSE_ONLY=1 requires a non-empty /opt/firstcoder-wheelhouse mount." >&2; exit 65; '
+        '  fi; '
+        '  PIP_INDEX_ARGS="--no-index"; export PIP_NO_INDEX=1 UV_NO_INDEX=1; '
+        'fi; '
         'install_deps() { '
         '  if [ -x "$UV_BIN" ]; then '
         '    "$UV_BIN" venv "$AGENT_ROOT/.venv" --python "$PYTHON_BIN" --clear; '
         '    "$UV_BIN" pip install --python "$AGENT_ROOT/.venv/bin/python" --cache-dir "$CACHE_DIR" '
+        '      $PIP_INDEX_ARGS $PIP_FIND_LINKS_ARGS '
         f"{quoted_spec}; "
         '  else '
         '    "$PYTHON_BIN" -m venv "$AGENT_ROOT/.venv" --clear; '
         '    "$AGENT_ROOT/.venv/bin/python" -m pip install --cache-dir "$CACHE_DIR" '
+        '      $PIP_INDEX_ARGS $PIP_FIND_LINKS_ARGS '
         f"{quoted_spec}; "
         '  fi; '
         '}; '
@@ -448,12 +534,38 @@ def _positive_int(value: int | str, name: str) -> int:
     return parsed
 
 
+def _positive_float(value: float | str, name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return parsed
+
+
+def _format_number(value: float) -> str:
+    return format(value, "g")
+
+
 def _optional_nonblank(value: str | None, name: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-blank string")
     return value.strip()
+
+
+def _bool_value(value: bool | str, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 def _session_id(value: str) -> str:

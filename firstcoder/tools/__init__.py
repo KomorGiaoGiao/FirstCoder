@@ -14,6 +14,7 @@ from firstcoder.tools.glob import create_glob_tool
 from firstcoder.tools.grep import create_grep_tool
 from firstcoder.tools.ls import create_ls_tool
 from firstcoder.tools.python_exec import create_python_exec_tool
+from firstcoder.tools.processes import create_process_tools
 from firstcoder.tools.read_multi import create_read_multi_tool
 from firstcoder.tools.shell import create_shell_tool
 from firstcoder.tools.task_boundary import create_task_boundary_tool
@@ -45,6 +46,7 @@ __all__ = [
     "create_grep_tool",
     "create_ls_tool",
     "create_python_exec_tool",
+    "create_process_tools",
     "create_read_multi_tool",
     "create_shell_tool",
     "create_task_boundary_tool",

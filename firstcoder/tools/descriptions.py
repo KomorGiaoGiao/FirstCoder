@@ -35,6 +35,13 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
         "and apply ordered patch stacks with git apply before verifying outputs."
     ),
     "python_exec": ("Run short Python code in the workspace. Use for focused data inspection or " "small scripts; prefer project tests and dedicated tools when available."),
+    "process_start": (
+        "Start a long-lived service in an independent process group with persisted logs and optional "
+        "readiness text. Prefer this over shell background syntax for servers, daemons, emulators, and watchers."
+    ),
+    "process_status": "Inspect one or all processes created by process_start.",
+    "process_logs": "Read bounded stdout/stderr logs from a process_start process.",
+    "process_stop": "Stop a process_start process and all descendants.",
     "fetch": ("Fetch a URL and return bounded text content. Use only when network access is " "needed and the URL is relevant to the task."),
     "web_search": ("Search the web for current external information. Use only when local files " "are insufficient or the user asks for up-to-date information."),
     "delegate": (

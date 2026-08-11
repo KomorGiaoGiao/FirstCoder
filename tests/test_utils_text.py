@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from firstcoder.utils.text import safe_read_text, truncate
+from firstcoder.utils.text import safe_read_text, truncate, truncate_head_tail
 
 
 class TestTruncate:
@@ -34,6 +34,22 @@ class TestTruncate:
         result, was_truncated = truncate("abcdef", 3, suffix="...")
         assert result == "abc..."
         assert was_truncated is True
+
+
+class TestTruncateHeadTail:
+    def test_preserves_both_ends_when_truncated(self):
+        result, was_truncated = truncate_head_tail("abcdefghij", 6)
+
+        assert result.startswith("abc")
+        assert result.endswith("hij")
+        assert "省略 4 个字符" in result
+        assert was_truncated is True
+
+    def test_returns_original_when_within_limit(self):
+        result, was_truncated = truncate_head_tail("hello", 5)
+
+        assert result == "hello"
+        assert was_truncated is False
 
 
 class TestSafeReadText:

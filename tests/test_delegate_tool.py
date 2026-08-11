@@ -6,6 +6,7 @@ from pathlib import Path
 
 from firstcoder.agent.background import BackgroundJobManager
 from firstcoder.agent.loop import AgentLoop
+from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession
 from firstcoder.agent.subagent import SubagentRequest, SubagentRunner
 from firstcoder.context.store import JsonlSessionStore
@@ -78,6 +79,40 @@ def test_subagent_runner_filters_tools_by_profile(tmp_path) -> None:
     assert "delegate" not in [tool.name for tool in runner.tools_for_role("coder")]
     assert "write" in [tool.name for tool in runner.tools_for_role("coder")]
     assert "write" not in [tool.name for tool in runner.tools_for_role("researcher")]
+
+
+def test_subagent_runner_uses_role_specific_reviewer_and_tester_budgets(tmp_path) -> None:
+    runner = SubagentRunner(
+        store=JsonlSessionStore(tmp_path),
+        provider=FakeProvider([]),
+        tools=[],
+    )
+
+    reviewer = runner.limits_for_role("reviewer")
+    tester = runner.limits_for_role("tester")
+    coder = runner.limits_for_role("coder")
+
+    assert reviewer.max_tool_rounds < tester.max_tool_rounds
+    assert reviewer.max_provider_calls < tester.max_provider_calls
+    assert tester.max_turn_seconds >= 600
+    assert coder.max_tool_rounds >= tester.max_tool_rounds
+
+
+def test_subagent_runner_explicit_limits_override_role_budgets(tmp_path) -> None:
+    limits = AgentLoopLimits(
+        max_tool_rounds=3,
+        max_provider_calls=5,
+        max_turn_seconds=90,
+    )
+    runner = SubagentRunner(
+        store=JsonlSessionStore(tmp_path),
+        provider=FakeProvider([]),
+        tools=[],
+        limits=limits,
+    )
+
+    assert runner.limits_for_role("reviewer") == limits
+    assert runner.limits_for_role("tester") == limits
 
 
 def test_subagent_runner_creates_metadata_tagged_child_session(tmp_path) -> None:

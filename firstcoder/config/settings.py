@@ -171,6 +171,7 @@ def render_default_config() -> str:
             '[models."yurenapi/gpt-5.5"]',
             'label = "GPT-5.5"',
             "context_window = 128000",
+            "vision = true",
             "",
             "[permissions]",
             'mode = "ask"',

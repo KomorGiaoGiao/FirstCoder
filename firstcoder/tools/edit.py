@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from firstcoder.permissions.types import PermissionAction
+from firstcoder.tools.file_feedback import format_change_content, render_text_diff
 from firstcoder.tools.types import Tool, ToolPermissionSpec, ToolResult, make_error_result, make_text_result
 from firstcoder.utils.introspection import tool_from_function
 from firstcoder.utils.sandbox import PathSandbox
@@ -34,19 +35,31 @@ def create_edit_tool(root: str | Path, *, access: SandboxAccess | None = None) -
 
         count = text.count(old)
         if count == 0:
-            return make_error_result("edit", "没有找到匹配内容")
+            return make_error_result(
+                "edit",
+                "没有找到匹配内容。请先用 view 重新读取目标区域，必要时用 grep 定位最新文本后再编辑。",
+                recovery_tools=["view", "grep"],
+            )
         if count > 1 and not replace_all:
             return make_error_result("edit", f"匹配内容出现 {count} 次；请提供更精确的 old，或启用 replace_all")
 
         new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
         replacements = count if replace_all else 1
-        target.write_text(new_text, encoding="utf-8")
+        changed = new_text != text
+        relative = sandbox.relative(target)
+        if changed:
+            target.write_text(new_text, encoding="utf-8")
+        diff, diff_truncated = render_text_diff(relative, text, new_text)
 
         return make_text_result(
             "edit",
-            f"已编辑文件：{sandbox.relative(target)}",
-            path=sandbox.relative(target),
+            format_change_content(f"已编辑文件：{relative}", diff, no_op=not changed),
+            path=relative,
             replacements=replacements,
+            changed=changed,
+            no_op=not changed,
+            diff=diff,
+            diff_truncated=diff_truncated,
         )
 
     tool = tool_from_function(edit)

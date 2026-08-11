@@ -452,9 +452,11 @@ class ToolExecutor:
         state: ToolExecutionState,
         skipped_tool_calls: list[ToolCall] | None = None,
     ) -> UserInputRequest | None:
-        self.session.append_tool_result(tool_call=tool_call, result=result)
+        # 观察器可以在事实落库前给结果补充一次性 agent guidance；执行成功/失败本身
+        # 仍由原始 ToolResult 决定，观察器不得绕过权限或再次执行工具。
         if self._observe_tool_result is not None:
             self._observe_tool_result(tool_call, result)
+        self.session.append_tool_result(tool_call=tool_call, result=result)
         pending_input = user_input_request_from_tool_result(
             result,
             tool_call_id=tool_call.id,

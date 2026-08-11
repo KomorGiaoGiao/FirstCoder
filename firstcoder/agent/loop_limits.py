@@ -40,5 +40,19 @@ class AgentLoopLimits:
             max_turn_seconds=120,
         )
 
-    def with_max_tool_rounds(self, value: int | None) -> "AgentLoopLimits":
-        return replace(self, max_tool_rounds=value)
+    def with_max_tool_rounds(
+        self,
+        value: int | None,
+        *,
+        provider_call_reserve: int = 0,
+    ) -> "AgentLoopLimits":
+        max_provider_calls = self.max_provider_calls
+        if value is not None and provider_call_reserve > 0:
+            required_calls = value + provider_call_reserve
+            if max_provider_calls is None or max_provider_calls < required_calls:
+                max_provider_calls = required_calls
+        return replace(
+            self,
+            max_tool_rounds=value,
+            max_provider_calls=max_provider_calls,
+        )

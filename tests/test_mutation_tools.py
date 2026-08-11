@@ -26,6 +26,9 @@ def test_apply_patch_updates_file(tmp_path):
     assert result.ok is True
     assert target.read_text(encoding="utf-8") == "new\n"
     assert result.data["changed_files"] == ["app.py"]
+    assert result.data["no_op"] is False
+    assert "--- a/app.py" in result.content
+    assert "+new" in result.content
 
 
 def test_apply_patch_dry_run_does_not_write(tmp_path):
@@ -62,7 +65,29 @@ def test_apply_patch_rejects_missing_old_text(tmp_path):
     result = registry.execute("apply_patch", {"patch": patch})
 
     assert result.ok is False
-    assert result.error == "没有找到要替换的内容"
+    assert result.error.startswith("没有找到要替换的内容")
+    assert "view" in result.error
+
+
+def test_apply_patch_reports_noop_update_without_rewriting(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("same\n", encoding="utf-8")
+    registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
+    patch = """*** Begin Patch
+*** Update File: app.py
+@@
+-same
++same
+*** End Patch"""
+
+    result = registry.execute("apply_patch", {"patch": patch})
+
+    assert result.ok is True
+    assert result.data["no_op"] is True
+    assert result.data["changed_files"] == []
+    assert result.data["diff"] == ""
+    assert "未产生文件变化" in result.content
+    assert target.read_text(encoding="utf-8") == "same\n"
 
 
 def test_apply_patch_adds_file(tmp_path):
@@ -184,6 +209,39 @@ def test_write_creates_utf8_file_inside_root(tmp_path):
     assert result.data["path"] == "notes/todo.txt"
     assert result.data["bytes_written"] > 0
     assert result.data["created"] is True
+    assert result.data["changed"] is True
+    assert result.data["no_op"] is False
+
+
+def test_write_reports_diff_when_overwriting_existing_file(tmp_path):
+    target = tmp_path / "todo.txt"
+    target.write_text("old\n", encoding="utf-8")
+    registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
+
+    result = registry.execute("write", {"path": "todo.txt", "content": "new\n"})
+
+    assert result.ok is True
+    assert result.data["changed"] is True
+    assert result.data["no_op"] is False
+    assert "--- a/todo.txt" in result.content
+    assert "-old" in result.content
+    assert "+new" in result.content
+
+
+def test_write_reports_noop_without_rewriting_identical_content(tmp_path):
+    target = tmp_path / "todo.txt"
+    target.write_text("same\n", encoding="utf-8")
+    before = target.stat().st_mtime_ns
+    registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
+
+    result = registry.execute("write", {"path": "todo.txt", "content": "same\n"})
+
+    assert result.ok is True
+    assert result.data["changed"] is False
+    assert result.data["no_op"] is True
+    assert result.data["diff"] == ""
+    assert "内容未变化" in result.content
+    assert target.stat().st_mtime_ns == before
 
 
 def test_write_rejects_missing_parent_when_create_dirs_is_false(tmp_path):
@@ -308,6 +366,44 @@ def test_edit_replaces_unique_text_inside_root(tmp_path):
     assert result.ok is True
     assert target.read_text(encoding="utf-8") == "print('new')\n"
     assert result.data["replacements"] == 1
+    assert result.data["changed"] is True
+    assert result.data["no_op"] is False
+    assert "-print('old')" in result.content
+    assert "+print('new')" in result.content
+
+
+def test_edit_reports_noop_when_replacement_is_identical(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("print('same')\n", encoding="utf-8")
+    before = target.stat().st_mtime_ns
+    registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
+
+    result = registry.execute(
+        "edit",
+        {"path": "app.py", "old": "same", "new": "same"},
+    )
+
+    assert result.ok is True
+    assert result.data["changed"] is False
+    assert result.data["no_op"] is True
+    assert result.data["diff"] == ""
+    assert "内容未变化" in result.content
+    assert target.stat().st_mtime_ns == before
+
+
+def test_edit_missing_match_suggests_refreshing_file_context(tmp_path):
+    target = tmp_path / "app.py"
+    target.write_text("current\n", encoding="utf-8")
+    registry = create_builtin_registry(tmp_path, include_mutation_tools=True)
+
+    result = registry.execute(
+        "edit",
+        {"path": "app.py", "old": "stale", "new": "new"},
+    )
+
+    assert result.ok is False
+    assert "view" in result.error
+    assert "grep" in result.error
 
 
 def test_edit_rejects_empty_old_text(tmp_path):
