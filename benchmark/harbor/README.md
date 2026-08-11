@@ -128,6 +128,74 @@ with backoff, so a single flaky fetch does not error the trial. Without the
 mount the adapter still runs correctly, using a per-container cache that is
 discarded when the container is removed.
 
+### Optional wheelhouse
+
+共享 cache 仍需要首次联网下载。若要降低并发 trial 对 PyPI/镜像网络的依赖，可先为
+Harbor 的 Linux/Python 3.11 容器准备 wheelhouse：
+
+```powershell
+.\.venv\Scripts\python.exe -m benchmark.harbor.prepare_wheelhouse
+```
+
+然后把 cache 以可写方式、wheelhouse 以只读方式挂载：
+
+```powershell
+$mounts = .\.venv\Scripts\python.exe -m benchmark.harbor.preflight `
+  --cache-dir "$HOME\.cache\firstcoder-harbor" `
+  --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
+  --print-mounts
+```
+
+adapter 会优先在 `/opt/firstcoder-wheelhouse` 查找依赖，缺少 wheel 时仍可回退到索引和
+共享 cache。若 wheelhouse 已验证完整，可向 agent 环境传入
+`FIRSTCODER_WHEELHOUSE_ONLY=1`，此时缺 wheelhouse 或缺依赖会明确失败，不会静默联网。
+
+## Preflight
+
+大规模运行前先做不会打印变量值的预检：
+
+```powershell
+.\.venv\Scripts\python.exe -m benchmark.harbor.preflight `
+  --env-file .env.harbor `
+  --cache-dir "$HOME\.cache\firstcoder-harbor" `
+  --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
+  --model MODEL_ID `
+  --image-file benchmark/harbor/terminal-bench-ab-images.txt
+```
+
+预检覆盖 Docker daemon/version、必要 provider 变量是否存在、provider endpoint 的 HTTP
+连通性、`/models` 目录中的模型可用性、cache 可写性、wheelhouse 状态和镜像本地状态。
+`--model` 可覆盖专用环境文件中的模型而不改动凭据；加 `--pull-images` 会串行预拉缺失镜像；
+加 `--require-images` 会把未预拉镜像视为失败。预检只报告变量名与状态，不输出
+`.env.harbor` 中的凭据值。
+
+## Fixed Terminal-Bench A/B set
+
+`benchmark/harbor/terminal-bench-ab-tasks.txt` 固化了六个回归任务：
+
+- `chess-best-move`
+- `configure-git-webserver`
+- `compile-compcert`
+- `qemu-alpine-ssh`
+- `adaptive-rejection-sampler`
+- `tune-mjcf`
+
+运行器固定使用 `terminal-bench@2.0`、单并发、单次尝试和同一 adapter 配置，避免不同阶段
+因任务集或并发变化失去可比性：
+
+```powershell
+.\.venv\Scripts\python.exe -m benchmark.harbor.run_terminal_bench_ab `
+  --env-file .env.harbor `
+  --cache-dir "$HOME\.cache\firstcoder-harbor" `
+  --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
+  --model MODEL_ID `
+  --reasoning-effort MODEL_SUPPORTED_VALUE `
+  --label phase6
+```
+
+`reasoning_effort` 不设默认值，只在当前模型明确支持时传入。先用 `--dry-run` 查看命令；
+需要预拉固定任务镜像时加 `--pull-images`。不要给 Terminal-Bench 启用 Aider feedback plugin。
+
 ## Results
 
 Harbor stores the resolved configuration, trial status, agent logs, verifier
@@ -140,6 +208,18 @@ local run with:
 
 A successful dataset download or container start is not a passing result. Use
 the trial reward and verifier logs as the completion evidence.
+
+使用离线汇总器同时报告基础设施、reward-only 和端到端指标：
+
+```powershell
+.\.venv\Scripts\python.exe -m benchmark.harbor.summarize `
+  benchmark/runs/harbor/RUN_NAME/TIMESTAMP
+```
+
+加 `--json` 可输出机器可读结果；加 `--compare CANDIDATE_RUN` 可输出 A/B 的百分点变化。
+汇总器会读取每个 trial 的 `result.json`，并在存在
+`agent/firstcoder-session.jsonl` 时聚合 `agent_turn_telemetry` 的最终回合快照。遥测事件不会
+进入 provider 消息，也不包含提示词、工具参数、工具输出或 secret。
 
 ## Windows
 

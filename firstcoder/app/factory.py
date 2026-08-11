@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
+from firstcoder.agent.processes import ProcessManager
+from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.app.commands import ContextCommandHandler
 from firstcoder.app.help_commands import HelpCommandHandler
 from firstcoder.app.mcp_commands import McpCommandHandler
@@ -115,6 +118,8 @@ def create_firstcoder_app(
     app_config: AppConfig | None = None,
     mcp_manager_factory: Callable[[tuple], McpManagerLike] | None = None,
     model_spec: str | None = None,
+    allow_user_input: bool | None = None,
+    runtime_capabilities: AgentRuntimeCapabilities | None = None,
 ) -> FirstCoderApp:
     """组装可运行的 FirstCoder TUI。
 
@@ -143,6 +148,13 @@ def create_firstcoder_app(
     store = JsonlSessionStore(resolved_data_root)
     sandbox_access = SandboxAccess()
     background_manager = BackgroundJobManager()
+    resolved_capabilities = runtime_capabilities or AgentRuntimeCapabilities.interactive()
+    if allow_user_input is not None:
+        resolved_capabilities = replace(
+            resolved_capabilities,
+            allow_user_input=allow_user_input,
+        )
+    process_manager = ProcessManager(log_root=resolved_data_root / "processes")
     resolved_tools = (
         tools
         if tools is not None
@@ -152,6 +164,12 @@ def create_firstcoder_app(
             include_execution_tools=True,
             include_network_tools=True,
             access=sandbox_access,
+            include_ask_user=resolved_capabilities.allow_user_input,
+            include_think=resolved_capabilities.expose_think_tool,
+            include_web_search=resolved_capabilities.expose_web_search_tool,
+            process_manager=(
+                process_manager if resolved_capabilities.enable_process_tools else None
+            ),
         ).tools()
     )
     mcp_manager = (mcp_manager_factory or McpManager)(load_mcp_configs(resolved_app_config))
@@ -231,6 +249,7 @@ def create_firstcoder_app(
         request_options=_main_request_options(selected_profile),
         context_window=selected_profile.context_window if selected_profile is not None else None,
         background_manager=background_manager,
+        runtime_capabilities=resolved_capabilities,
     )
     context_handler = ContextCommandHandler(
         session=current,
@@ -265,8 +284,20 @@ def create_firstcoder_app(
             provider_model=resolved_provider.model,
             project_name=project_path.resolve().name,
         ),
-        on_shutdown=mcp_manager.close,
+        on_shutdown=lambda: _shutdown_runtime(
+            mcp_manager=mcp_manager,
+            background_manager=background_manager,
+            process_manager=process_manager,
+        ),
     )
+
+
+def _shutdown_runtime(*, mcp_manager, background_manager, process_manager) -> None:
+    """按本地进程、后台线程、外部连接的顺序清理 TUI 运行时。"""
+
+    process_manager.shutdown()
+    background_manager.shutdown()
+    mcp_manager.close()
 
 
 def _should_use_streaming(provider: ChatProvider, config: AppConfig) -> bool:

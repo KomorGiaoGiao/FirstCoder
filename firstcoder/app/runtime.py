@@ -23,6 +23,7 @@ from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 from firstcoder.agent.loop import AgentLoop, ToolExecutionEvent
 from firstcoder.agent.background import BackgroundJobManager
 from firstcoder.agent.loop_limits import AgentLoopLimits
+from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.agent.session import AgentSession
 from firstcoder.agent.user_input import AgentTurnStatus
 from firstcoder.runtime.user_input import UserInputRequest
@@ -93,6 +94,9 @@ class AgentChatRunner:
     stream_event_handler: Callable[[ChatStreamEvent], None] | None = None
     tool_event_handler: Callable[[ToolExecutionEvent], None] | None = None
     background_manager: BackgroundJobManager | None = None
+    runtime_capabilities: AgentRuntimeCapabilities = field(
+        default_factory=AgentRuntimeCapabilities.interactive
+    )
     pending_guidance: list[str] = field(default_factory=list)
     _guidance_lock: threading.Lock = field(default_factory=threading.Lock)
     _cancellation_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -285,6 +289,7 @@ class AgentChatRunner:
             "guidance_provider": self.drain_guidance,
             "cancellation_token": cancellation_token,
             "background_manager": self.background_manager,
+            "runtime_capabilities": self.runtime_capabilities,
         }
         if streaming:
             kwargs["stream_event_handler"] = self.stream_event_handler
@@ -350,6 +355,10 @@ def _tool_lines(parts: list[MessagePart]) -> list[str]:
         if name in HIDDEN_TOOL_STATUS_NAMES:
             continue
         status = "success" if metadata.get("ok", True) else "failed"
-        content = ellipsis_truncate(part.content, 400, normalize_ws=True)
+        content = part.content
+        data = metadata.get("data")
+        if isinstance(data, dict) and "diff" in data:
+            content = content.partition("\n\nDiff:\n")[0]
+        content = ellipsis_truncate(content, 400, normalize_ws=True)
         lines.append(f"Tool result: {name} {status}: {content}")
     return lines

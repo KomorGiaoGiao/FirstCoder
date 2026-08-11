@@ -21,8 +21,16 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_INLINE_TEXT_BYTES = 200 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 16
 
+COMMON_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+
 _FILE_URI_RE = re.compile(r"file://[^\s]+", re.IGNORECASE)
 _PATH_CANDIDATE_RE = re.compile(r"(?:(?:[A-Za-z]:)?(?:/|\\)[^\s]+|(?:\./|\.\./)[^\s]+|~[^\s]+)")
+_INLINE_CODE_RE = re.compile(r"`([^`\r\n]+)`")
+_QUOTED_TEXT_RE = re.compile(r"(?P<quote>['\"])(?P<value>[^'\"\r\n]+)(?P=quote)")
+_BARE_IMAGE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_:/.-])(?:/|\./|\.\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:png|jpe?g|gif|webp|bmp)\b",
+    re.IGNORECASE,
+)
 _TEXT_MEDIA_PREFIXES = ("text/",)
 _TEXT_MEDIA_TYPES = {
     "application/json",
@@ -140,6 +148,68 @@ def attach_path(path: str | Path, *, source: str = "path") -> UserAttachment:
         size_bytes=size,
         source=source,
     )
+
+
+def extract_explicit_image_references(text: str) -> list[str]:
+    """提取文本中明确写出的本地图片路径，并保持首次出现顺序。
+
+    这里只识别路径字面量，不扫描目录，也不把远程 URL 当作本地附件。调用方还必须
+    使用 :func:`resolve_explicit_image_references` 做工作区、存在性和大小校验。
+    """
+
+    if not text:
+        return []
+
+    candidates: list[tuple[int, str]] = []
+    for match in _INLINE_CODE_RE.finditer(text):
+        candidates.append((match.start(), match.group(1)))
+    for match in _QUOTED_TEXT_RE.finditer(text):
+        candidates.append((match.start(), match.group("value")))
+    candidates.extend((match.start(), match.group(0)) for match in _BARE_IMAGE_PATH_RE.finditer(text))
+
+    references: list[str] = []
+    seen: set[str] = set()
+    for _, candidate in sorted(candidates, key=lambda item: item[0]):
+        value = candidate.strip().lstrip("([{<").rstrip(".,;:!?)]}>")
+        if not value or "://" in value or value.lower().startswith("data:"):
+            continue
+        if Path(value).suffix.lower() not in COMMON_IMAGE_SUFFIXES:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        references.append(value)
+    return references
+
+
+def resolve_explicit_image_references(text: str, *, workspace_root: str | Path) -> list[Path]:
+    """解析工作区内已存在的明确图片引用。
+
+    缺失路径和工作区外路径会被忽略，避免把命令示例、预期输出图片或敏感的沙箱外
+    文件误当成输入附件。已存在但超过 provider 图片上限的文件会保留明确错误语义。
+    """
+
+    root = Path(workspace_root).expanduser().resolve()
+    resolved_paths: list[Path] = []
+    seen: set[Path] = set()
+    for reference in extract_explicit_image_references(text):
+        raw_path = Path(reference).expanduser()
+        candidate = raw_path if raw_path.is_absolute() else root / raw_path
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved in seen or not resolved.is_file():
+            continue
+        attachment = attach_path(resolved, source="path")
+        if attachment.kind != "image":
+            continue
+        seen.add(resolved)
+        resolved_paths.append(resolved)
+        if len(resolved_paths) > MAX_ATTACHMENTS_PER_MESSAGE:
+            raise ValueError(f"Too many attachments (max {MAX_ATTACHMENTS_PER_MESSAGE})")
+    return resolved_paths
 
 
 def parse_path_candidates(text: str) -> list[str]:

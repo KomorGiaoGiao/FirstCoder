@@ -2,6 +2,8 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
+import pytest
+
 import firstcoder.cli as cli
 from firstcoder.cli import CliConfig, main, read_message, run_repl
 
@@ -123,6 +125,43 @@ def test_main_parses_model_reference_for_single_message(tmp_path: Path):
     )
 
     assert seen[0].model_spec == "yuren/gpt-5.6-terra"
+
+
+def test_main_parses_repeated_attachments_for_single_message(tmp_path: Path):
+    seen: list[CliConfig] = []
+
+    def fake_runner(config: CliConfig) -> str:
+        seen.append(config)
+        return "done"
+
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.jpg"
+    exit_code = main(
+        [
+            "--project",
+            str(tmp_path),
+            "--message",
+            "inspect",
+            "--attachment",
+            str(first),
+            "--attachment",
+            str(second),
+        ],
+        runner=fake_runner,
+    )
+
+    assert exit_code == 0
+    assert seen[0].attachments == (first, second)
+
+
+def test_main_rejects_attachment_in_interactive_mode(tmp_path: Path, capsys):
+    exit_code = main(
+        ["--project", str(tmp_path), "--interactive", "--attachment", str(tmp_path / "image.png")],
+        stdin_text="/exit\n",
+    )
+
+    assert exit_code == 2
+    assert "single-message runs" in capsys.readouterr().err
 
 
 def test_main_returns_error_for_empty_message(tmp_path: Path, capsys):
@@ -440,6 +479,36 @@ def test_main_parses_max_tool_rounds_for_single_message(tmp_path: Path):
     assert seen[0].max_tool_rounds == 80
 
 
+def test_main_parses_max_turn_seconds_for_single_message(tmp_path: Path):
+    seen: list[CliConfig] = []
+
+    def fake_runner(config: CliConfig) -> str:
+        seen.append(config)
+        return "done"
+
+    exit_code = main(
+        [
+            "--project",
+            str(tmp_path),
+            "--message",
+            "solve it",
+            "--max-turn-seconds",
+            "3300",
+        ],
+        runner=fake_runner,
+    )
+
+    assert exit_code == 0
+    assert seen[0].max_turn_seconds == 3300.0
+
+
+def test_main_rejects_non_finite_turn_timeout(capsys):
+    with pytest.raises(SystemExit):
+        main(["--message", "solve it", "--max-turn-seconds", "nan"])
+
+    assert "must be a positive number" in capsys.readouterr().err
+
+
 def test_main_parses_reasoning_effort_for_single_message(tmp_path: Path):
     seen: list[CliConfig] = []
 
@@ -525,8 +594,9 @@ def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: P
         def __init__(self) -> None:
             self.limits = None
 
-        def run_user_turn(self, message: str) -> FakeResponse:
+        def run_user_turn(self, message: str, *, attachments=None) -> FakeResponse:
             assert message == "solve it"
+            assert attachments == []
             return FakeResponse("done")
 
     class FakeApp:
@@ -544,6 +614,7 @@ def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: P
             session_id="harbor-task",
             message="solve it",
             max_tool_rounds=120,
+            max_turn_seconds=3300,
             benchmark=True,
         )
     )
@@ -553,6 +624,60 @@ def test_run_benchmark_turn_uses_harbor_runtime_without_eval_adapter(tmp_path: P
     assert app.current_session.session.require_prewrite_review is False
     assert app.current_session.session.benchmark_task == "solve it"
     assert app.chat_runner.limits.max_tool_rounds == 120
+    assert app.chat_runner.limits.max_provider_calls == 160
+    assert app.chat_runner.limits.max_turn_seconds == 3300
+
+
+def test_benchmark_limits_keep_default_provider_budget_for_small_tool_limit():
+    limits = cli._benchmark_limits(40)
+
+    assert limits.max_tool_rounds == 40
+    assert limits.max_provider_calls == 100
+    assert limits.max_turn_seconds == 1800
+
+
+def test_benchmark_limits_allow_harbor_to_expand_turn_timeout():
+    limits = cli._benchmark_limits(120, max_turn_seconds=3300)
+
+    assert limits.max_tool_rounds == 120
+    assert limits.max_provider_calls == 160
+    assert limits.max_turn_seconds == 3300
+
+
+def test_create_cli_app_disables_user_input_only_for_benchmark(tmp_path: Path, monkeypatch):
+    seen: list[bool] = []
+
+    class FakeRunner:
+        pass
+
+    class FakeApp:
+        chat_runner = FakeRunner()
+
+    def fake_create_firstcoder_app(**kwargs):
+        seen.append(kwargs["allow_user_input"])
+        return FakeApp()
+
+    monkeypatch.setattr(cli, "create_firstcoder_app", fake_create_firstcoder_app)
+
+    cli.create_cli_app(
+        CliConfig(
+            project_root=tmp_path,
+            data_root=None,
+            session_id=None,
+            message="interactive",
+        )
+    )
+    cli.create_cli_app(
+        CliConfig(
+            project_root=tmp_path,
+            data_root=None,
+            session_id=None,
+            message="benchmark",
+            benchmark=True,
+        )
+    )
+
+    assert seen == [True, False]
 
 
 def test_mcp_add_list_and_remove_manage_global_configuration(tmp_path: Path, monkeypatch, capsys) -> None:

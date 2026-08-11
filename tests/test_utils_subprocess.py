@@ -61,13 +61,16 @@ class TestRunCommand:
         result = run_command(["missing_cmd"], cwd=tmp_path)
 
         assert result.ok is False
-        assert "No such file or directory" in result.error
+        assert result.error is not None
+        assert result.error.startswith("命令执行失败：")
 
     def test_stdout_truncation(self, tmp_path):
         result = run_command([sys.executable, "-c", "print('abcdefghij', end='')"], cwd=tmp_path, max_output_chars=5)
 
         assert result.ok is True
-        assert result.stdout == "abcde\n\n[输出已截断]"
+        assert result.stdout.startswith("abc")
+        assert result.stdout.endswith("ij")
+        assert "中间省略 5 个字符" in result.stdout
         assert result.stdout_truncated is True
 
     def test_stderr_truncation(self, tmp_path):
@@ -78,7 +81,9 @@ class TestRunCommand:
         )
 
         assert result.ok is False
-        assert result.stderr == "abcde\n\n[输出已截断]"
+        assert result.stderr.startswith("abc")
+        assert result.stderr.endswith("ij")
+        assert "中间省略 5 个字符" in result.stderr
         assert result.stderr_truncated is True
 
     def test_result_is_command_result_type(self, tmp_path):

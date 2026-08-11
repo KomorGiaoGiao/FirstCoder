@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from firstcoder.agent.processes import ProcessManager
+from firstcoder.agent.runtime_capabilities import (
+    AgentRuntimeCapabilities,
+    benchmark_task_is_complex,
+)
 from firstcoder.providers.types import ToolDefinition
 from firstcoder.tools import ToolRegistry, create_builtin_registry
 from firstcoder.tools.edit import create_edit_tool
@@ -74,6 +79,25 @@ def test_builtin_registry_contains_read_only_tools(tmp_path):
     ]
     assert [definition.name for definition in registry.definitions()] == registry.names()
     assert [tool.name for tool in registry.tools()] == registry.names()
+
+
+def test_builtin_registry_can_hide_ask_user_for_noninteractive_runs(tmp_path):
+    registry = create_builtin_registry(tmp_path, include_ask_user=False)
+
+    assert "ask_user" not in registry.names()
+    assert registry.names() == [
+        "ls",
+        "view",
+        "grep",
+        "glob",
+        "tree",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "diagnostics",
+        "think",
+        "read_multi",
+    ]
 
 
 def test_each_tool_has_its_own_module():
@@ -148,6 +172,17 @@ def test_builtin_registry_can_include_network_tools_when_explicitly_enabled(tmp_
     ]
 
 
+def test_builtin_registry_can_keep_fetch_while_hiding_web_search(tmp_path):
+    registry = create_builtin_registry(
+        tmp_path,
+        include_network_tools=True,
+        include_web_search=False,
+    )
+
+    assert "fetch" in registry.names()
+    assert "web_search" not in registry.names()
+
+
 def test_builtin_registry_can_include_execution_tools_when_explicitly_enabled(tmp_path):
     registry = create_builtin_registry(tmp_path, include_execution_tools=True)
 
@@ -167,6 +202,49 @@ def test_builtin_registry_can_include_execution_tools_when_explicitly_enabled(tm
         "shell",
         "python_exec",
     ]
+
+
+def test_builtin_registry_includes_process_tools_when_manager_is_supplied(tmp_path):
+    manager = ProcessManager(log_root=tmp_path / ".firstcoder" / "processes")
+    registry = create_builtin_registry(
+        tmp_path,
+        include_execution_tools=True,
+        process_manager=manager,
+    )
+
+    assert registry.names()[-6:] == [
+        "shell",
+        "python_exec",
+        "process_start",
+        "process_status",
+        "process_logs",
+        "process_stop",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("task", "complex_task"),
+    [
+        ("Change the title in README.md and verify it.", False),
+        ("1. Configure the server\n2. Start the daemon\n3. Verify SSH readiness", True),
+        ("Compile the repository and fix the integration tests.", True),
+    ],
+)
+def test_benchmark_runtime_capabilities_route_simple_and_complex_tasks(
+    task: str,
+    complex_task: bool,
+) -> None:
+    capabilities = AgentRuntimeCapabilities.benchmark(task)
+
+    assert benchmark_task_is_complex(task) is complex_task
+    assert capabilities.allow_user_input is False
+    assert capabilities.expose_think_tool is False
+    assert capabilities.expose_web_search_tool is False
+    assert capabilities.enable_delegate_tool is complex_task
+    assert capabilities.expose_planning_tools is complex_task
+    assert capabilities.enable_process_tools is True
+    assert "fetch" in capabilities.background_tool_names
+    assert "web_search" not in capabilities.background_tool_names
 
 
 def test_builtin_tool_definitions_are_generated_from_function_signatures(tmp_path):

@@ -17,6 +17,23 @@ def truncate(value: str, max_chars: int, *, suffix: str = "\n\n[输出已截断]
     return value[:max_chars] + suffix, True
 
 
+def truncate_head_tail(value: str, max_chars: int) -> tuple[str, bool]:
+    """截断长文本时同时保留开头和结尾。
+
+    命令、编译器和测试输出的上下文通常在开头，而真正的失败摘要常在结尾。
+    `max_chars` 表示保留的原文字符预算；中间的说明标记不计入该预算。
+    """
+
+    if len(value) <= max_chars:
+        return value, False
+    head_chars = (max_chars + 1) // 2
+    tail_chars = max_chars - head_chars
+    omitted_chars = len(value) - max_chars
+    marker = f"\n\n[输出已截断：中间省略 {omitted_chars} 个字符]\n\n"
+    tail = value[-tail_chars:] if tail_chars else ""
+    return value[:head_chars] + marker + tail, True
+
+
 def safe_read_text(path: Path, *, encoding: str = "utf-8") -> str:
     """读取文本文件，遇到编码问题直接抛出 UnicodeDecodeError。
 

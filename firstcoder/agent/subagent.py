@@ -88,6 +88,29 @@ SUBAGENT_PROFILES: dict[str, SubagentProfile] = {
     ),
 }
 
+SUBAGENT_ROLE_LIMITS: dict[str, AgentLoopLimits] = {
+    "researcher": AgentLoopLimits(
+        max_tool_rounds=16,
+        max_provider_calls=32,
+        max_turn_seconds=480,
+    ),
+    "reviewer": AgentLoopLimits(
+        max_tool_rounds=10,
+        max_provider_calls=20,
+        max_turn_seconds=300,
+    ),
+    "tester": AgentLoopLimits(
+        max_tool_rounds=30,
+        max_provider_calls=60,
+        max_turn_seconds=900,
+    ),
+    "coder": AgentLoopLimits(
+        max_tool_rounds=40,
+        max_provider_calls=80,
+        max_turn_seconds=1200,
+    ),
+}
+
 
 @dataclass(slots=True)
 class SubagentRequest:
@@ -154,7 +177,7 @@ class SubagentRunner:
         self.permission_manager = permission_manager
         self.sandbox_access = sandbox_access or SandboxAccess()
         self.request_options = request_options or MainRequestOptions()
-        self.limits = limits or AgentLoopLimits(max_tool_rounds=20, max_provider_calls=40, max_turn_seconds=600)
+        self.limits = limits
         self.profile_map = SUBAGENT_PROFILES
 
     def profile(self, role: str) -> SubagentProfile | None:
@@ -165,6 +188,16 @@ class SubagentRunner:
         if profile is None:
             return []
         return [tool for tool in self.tools if tool.name in profile.allowed_tool_names and tool.name != "delegate"]
+
+    def limits_for_role(self, role: str) -> AgentLoopLimits:
+        """显式覆盖优先，否则按 reviewer/tester 等角色分配独立预算。"""
+
+        if self.limits is not None:
+            return self.limits
+        return SUBAGENT_ROLE_LIMITS.get(
+            str(role),
+            AgentLoopLimits(max_tool_rounds=20, max_provider_calls=40, max_turn_seconds=600),
+        )
 
     def run(self, request: SubagentRequest) -> SubagentResult:
         profile = self.profile(request.role)
@@ -213,7 +246,7 @@ class SubagentRunner:
             session=child_session,
             provider=self.provider,
             tools=self.tools_for_role(request.role),
-            limits=self.limits,
+            limits=self.limits_for_role(request.role),
             request_options=self.request_options,
             background_manager=None,
             enable_delegate_tool=False,
@@ -288,7 +321,7 @@ class SubagentRunner:
                 session=child_session,
                 provider=self.provider,
                 tools=self._worktree_child_tools(worktree.path, profile=profile, access=child_session.sandbox_access),
-                limits=self.limits,
+                limits=self.limits_for_role(request.role),
                 request_options=self.request_options,
                 background_manager=None,
                 enable_delegate_tool=False,

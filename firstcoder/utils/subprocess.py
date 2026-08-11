@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from firstcoder.runtime.cancellation import CancellationToken
-from firstcoder.utils.text import truncate
+from firstcoder.utils.text import truncate_head_tail
 
 
 @dataclass(slots=True)
@@ -123,8 +123,8 @@ def _run_command_with_process_group(
         # communicate() again drains everything the process group emitted before
         # termination; this is the output that must accompany a timeout result.
         stdout, stderr = process.communicate()
-    stdout, stdout_truncated = truncate(stdout, max_output_chars)
-    stderr, stderr_truncated = truncate(stderr, max_output_chars)
+    stdout, stdout_truncated = truncate_head_tail(stdout, max_output_chars)
+    stderr, stderr_truncated = truncate_head_tail(stderr, max_output_chars)
 
     if interrupted:
         return CommandResult(
@@ -166,6 +166,12 @@ def _process_group_kwargs() -> dict[str, int | bool]:
     return {"start_new_session": True}
 
 
+def process_group_kwargs() -> dict[str, int | bool]:
+    """公开长期进程工具可复用的独立进程组启动参数。"""
+
+    return _process_group_kwargs()
+
+
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
     """Terminate the command and every descendant in its process group."""
 
@@ -194,6 +200,12 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
         pass
     if process.poll() is None:
         process.wait(timeout=1)
+
+
+def terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """公开回收一个进程及其全部后代。"""
+
+    _terminate_process_group(process)
 
 
 def _taskkill_process_tree(pid: int) -> None:

@@ -12,6 +12,8 @@ from firstcoder.context.store import JsonlSessionStore
 from firstcoder.input.attachments import (
     attach_path,
     prepare_attachments_for_session,
+    extract_explicit_image_references,
+    resolve_explicit_image_references,
     resolve_paste_attachments,
 )
 from firstcoder.providers.anthropic_provider import AnthropicProvider
@@ -22,6 +24,27 @@ PNG_1x1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
     b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+def test_extract_explicit_image_references_preserves_order_and_deduplicates() -> None:
+    text = "Use chess_board.png, then `/app/code.png`; ignore https://example.test/remote.png and chess_board.png."
+
+    assert extract_explicit_image_references(text) == ["chess_board.png", "/app/code.png"]
+
+
+def test_resolve_explicit_image_references_only_returns_existing_workspace_images(tmp_path: Path) -> None:
+    image = tmp_path / "assets" / "board.png"
+    image.parent.mkdir()
+    image.write_bytes(PNG_1x1)
+    outside = tmp_path.parent / "outside.png"
+    outside.write_bytes(PNG_1x1)
+
+    resolved = resolve_explicit_image_references(
+        f"Use assets/board.png, missing.png and {outside}",
+        workspace_root=tmp_path,
+    )
+
+    assert resolved == [image.resolve()]
 
 
 def _make_session(tmp_path: Path) -> AgentSession:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from firstcoder.runtime.cancellation import current_cancellation_token
@@ -11,6 +12,7 @@ from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import CommandResult, run_command
 
 _SENSITIVE_ENV_KEYWORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "COOKIE")
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ExecutionSandbox:
@@ -36,6 +38,30 @@ class ExecutionSandbox:
             if not _is_sensitive_env_key(key):
                 env[str(key)] = str(value)
         return env
+
+    def prepare_env_overrides(
+        self,
+        extra_env: dict[str, str] | None,
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        """规范化显式环境覆盖，并返回被敏感词策略拒绝的变量名。"""
+
+        if extra_env is None:
+            return {}, ()
+        if not isinstance(extra_env, dict):
+            raise ValueError("env 必须是字符串键值对象")
+        accepted: dict[str, str] = {}
+        rejected: list[str] = []
+        for raw_key, raw_value in extra_env.items():
+            key = str(raw_key)
+            if not _ENV_KEY_RE.fullmatch(key):
+                raise ValueError(f"环境变量名不合法：{key}")
+            if _is_sensitive_env_key(key):
+                rejected.append(key)
+                continue
+            if not isinstance(raw_value, str):
+                raise ValueError(f"环境变量 {key} 的值必须是字符串")
+            accepted[key] = raw_value
+        return accepted, tuple(sorted(rejected))
 
     def run(
         self,

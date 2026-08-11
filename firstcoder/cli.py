@@ -4,15 +4,18 @@ from __future__ import annotations
 from firstcoder.app.ports import ChatRunnerLike
 
 import argparse
+import math
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
 from firstcoder.agent.loop_limits import AgentLoopLimits
+from firstcoder.agent.runtime_capabilities import AgentRuntimeCapabilities
 from firstcoder.app.factory import create_firstcoder_app
 from firstcoder.config import load_config
 from firstcoder.config.settings import default_global_config_path, project_config_path, render_default_config
+from firstcoder.input.attachments import UserAttachment, attach_path
 from firstcoder.mcp.config_store import McpConfigStore, McpConfigStoreError
 from firstcoder.permissions.types import PermissionMode
 
@@ -25,9 +28,11 @@ class CliConfig:
     message: str
     model_spec: str | None = None
     max_tool_rounds: int | None = None
+    max_turn_seconds: float | None = None
     reasoning_effort: str | None = None
     benchmark: bool = False
     resume_session: bool = False
+    attachments: tuple[Path, ...] = ()
 
 
 CliRunner = Callable[[CliConfig], str]
@@ -74,10 +79,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", default=None, help="Model reference, for example provider/model.")
     parser.add_argument("--message", default=None, help="Single user message. Reads stdin when omitted.")
+    parser.add_argument(
+        "--attachment",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Attach a local file to the single user message. Repeat for multiple files.",
+    )
     parser.add_argument("--interactive", action="store_true", help="Run a line-oriented interactive session.")
     parser.add_argument("--tui", action="store_true", help="Run the Textual TUI.")
     parser.add_argument("--auto-approve", action="store_true", help="Automatically answer permission confirmations with allow_once.")
     parser.add_argument("--max-tool-rounds", type=_positive_int, default=None, help="Override per-turn tool round limit.")
+    parser.add_argument(
+        "--max-turn-seconds",
+        type=_positive_float,
+        default=None,
+        help="Override the wall-clock limit for one user turn.",
+    )
     parser.add_argument("--reasoning-effort", default=None, help="Provider-specific reasoning effort passed in the model request.")
     parser.add_argument(
         "--benchmark",
@@ -105,6 +123,10 @@ def main(
     if args.command == "mcp":
         return run_mcp_command(args)
 
+    if args.attachment and (args.tui or args.interactive):
+        print("error: --attachment is only supported for single-message runs", file=sys.stderr)
+        return 2
+
     if args.tui or (args.message is None and stdin_text is None and sys.stdin.isatty() and not args.interactive):
         config = CliConfig(
             project_root=Path(args.project),
@@ -113,9 +135,11 @@ def main(
             message="",
             model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
+            max_turn_seconds=args.max_turn_seconds,
             reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
             resume_session=args.resume_session,
+            attachments=tuple(Path(value) for value in args.attachment),
         )
         try:
             app = create_cli_app(config)
@@ -133,9 +157,11 @@ def main(
             message="",
             model_spec=args.model,
             max_tool_rounds=args.max_tool_rounds,
+            max_turn_seconds=args.max_turn_seconds,
             reasoning_effort=args.reasoning_effort,
             benchmark=args.benchmark,
             resume_session=args.resume_session,
+            attachments=tuple(Path(value) for value in args.attachment),
         )
         try:
             app = create_cli_app(config)
@@ -158,9 +184,11 @@ def main(
         message=message,
         model_spec=args.model,
         max_tool_rounds=args.max_tool_rounds,
+        max_turn_seconds=args.max_turn_seconds,
         reasoning_effort=args.reasoning_effort,
         benchmark=args.benchmark,
         resume_session=args.resume_session,
+        attachments=tuple(Path(value) for value in args.attachment),
     )
     run = runner or run_single_turn
     try:
@@ -177,7 +205,10 @@ def run_single_turn(config: CliConfig) -> str:
     if config.benchmark:
         return run_benchmark_turn(config)
     app = create_cli_app(config)
-    response = app.chat_runner.run_user_turn(config.message)
+    response = app.chat_runner.run_user_turn(
+        config.message,
+        attachments=_prepare_cli_attachments(config.attachments),
+    )
     return response.content
 
 
@@ -188,21 +219,39 @@ def run_benchmark_turn(config: CliConfig) -> str:
     app.current_session.set_permission_mode(PermissionMode.BYPASS)
     app.current_session.session.require_prewrite_review = False
     app.current_session.session.set_benchmark_task(config.message)
-    app.chat_runner.limits = _benchmark_limits(config.max_tool_rounds)
-    response = app.chat_runner.run_user_turn(config.message)
+    app.chat_runner.limits = _benchmark_limits(
+        config.max_tool_rounds,
+        max_turn_seconds=config.max_turn_seconds,
+    )
+    response = app.chat_runner.run_user_turn(
+        config.message,
+        attachments=_prepare_cli_attachments(config.attachments),
+    )
     return response.content
 
 
 def create_cli_app(config: CliConfig):
+    capabilities = (
+        AgentRuntimeCapabilities.benchmark(config.message)
+        if config.benchmark
+        else AgentRuntimeCapabilities.interactive()
+    )
     app = create_firstcoder_app(
         project_root=config.project_root,
         data_root=config.data_root,
         session_id=config.session_id,
         model_spec=config.model_spec,
         resume_session=config.resume_session,
+        allow_user_input=capabilities.allow_user_input,
+        runtime_capabilities=capabilities,
     )
-    if config.max_tool_rounds is not None:
-        app.chat_runner.limits = AgentLoopLimits.default().with_max_tool_rounds(config.max_tool_rounds)
+    if config.max_tool_rounds is not None or config.max_turn_seconds is not None:
+        limits = AgentLoopLimits.default()
+        if config.max_tool_rounds is not None:
+            limits = limits.with_max_tool_rounds(config.max_tool_rounds)
+        if config.max_turn_seconds is not None:
+            limits = replace(limits, max_turn_seconds=config.max_turn_seconds)
+        app.chat_runner.limits = limits
     if config.reasoning_effort is not None:
         effort = config.reasoning_effort.strip()
         if not effort:
@@ -212,6 +261,10 @@ def create_cli_app(config: CliConfig):
         extra_body["reasoning_effort"] = effort
         app.chat_runner.request_options = replace(options, extra_body=extra_body)
     return app
+
+
+def _prepare_cli_attachments(paths: tuple[Path, ...]) -> list[UserAttachment]:
+    return [attach_path(path, source="path") for path in paths]
 
 
 def run_config_command(args: argparse.Namespace) -> int:
@@ -356,11 +409,17 @@ def _effective_parallel_tool_calls(config) -> str:
     return "true" if enabled else "false"
 
 
-def _benchmark_limits(max_tool_rounds: int | None) -> AgentLoopLimits:
+def _benchmark_limits(
+    max_tool_rounds: int | None,
+    *,
+    max_turn_seconds: float | None = None,
+) -> AgentLoopLimits:
     base = AgentLoopLimits.swe_lite()
-    if max_tool_rounds is None:
-        return base
-    return base.with_max_tool_rounds(max_tool_rounds)
+    if max_tool_rounds is not None:
+        base = base.with_max_tool_rounds(max_tool_rounds, provider_call_reserve=40)
+    if max_turn_seconds is not None:
+        base = replace(base, max_turn_seconds=max_turn_seconds)
+    return base
 
 
 def run_repl(
@@ -528,4 +587,11 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number")
     return parsed

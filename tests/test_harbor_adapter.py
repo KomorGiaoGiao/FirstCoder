@@ -12,7 +12,9 @@ pytest.importorskip("harbor")
 
 from benchmark.harbor.firstcoder_agent import (  # noqa: E402
     FirstCoderHarborAgent,
+    _attachment_discovery_command,
     _catalog_bootstrap_command,
+    _catalog_bootstrap_script,
     _install_command,
 )
 from benchmark.harbor.aider_feedback_trial import (  # noqa: E402
@@ -35,10 +37,12 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
     assert "--data-root /tmp/firstcoder-harbor-sessions" in command
     assert "--session-id task_id" in command
     assert "--max-tool-rounds 77" in command
+    assert "--max-turn-seconds 1800" in command
     assert '--model "${FIRSTCODER_PROVIDER_NAME}/${FIRSTCODER_MODEL}"' in command
     assert '"[providers." + quote(provider)' in command
     assert 'api_key_env = \"FIRSTCODER_API_KEY\"' in command
     assert "FIRSTCODER_BASE_URL" in command
+    assert "vision = true" in command
     assert "'Fix the task." in command
     assert "/logs/agent/firstcoder.txt" in command
     assert "set -o pipefail" in command
@@ -50,18 +54,20 @@ def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path)
 
 
 def test_harbor_catalog_bootstrap_writes_parseable_standard_config(tmp_path: Path) -> None:
-    command = _catalog_bootstrap_command().replace(
-        "/opt/firstcoder-agent/.venv/bin/python",
-        sys.executable,
-    ).replace("/tmp/firstcoder-harbor-config", str(tmp_path / "xdg"))
     env = {
         **os.environ,
         "FIRSTCODER_PROVIDER_NAME": "Yuren",
         "FIRSTCODER_MODEL": "gpt-test",
         "FIRSTCODER_BASE_URL": "https://example.test/v1",
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
     }
 
-    subprocess.run(command, cwd=tmp_path, env=env, shell=True, executable="/bin/zsh", check=True)
+    subprocess.run(
+        [sys.executable, "-c", _catalog_bootstrap_script()],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+    )
 
     config_path = tmp_path / "xdg" / "firstcoder" / "config.toml"
     assert not (tmp_path / "firstcoder.toml").exists()
@@ -69,6 +75,7 @@ def test_harbor_catalog_bootstrap_writes_parseable_standard_config(tmp_path: Pat
     assert 'default_model = "Yuren/gpt-test"' in config
     assert '[providers."Yuren"]' in config
     assert '[models."Yuren/gpt-test"]' in config
+    assert "vision = true" in config
 
 
 def test_harbor_agent_passes_reasoning_effort_to_firstcoder(tmp_path: Path) -> None:
@@ -77,6 +84,14 @@ def test_harbor_agent_passes_reasoning_effort_to_firstcoder(tmp_path: Path) -> N
     command = agent._run_command("Fix the task.", session_id="task")
 
     assert "--reasoning-effort high" in command
+
+
+def test_harbor_agent_passes_custom_turn_timeout_to_firstcoder(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path, max_turn_seconds="3300")
+
+    command = agent._run_command("Fix the task.", session_id="task")
+
+    assert "--max-turn-seconds 3300" in command
 
 
 def test_harbor_agent_marks_feedback_turn_as_a_session_resume(tmp_path: Path) -> None:
@@ -89,6 +104,36 @@ def test_harbor_agent_marks_feedback_turn_as_a_session_resume(tmp_path: Path) ->
     )
 
     assert "--resume-session" in command
+    assert "--attachment" not in command
+
+
+def test_harbor_agent_adds_each_discovered_attachment_to_first_turn(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path)
+
+    command = agent._run_command(
+        "Inspect the images.",
+        session_id="task",
+        attachments=["/app/board image.png", "/app/code.png"],
+    )
+
+    assert "--attachment '/app/board image.png'" in command
+    assert "--attachment /app/code.png" in command
+
+
+def test_harbor_attachment_discovery_command_uses_workspace_and_firstcoder_limits() -> None:
+    command = _attachment_discovery_command("Use `/app/code.png`.")
+
+    assert "resolve_explicit_image_references" in command
+    assert "Path.cwd()" in command
+    assert "/app/code.png" not in command
+
+
+def test_harbor_agent_can_disable_vision_capability(tmp_path: Path) -> None:
+    agent = FirstCoderHarborAgent(logs_dir=tmp_path, supports_vision="false")
+
+    command = agent._run_command("Fix the task.", session_id="task")
+
+    assert "vision = false" in command
 
 
 def test_aider_feedback_round_only_follows_a_real_failed_reward() -> None:
@@ -196,6 +241,14 @@ def test_harbor_agent_rejects_invalid_tool_round_limit(tmp_path: Path) -> None:
         FirstCoderHarborAgent(logs_dir=tmp_path, max_tool_rounds=0)
 
 
+def test_harbor_agent_rejects_invalid_turn_timeout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_turn_seconds"):
+        FirstCoderHarborAgent(logs_dir=tmp_path, max_turn_seconds=0)
+
+    with pytest.raises(ValueError, match="max_turn_seconds"):
+        FirstCoderHarborAgent(logs_dir=tmp_path, max_turn_seconds="nan")
+
+
 def test_harbor_install_prefers_a_suitable_existing_python() -> None:
     command = _install_command("/installed-agent/firstcoder-src")
 
@@ -222,6 +275,16 @@ def test_harbor_install_reuses_a_shared_download_cache() -> None:
     # The cache stores downloaded wheels only; the venv is still rebuilt per trial.
     assert "--no-cache" not in command
     assert command.count("--clear") == 2
+
+
+def test_harbor_install_can_use_optional_read_only_wheelhouse() -> None:
+    command = _install_command("/installed-agent/firstcoder-src")
+
+    assert "WHEELHOUSE_DIR=/opt/firstcoder-wheelhouse" in command
+    assert 'PIP_FIND_LINKS_ARGS="--find-links $WHEELHOUSE_DIR"' in command
+    assert "FIRSTCODER_WHEELHOUSE_ONLY" in command
+    assert 'PIP_INDEX_ARGS="--no-index"' in command
+    assert "$PIP_INDEX_ARGS $PIP_FIND_LINKS_ARGS" in command
 
 
 def test_harbor_install_retries_the_download_step_with_backoff() -> None:
