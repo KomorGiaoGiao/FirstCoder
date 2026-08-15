@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from benchmark.harbor.preflight import build_mounts, render_report, run_preflight
-from benchmark.harbor.prepare_wheelhouse import build_download_command, project_requirements
-from benchmark.harbor.run_terminal_bench_ab import FIXED_TASKS, build_harbor_command
-from benchmark.harbor.summarize import compare_runs, summarize_run
+from benchmark.harbor.shared.preflight import build_mounts, render_report, run_preflight
+from benchmark.harbor.shared.prepare_wheelhouse import build_download_command, project_requirements
+from benchmark.harbor.shared.summarize import compare_runs, summarize_run
+from benchmark.harbor.terminal_bench.run_terminal_bench_ab import FIXED_TASKS, build_harbor_command
 
 
 class _Response:

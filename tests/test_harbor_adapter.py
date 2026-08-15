@@ -10,21 +10,21 @@ import pytest
 
 pytest.importorskip("harbor")
 
-from benchmark.harbor.firstcoder_agent import (  # noqa: E402
+from benchmark.harbor.shared.firstcoder_agent import (  # noqa: E402
     FirstCoderHarborAgent,
     _attachment_discovery_command,
     _catalog_bootstrap_command,
     _catalog_bootstrap_script,
     _install_command,
 )
-from benchmark.harbor.aider_feedback_trial import (  # noqa: E402
+from benchmark.harbor.aider_polyglot.aider_feedback_trial import (  # noqa: E402
     AiderFeedbackTrial,
     build_aider_feedback,
     create_aider_feedback_trial,
     should_request_feedback_after_missing_reward,
     should_request_feedback_round,
 )
-from benchmark.harbor.aider_feedback_plugin import AiderFeedbackPlugin  # noqa: E402
+from benchmark.harbor.aider_polyglot.aider_feedback_plugin import AiderFeedbackPlugin  # noqa: E402
 
 
 def test_harbor_agent_builds_quoted_firstcoder_benchmark_command(tmp_path: Path) -> None:

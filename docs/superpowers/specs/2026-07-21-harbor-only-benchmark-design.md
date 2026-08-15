@@ -22,7 +22,7 @@ change.
 
 ## Retained Integration
 
-Keep `benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent` as the sole
+Keep `benchmark.harbor.shared.firstcoder_agent:FirstCoderHarborAgent` as the sole
 benchmark entry point. It stages the minimal FirstCoder runtime into a Harbor
 task container, installs it in an isolated environment, and invokes one
 non-interactive `firstcoder --benchmark` turn in Harbor's task work directory.

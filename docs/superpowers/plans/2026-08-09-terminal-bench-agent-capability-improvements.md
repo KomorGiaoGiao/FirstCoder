@@ -265,7 +265,7 @@ tool_name + normalized_arguments + ok + error/exit_code + output_tail_digest
 **文件：**
 
 - Modify: `firstcoder/cli.py`
-- Modify: `benchmark/harbor/firstcoder_agent.py`
+- Modify: `benchmark/harbor/shared/firstcoder_agent.py`
 - Modify: provider/model capability 配置
 - Test: `tests/test_cli.py`
 - Test: `tests/test_harbor_adapter.py`

@@ -11,7 +11,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from benchmark.harbor.preflight import (
+from benchmark.harbor.shared.preflight import (
     build_mounts,
     load_env_file,
     read_image_file,
@@ -29,7 +29,7 @@ FIXED_TASKS = (
     "tune-mjcf",
 )
 DATASET = "terminal-bench@2.0"
-AGENT_IMPORT_PATH = "benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent"
+AGENT_IMPORT_PATH = "benchmark.harbor.shared.firstcoder_agent:FirstCoderHarborAgent"
 PASSTHROUGH_VARIABLES = (
     "FIRSTCODER_PROVIDER",
     "FIRSTCODER_PROVIDER_NAME",
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--image-file",
         type=Path,
-        default=Path("benchmark/harbor/terminal-bench-ab-images.txt"),
+        default=Path("benchmark/harbor/terminal_bench/terminal-bench-ab-images.txt"),
     )
     parser.add_argument("--pull-images", action="store_true")
     parser.add_argument("--skip-preflight", action="store_true")

@@ -6,7 +6,7 @@ from typing import Any
 
 from harbor.models.job.plugin import BaseJobPlugin
 
-from benchmark.harbor.aider_feedback_trial import create_aider_feedback_trial
+from benchmark.harbor.aider_polyglot.aider_feedback_trial import create_aider_feedback_trial
 
 
 class AiderFeedbackPlugin(BaseJobPlugin):

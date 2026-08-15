@@ -1,5 +1,19 @@
 # Harbor Evaluation
 
+## Directory layout
+
+Harbor integrations are grouped by benchmark protocol:
+
+```text
+benchmark/harbor/
+├── shared/          # FirstCoder adapter, preflight, wheelhouse, summaries
+├── aider_polyglot/  # Aider Polyglot verifier-feedback plugin and trial
+└── terminal_bench/  # Terminal-Bench runner and fixed six-task manifests
+```
+
+Run artifacts are kept separately under `benchmark/runs/harbor/` and are not
+part of this source directory.
+
 ## What Harbor is
 
 Harbor is an external evaluation runtime for coding agents. A Harbor dataset is
@@ -13,7 +27,7 @@ the only benchmark integration maintained by this repository.
 
 ## How FirstCoder participates
 
-`benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent` is an installed-agent
+`benchmark.harbor.shared.firstcoder_agent:FirstCoderHarborAgent` is an installed-agent
 adapter. For each task it stages only `pyproject.toml`, `README.md`, and
 `firstcoder/`, creates an isolated agent virtual environment, and runs one
 non-interactive `firstcoder --benchmark` turn in Harbor's task directory.
@@ -36,8 +50,8 @@ For a long-running local suite, classify infrastructure failures separately from
 ```sh
 PYTHONPATH="$PWD" .venv/bin/harbor run \
   -p .local/harbor-datasets/aider-polyglot \
-  -a benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent \
-  --plugin benchmark.harbor.aider_feedback_plugin:AiderFeedbackPlugin \
+  -a benchmark.harbor.shared.firstcoder_agent:FirstCoderHarborAgent \
+  --plugin benchmark.harbor.aider_polyglot.aider_feedback_plugin:AiderFeedbackPlugin \
   -m gpt-5.6-luna -n 2 -k 1 \
   --ak max_tool_rounds=120 --ak reasoning_effort=high \
   -o benchmark/runs/harbor/aider-polyglot-feedback -y
@@ -85,7 +99,7 @@ your own values:
 zsh -lic 'export PYTHONPATH="$PWD"; .venv/bin/harbor run \
   -d DATASET_NAME \
   -i TASK_NAME \
-  -a benchmark.harbor.firstcoder_agent:FirstCoderHarborAgent \
+  -a benchmark.harbor.shared.firstcoder_agent:FirstCoderHarborAgent \
   -m Yuren/gpt-5.6-terra \
   -n 1 -k 1 --ak max_tool_rounds=120 --ak reasoning_effort=medium \
   --agent-setup-timeout-multiplier 3 \
@@ -134,13 +148,13 @@ discarded when the container is removed.
 Harbor 的 Linux/Python 3.11 容器准备 wheelhouse：
 
 ```powershell
-.\.venv\Scripts\python.exe -m benchmark.harbor.prepare_wheelhouse
+.\.venv\Scripts\python.exe -m benchmark.harbor.shared.prepare_wheelhouse
 ```
 
 然后把 cache 以可写方式、wheelhouse 以只读方式挂载：
 
 ```powershell
-$mounts = .\.venv\Scripts\python.exe -m benchmark.harbor.preflight `
+$mounts = .\.venv\Scripts\python.exe -m benchmark.harbor.shared.preflight `
   --cache-dir "$HOME\.cache\firstcoder-harbor" `
   --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
   --print-mounts
@@ -155,12 +169,12 @@ adapter 会优先在 `/opt/firstcoder-wheelhouse` 查找依赖，缺少 wheel �
 大规模运行前先做不会打印变量值的预检：
 
 ```powershell
-.\.venv\Scripts\python.exe -m benchmark.harbor.preflight `
+.\.venv\Scripts\python.exe -m benchmark.harbor.shared.preflight `
   --env-file .env.harbor `
   --cache-dir "$HOME\.cache\firstcoder-harbor" `
   --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
   --model MODEL_ID `
-  --image-file benchmark/harbor/terminal-bench-ab-images.txt
+  --image-file benchmark/harbor/terminal_bench/terminal-bench-ab-images.txt
 ```
 
 预检覆盖 Docker daemon/version、必要 provider 变量是否存在、provider endpoint 的 HTTP
@@ -171,7 +185,7 @@ adapter 会优先在 `/opt/firstcoder-wheelhouse` 查找依赖，缺少 wheel �
 
 ## Fixed Terminal-Bench A/B set
 
-`benchmark/harbor/terminal-bench-ab-tasks.txt` 固化了六个回归任务：
+`benchmark/harbor/terminal_bench/terminal-bench-ab-tasks.txt` 固化了六个回归任务：
 
 - `chess-best-move`
 - `configure-git-webserver`
@@ -184,7 +198,7 @@ adapter 会优先在 `/opt/firstcoder-wheelhouse` 查找依赖，缺少 wheel �
 因任务集或并发变化失去可比性：
 
 ```powershell
-.\.venv\Scripts\python.exe -m benchmark.harbor.run_terminal_bench_ab `
+.\.venv\Scripts\python.exe -m benchmark.harbor.terminal_bench.run_terminal_bench_ab `
   --env-file .env.harbor `
   --cache-dir "$HOME\.cache\firstcoder-harbor" `
   --wheelhouse "$HOME\.cache\firstcoder-harbor\wheelhouse" `
@@ -212,7 +226,7 @@ the trial reward and verifier logs as the completion evidence.
 使用离线汇总器同时报告基础设施、reward-only 和端到端指标：
 
 ```powershell
-.\.venv\Scripts\python.exe -m benchmark.harbor.summarize `
+.\.venv\Scripts\python.exe -m benchmark.harbor.shared.summarize `
   benchmark/runs/harbor/RUN_NAME/TIMESTAMP
 ```
 
