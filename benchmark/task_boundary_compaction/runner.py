@@ -27,6 +27,7 @@ from benchmark.task_boundary_compaction.loop import BenchmarkAgentLoop
 from benchmark.task_boundary_compaction.models import Arm, CompactionMetric, TrialResult
 from benchmark.task_boundary_compaction.provider_observer import RecordingProvider
 from benchmark.task_boundary_compaction.seed import seed_old_task_context
+from firstcoder.agent.loop_limits import AgentLoopLimits
 from firstcoder.agent.session import AgentSession, create_project_permission_manager
 from firstcoder.config.settings import load_config
 from firstcoder.context.llm_compact import LlmCompactService
@@ -45,6 +46,14 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 CaseDefinition: TypeAlias = ControlledCase | HistoricalCase
 ProviderFactory: TypeAlias = Callable[[], ChatProvider]
 
+_DEFAULT_MAX_TOOL_ROUNDS = 6
+_DEFAULT_MAX_PROVIDER_CALLS = 12
+_DEFAULT_MAX_TURN_SECONDS = 90.0
+
+
+class BenchmarkValidityError(RuntimeError):
+    """Raised after all trial artifacts exist but the required full-arm event is absent."""
+
 
 @dataclass(frozen=True, slots=True)
 class RunConfig:
@@ -59,6 +68,10 @@ class RunConfig:
     request_options: MainRequestOptions = MainRequestOptions(max_tokens=4_096)
     random_seed: int = 0
     seed_fraction: float = 0.80
+    repetition: int = 1
+    max_tool_rounds: int = _DEFAULT_MAX_TOOL_ROUNDS
+    max_provider_calls: int = _DEFAULT_MAX_PROVIDER_CALLS
+    max_turn_seconds: float = _DEFAULT_MAX_TURN_SECONDS
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
@@ -69,6 +82,14 @@ class RunConfig:
             raise ValueError("context_window must be positive")
         if not 0.75 <= self.seed_fraction < 0.90:
             raise ValueError("seed_fraction must be within the controlled safe range [0.75, 0.90)")
+        if self.repetition <= 0:
+            raise ValueError("repetition must be positive")
+        if self.max_tool_rounds <= 0:
+            raise ValueError("max_tool_rounds must be positive")
+        if self.max_provider_calls <= 0:
+            raise ValueError("max_provider_calls must be positive")
+        if self.max_turn_seconds <= 0:
+            raise ValueError("max_turn_seconds must be positive")
 
 
 def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResult:
@@ -105,6 +126,11 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
         context_manager=context_manager,
         request_options=request_options,
         context_window=config.context_window,
+        limits=AgentLoopLimits(
+            max_tool_rounds=config.max_tool_rounds,
+            max_provider_calls=config.max_provider_calls,
+            max_turn_seconds=config.max_turn_seconds,
+        ),
         arm=arm,
     )
     initial_budget = loop.context_budget_for_view(session.rebuild_view())
@@ -161,6 +187,10 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
         agent_turn_telemetry_count=event_summary.agent_turn_telemetry_count,
         usage_complete=usage_complete,
         elapsed_seconds=elapsed_seconds,
+        repetition=config.repetition,
+        max_tool_rounds=config.max_tool_rounds,
+        max_provider_calls=config.max_provider_calls,
+        max_turn_seconds=config.max_turn_seconds,
         artifact_paths={
             "trial_root": str(trial_root),
             "project_root": str(project_root),
@@ -186,13 +216,18 @@ def run_matrix(
         raise ValueError("repetitions must be positive")
     results: list[TrialResult] = []
     randomizer = random.Random(config.random_seed)
-    for repetition in range(repetitions):
+    for repetition in range(1, repetitions + 1):
         arm_order = list(arms)
         randomizer.shuffle(arm_order)
-        repetition_config = config if repetitions == 1 else replace(config, run_id=f"{config.run_id}-r{repetition + 1}")
+        repetition_config = replace(
+            config,
+            run_id=config.run_id if repetitions == 1 else f"{config.run_id}-r{repetition}",
+            repetition=repetition,
+        )
         for case in cases:
             for arm in arm_order:
                 results.append(run_case(case, arm=arm, config=repetition_config))
+    _require_full_boundary_events(results, cases)
     return results
 
 
@@ -330,13 +365,38 @@ def _trial_status(
             return "invalid_boundary"
         if not expected_boundary and boundary_change_count != 0:
             return "invalid_boundary"
-    if confounded_auto:
+    if confounded_auto and expected_boundary and arm is not Arm.AUTO_ONLY:
         return "confounded_auto"
     if verifier_exit_code is None:
         return "verifier_error"
     if verifier_exit_code != 0:
         return "verifier_failed"
     return "passed"
+
+
+def _require_full_boundary_events(
+    results: Sequence[TrialResult],
+    cases: Sequence[CaseDefinition],
+) -> None:
+    """Fail only after preserving every raw trial result needed for diagnosis."""
+
+    expected_boundaries = {
+        case.benchmark_case.case_id: case.benchmark_case.expected_boundary
+        for case in cases
+    }
+    invalid_trials: list[str] = []
+    for result in results:
+        if result.arm is not Arm.FULL:
+            continue
+        expected_boundary = expected_boundaries[result.case_id]
+        expected_count = 1 if expected_boundary else 0
+        if result.task_hash_changed_count != expected_count:
+            invalid_trials.append(
+                f"{result.case_id}/repetition-{result.repetition} "
+                f"expected task_hash_changed={expected_count}, got {result.task_hash_changed_count}"
+            )
+    if invalid_trials:
+        raise BenchmarkValidityError("required full-arm boundary events invalid: " + "; ".join(invalid_trials))
 
 
 def _sha256(value: str) -> str:
@@ -356,6 +416,9 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", default="run")
     parser.add_argument("--project-root", type=Path, default=Path.cwd())
+    parser.add_argument("--max-tool-rounds", type=int, default=_DEFAULT_MAX_TOOL_ROUNDS)
+    parser.add_argument("--max-provider-calls", type=int, default=_DEFAULT_MAX_PROVIDER_CALLS)
+    parser.add_argument("--max-turn-seconds", type=float, default=_DEFAULT_MAX_TURN_SECONDS)
     return parser.parse_args()
 
 
@@ -376,8 +439,15 @@ def main() -> None:
         project_root=arguments.project_root,
         model=arguments.model,
         context_window=arguments.context_window,
+        max_tool_rounds=arguments.max_tool_rounds,
+        max_provider_calls=arguments.max_provider_calls,
+        max_turn_seconds=arguments.max_turn_seconds,
     )
-    results = run_matrix(cases, repetitions=arguments.repetitions, config=config)
+    try:
+        results = run_matrix(cases, repetitions=arguments.repetitions, config=config)
+    except BenchmarkValidityError as error:
+        print(f"benchmark boundary gate failed: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
     print(json.dumps({"trials": len(results), "output": str(arguments.output)}, ensure_ascii=False))
 
 

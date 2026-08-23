@@ -155,6 +155,10 @@ class TrialResult:
     agent_turn_telemetry_count: int = 0
     usage_complete: bool = False
     elapsed_seconds: float = 0.0
+    repetition: int = 1
+    max_tool_rounds: int = 6
+    max_provider_calls: int = 12
+    max_turn_seconds: float = 90.0
     artifact_paths: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -174,6 +178,14 @@ class TrialResult:
             raise ValueError("agent_turn_telemetry_count must be non-negative")
         if self.elapsed_seconds < 0:
             raise ValueError("elapsed_seconds must be non-negative")
+        if self.repetition <= 0:
+            raise ValueError("repetition must be positive")
+        if self.max_tool_rounds <= 0:
+            raise ValueError("max_tool_rounds must be positive")
+        if self.max_provider_calls <= 0:
+            raise ValueError("max_provider_calls must be positive")
+        if self.max_turn_seconds <= 0:
+            raise ValueError("max_turn_seconds must be positive")
         if any(not key.strip() or not value.strip() for key, value in self.artifact_paths.items()):
             raise ValueError("artifact_paths must contain non-blank keys and values")
 
@@ -194,6 +206,10 @@ class TrialResult:
             "agent_turn_telemetry_count": self.agent_turn_telemetry_count,
             "usage_complete": self.usage_complete,
             "elapsed_seconds": self.elapsed_seconds,
+            "repetition": self.repetition,
+            "max_tool_rounds": self.max_tool_rounds,
+            "max_provider_calls": self.max_provider_calls,
+            "max_turn_seconds": self.max_turn_seconds,
             "artifact_paths": dict(self.artifact_paths),
         }
 
@@ -219,6 +235,10 @@ class TrialResult:
             agent_turn_telemetry_count=data.get("agent_turn_telemetry_count", 0),
             usage_complete=data.get("usage_complete", False),
             elapsed_seconds=data.get("elapsed_seconds", 0.0),
+            repetition=data.get("repetition", 1),
+            max_tool_rounds=data.get("max_tool_rounds", 6),
+            max_provider_calls=data.get("max_provider_calls", 12),
+            max_turn_seconds=data.get("max_turn_seconds", 90.0),
             artifact_paths=data.get("artifact_paths", {}),
         )
 

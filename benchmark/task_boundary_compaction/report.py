@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 from pathlib import Path
 from statistics import median
@@ -74,7 +75,7 @@ def _arm_summary(results: list[TrialResult], arm: Arm) -> dict[str, object]:
     }
 
 
-def _deltas(results: list[TrialResult]) -> dict[str, dict[str, float | None]]:
+def _deltas(results: list[TrialResult]) -> dict[str, dict[str, float | int | None]]:
     return {
         "full_minus_classifier_only": _delta(results, Arm.FULL, Arm.CLASSIFIER_ONLY),
         "classifier_only_minus_auto_only": _delta(results, Arm.CLASSIFIER_ONLY, Arm.AUTO_ONLY),
@@ -82,16 +83,33 @@ def _deltas(results: list[TrialResult]) -> dict[str, dict[str, float | None]]:
     }
 
 
-def _delta(results: list[TrialResult], left: Arm, right: Arm) -> dict[str, float | None]:
-    left_values = [_trial_total_tokens(result) for result in results if result.arm is left and result.status not in _EXCLUDED_STATUSES]
-    right_values = [_trial_total_tokens(result) for result in results if result.arm is right and result.status not in _EXCLUDED_STATUSES]
-    left_median = _median_or_none(left_values)
-    right_median = _median_or_none(right_values)
+def _delta(results: list[TrialResult], left: Arm, right: Arm) -> dict[str, float | int | None]:
+    left_values = _eligible_trial_totals(results, arm=left)
+    right_values = _eligible_trial_totals(results, arm=right)
+    paired_deltas = [
+        left_values[key][0] - right_values[key][0]
+        for key in sorted(left_values.keys() & right_values.keys())
+        if len(left_values[key]) == 1 and len(right_values[key]) == 1
+    ]
     return {
-        "all_provider_total_tokens": (
-            None if left_median is None or right_median is None else left_median - right_median
-        )
+        "paired_trial_count": len(paired_deltas),
+        "all_provider_total_tokens": _median_or_none(paired_deltas),
     }
+
+
+def _eligible_trial_totals(
+    results: list[TrialResult],
+    *,
+    arm: Arm,
+) -> dict[tuple[str, int], list[int]]:
+    totals: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for result in results:
+        if result.arm is not arm or result.status in _EXCLUDED_STATUSES:
+            continue
+        total_tokens = _trial_total_tokens(result)
+        if total_tokens is not None:
+            totals[(result.case_id, result.repetition)].append(total_tokens)
+    return totals
 
 
 def _trial_total_tokens(result: TrialResult) -> int | None:
@@ -152,7 +170,10 @@ def _render_markdown(summary: dict[str, object]) -> str:
     assert isinstance(deltas, dict)
     for name, data in deltas.items():
         assert isinstance(data, dict)
-        rows.append(f"- `{name}`：全 provider token 中位数差值 = {data['all_provider_total_tokens']}")
+        rows.append(
+            f"- `{name}`：配对 trial = {data['paired_trial_count']}，"
+            f"全 provider token 差值中位数 = {data['all_provider_total_tokens']}"
+        )
     return "\n".join(rows) + "\n"
 
 

@@ -47,6 +47,9 @@ python -m venv .venv
   --model Yuren/gpt-5.6-terra \
   --context-window 32768 \
   --repetitions 1 \
+  --max-tool-rounds 6 \
+  --max-provider-calls 12 \
+  --max-turn-seconds 90 \
   --output benchmark/runs/task-boundary-compaction/pilot-32k
 
 .venv/bin/python -m benchmark.task_boundary_compaction.report \
@@ -56,6 +59,8 @@ python -m venv .venv
 
 `--context-window 32768` 只传给这次 benchmark 的 `BenchmarkAgentLoop`，是 `simulated_budget_window`，不会写入 `~/.config/firstcoder/config.toml`、项目 `firstcoder.toml` 或正常应用状态。每个受控 trial 都将旧任务 A 注入到当前高水位的 80%，因此运行 B 续接轮时尚未到 AUTO 高水位；如果在预期边界前已经发生 AUTO 压缩，结果会标为 `confounded_auto`，并从因果聚合排除。
 
+每个 B 用户轮固定上限为 6 个工具轮、12 次 provider 调用和 90 秒。三个 arm 使用同一组 benchmark 专属限制；这些值会写入每个 `result.json`，不会改变生产 `AgentLoopLimits` 默认值。达到任一上限的轮会停止并保留结果，避免微型题无限工具循环。
+
 ## 历史真实任务：200K 试运行
 
 ```bash
@@ -64,6 +69,9 @@ python -m venv .venv
   --model Yuren/gpt-5.6-terra \
   --context-window 200000 \
   --repetitions 1 \
+  --max-tool-rounds 6 \
+  --max-provider-calls 12 \
+  --max-turn-seconds 90 \
   --output benchmark/runs/task-boundary-compaction/real-200k
 
 .venv/bin/python -m benchmark.task_boundary_compaction.report \

@@ -13,6 +13,7 @@ from benchmark.task_boundary_compaction.cases import (
     materialize_historical_case,
 )
 from benchmark.task_boundary_compaction.models import Arm
+from benchmark.task_boundary_compaction.runner import _trial_status
 
 
 BASE_COMMIT = "a" * 40
@@ -114,3 +115,37 @@ def test_materialize_historical_case_uses_fresh_base_archive_and_target_tests(tm
     assert materialization.worktree == destination
     assert (destination / "subject.py").read_text(encoding="utf-8") == "VALUE = 'base'\n"
     assert (destination / "tests/test_subject.py").read_text(encoding="utf-8") == "assert True\n"
+
+
+@pytest.mark.parametrize(
+    ("arm", "expected_boundary", "boundary_change_count"),
+    [
+        (Arm.AUTO_ONLY, True, 0),
+        (Arm.CLASSIFIER_ONLY, False, 0),
+        (Arm.FULL, False, 0),
+    ],
+)
+def test_normal_auto_is_not_confounded_without_an_expected_full_boundary(
+    arm: Arm,
+    expected_boundary: bool,
+    boundary_change_count: int,
+) -> None:
+    assert _trial_status(
+        arm=arm,
+        expected_boundary=expected_boundary,
+        boundary_change_count=boundary_change_count,
+        confounded_auto=True,
+        provider_error=False,
+        verifier_exit_code=0,
+    ) == "passed"
+
+
+def test_positive_full_boundary_stays_confounded_when_auto_precedes_it() -> None:
+    assert _trial_status(
+        arm=Arm.FULL,
+        expected_boundary=True,
+        boundary_change_count=1,
+        confounded_auto=True,
+        provider_error=False,
+        verifier_exit_code=0,
+    ) == "confounded_auto"

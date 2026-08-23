@@ -103,6 +103,7 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
         boundary_event_count=1,
         usage_complete=True,
         elapsed_seconds=2.5,
+        repetition=2,
         artifact_paths={"data_root": "/tmp/data", "result": "/tmp/result.json"},
     )
 
@@ -112,6 +113,7 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
     assert "api_key" not in encoded
     assert "provider" not in encoded
     assert encoded["provider_calls"][0]["kind"] == "main"
+    assert encoded["repetition"] == 2
 
 
 def test_trial_result_rejects_an_unknown_serialized_arm() -> None:
