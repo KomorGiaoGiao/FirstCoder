@@ -16,11 +16,11 @@ class Arm(StrEnum):
 
 
 Decision = Literal["new", "same", "uncertain"]
-CaseKind = Literal["controlled", "historical"]
+CaseKind = Literal["controlled", "historical", "aider_chain"]
 CallKind = Literal["main", "classifier", "l4"]
 
 _VALID_DECISIONS = frozenset({"new", "same", "uncertain"})
-_VALID_CASE_KINDS = frozenset({"controlled", "historical"})
+_VALID_CASE_KINDS = frozenset({"controlled", "historical", "aider_chain"})
 _VALID_CALL_KINDS = frozenset({"main", "classifier", "l4"})
 
 
@@ -52,7 +52,7 @@ class BenchmarkCase:
         if not self.case_id.strip():
             raise ValueError("case_id must not be blank")
         if self.kind not in _VALID_CASE_KINDS:
-            raise ValueError("kind must be controlled or historical")
+            raise ValueError("kind must be controlled, historical, or aider_chain")
         if len(self.turns) < 2:
             raise ValueError("turns must contain at least two task-B turns")
         if not self.verify_command or any(not part.strip() for part in self.verify_command):
