@@ -148,6 +148,7 @@ class TrialResult:
     verifier_exit_code: int | None
     verifier_stdout_sha256: str | None
     verifier_stderr_sha256: str | None
+    classifier_model: str = ""
     provider_calls: tuple[ProviderCallMetric, ...] = ()
     compactions: tuple[CompactionMetric, ...] = ()
     boundary_event_count: int = 0
@@ -168,6 +169,8 @@ class TrialResult:
             raise ValueError("case_id must not be blank")
         if not self.model.strip():
             raise ValueError("model must not be blank")
+        if self.classifier_model and not self.classifier_model.strip():
+            raise ValueError("classifier_model must be non-blank when provided")
         if self.context_window <= 0:
             raise ValueError("context_window must be positive")
         if not self.status.strip():
@@ -200,6 +203,7 @@ class TrialResult:
             "case_id": self.case_id,
             "arm": self.arm.value,
             "model": self.model,
+            "classifier_model": self.classifier_model or self.model,
             "context_window": self.context_window,
             "status": self.status,
             "verifier_exit_code": self.verifier_exit_code,
@@ -227,6 +231,7 @@ class TrialResult:
             case_id=data["case_id"],
             arm=Arm(data["arm"]),
             model=data["model"],
+            classifier_model=data.get("classifier_model", data["model"]),
             context_window=data["context_window"],
             status=data["status"],
             verifier_exit_code=data.get("verifier_exit_code"),

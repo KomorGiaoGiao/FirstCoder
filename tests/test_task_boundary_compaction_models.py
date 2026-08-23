@@ -79,6 +79,7 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
         case_id="controlled-parser",
         arm=Arm.FULL,
         model="Yuren/gpt-5.6-terra",
+        classifier_model="Yuren/gpt-5.6-luna",
         context_window=32_768,
         status="passed",
         verifier_exit_code=0,
@@ -113,8 +114,13 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
     assert "api_key" not in encoded
     assert "provider" not in encoded
     assert encoded["provider_calls"][0]["kind"] == "main"
+    assert encoded["classifier_model"] == "Yuren/gpt-5.6-luna"
     assert encoded["repetition"] == 2
     assert encoded["budget_window_type"] == "simulated_budget_window"
+
+    legacy = dict(encoded)
+    del legacy["classifier_model"]
+    assert TrialResult.from_dict(legacy).classifier_model == "Yuren/gpt-5.6-terra"
 
 
 def test_trial_result_rejects_an_unknown_serialized_arm() -> None:
