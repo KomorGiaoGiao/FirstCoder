@@ -50,6 +50,7 @@ ProviderFactory: TypeAlias = Callable[[], ChatProvider]
 _DEFAULT_MAX_TOOL_ROUNDS = 6
 _DEFAULT_MAX_PROVIDER_CALLS = 12
 _DEFAULT_MAX_TURN_SECONDS = 90.0
+_DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
 
 
 class BenchmarkValidityError(RuntimeError):
@@ -73,6 +74,7 @@ class RunConfig:
     max_tool_rounds: int = _DEFAULT_MAX_TOOL_ROUNDS
     max_provider_calls: int = _DEFAULT_MAX_PROVIDER_CALLS
     max_turn_seconds: float = _DEFAULT_MAX_TURN_SECONDS
+    provider_timeout_seconds: float = _DEFAULT_PROVIDER_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
@@ -91,6 +93,8 @@ class RunConfig:
             raise ValueError("max_provider_calls must be positive")
         if self.max_turn_seconds <= 0:
             raise ValueError("max_turn_seconds must be positive")
+        if self.provider_timeout_seconds <= 0:
+            raise ValueError("provider_timeout_seconds must be positive")
 
 
 def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResult:
@@ -108,6 +112,7 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
         _materialize_case(case, project_root=project_root, source_repo_root=config.project_root)
 
         provider, request_options = _resolve_provider(config)
+        _configure_provider_timeout(provider, seconds=config.provider_timeout_seconds)
         recording_provider = RecordingProvider(provider)
         store = JsonlSessionStore(data_root)
         session = _create_benchmark_session(
@@ -195,6 +200,7 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
             max_tool_rounds=config.max_tool_rounds,
             max_provider_calls=config.max_provider_calls,
             max_turn_seconds=config.max_turn_seconds,
+            provider_timeout_seconds=config.provider_timeout_seconds,
             artifact_paths={
                 "trial_root": str(trial_root),
                 "events": str(events_path),
@@ -265,6 +271,15 @@ def _resolve_provider(config: RunConfig) -> tuple[ChatProvider, MainRequestOptio
             extra_body=profile.request.extra_body,
         ),
     )
+
+
+def _configure_provider_timeout(provider: ChatProvider, *, seconds: float) -> None:
+    """Apply a request timeout only to SDK clients created for this benchmark trial."""
+
+    client = getattr(provider, "_client", None)
+    with_options = getattr(client, "with_options", None)
+    if callable(with_options):
+        setattr(provider, "_client", with_options(timeout=seconds))
 
 
 def _create_benchmark_session(*, store: JsonlSessionStore, data_root: Path, project_root: Path) -> AgentSession:
@@ -462,6 +477,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--max-tool-rounds", type=int, default=_DEFAULT_MAX_TOOL_ROUNDS)
     parser.add_argument("--max-provider-calls", type=int, default=_DEFAULT_MAX_PROVIDER_CALLS)
     parser.add_argument("--max-turn-seconds", type=float, default=_DEFAULT_MAX_TURN_SECONDS)
+    parser.add_argument("--provider-timeout-seconds", type=float, default=_DEFAULT_PROVIDER_TIMEOUT_SECONDS)
     return parser.parse_args()
 
 
@@ -485,6 +501,7 @@ def main() -> None:
         max_tool_rounds=arguments.max_tool_rounds,
         max_provider_calls=arguments.max_provider_calls,
         max_turn_seconds=arguments.max_turn_seconds,
+        provider_timeout_seconds=arguments.provider_timeout_seconds,
     )
     try:
         results = run_matrix(cases, repetitions=arguments.repetitions, config=config)

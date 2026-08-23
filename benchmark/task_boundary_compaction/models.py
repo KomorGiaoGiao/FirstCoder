@@ -159,6 +159,7 @@ class TrialResult:
     max_tool_rounds: int = 6
     max_provider_calls: int = 12
     max_turn_seconds: float = 90.0
+    provider_timeout_seconds: float = 120.0
     budget_window_type: str = "simulated_budget_window"
     artifact_paths: Mapping[str, str] = field(default_factory=dict)
 
@@ -187,6 +188,8 @@ class TrialResult:
             raise ValueError("max_provider_calls must be positive")
         if self.max_turn_seconds <= 0:
             raise ValueError("max_turn_seconds must be positive")
+        if self.provider_timeout_seconds <= 0:
+            raise ValueError("provider_timeout_seconds must be positive")
         if self.budget_window_type != "simulated_budget_window":
             raise ValueError("budget_window_type must be simulated_budget_window")
         if any(not key.strip() or not value.strip() for key, value in self.artifact_paths.items()):
@@ -213,6 +216,7 @@ class TrialResult:
             "max_tool_rounds": self.max_tool_rounds,
             "max_provider_calls": self.max_provider_calls,
             "max_turn_seconds": self.max_turn_seconds,
+            "provider_timeout_seconds": self.provider_timeout_seconds,
             "budget_window_type": self.budget_window_type,
             "artifact_paths": dict(self.artifact_paths),
         }
@@ -243,6 +247,7 @@ class TrialResult:
             max_tool_rounds=data.get("max_tool_rounds", 6),
             max_provider_calls=data.get("max_provider_calls", 12),
             max_turn_seconds=data.get("max_turn_seconds", 90.0),
+            provider_timeout_seconds=data.get("provider_timeout_seconds", 120.0),
             budget_window_type=data.get("budget_window_type", "simulated_budget_window"),
             artifact_paths=data.get("artifact_paths", {}),
         )

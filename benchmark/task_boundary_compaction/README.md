@@ -2,6 +2,8 @@
 
 这个目录只实现基准测试，不修改 `firstcoder/` 的生产控制流、用户全局配置或正常 `.firstcoder/` 会话。每个 `(case, arm, repetition)` 会在输出目录下临时创建独立的 `project/` 和 `data/` 根目录；trial 完成后会删除两者。结果只保留白名单化的 `events.json`、token/耗时指标、verifier 退出码与输出哈希，不保存 JSONL、prompt、模型回答正文、工具参数或凭证。
 
+每个 B 轮默认最多执行 6 个工具回合、12 次 provider 调用、90 秒循环时间；对 OpenAI SDK 路由还会注入仅本次 trial 生效的 120 秒 HTTP 请求超时。可通过 runner 的对应 `--max-*` 与 `--provider-timeout-seconds` 参数覆盖，但三臂必须使用相同值。
+
 ## 三臂定义
 
 | Arm | 隐藏分类器 | `TASK_HASH_CHANGED` 压缩 | 普通 `AUTO` |

@@ -57,6 +57,15 @@ class MatrixProvider(ChatProvider):
         )
 
 
+@dataclass
+class TimeoutOptionsClient:
+    timeouts: list[float] = field(default_factory=list)
+
+    def with_options(self, *, timeout: float):
+        self.timeouts.append(timeout)
+        return self
+
+
 def _basis_message_id(request: ChatRequest) -> str:
     for message in reversed(request.messages):
         match = re.search(r"basis_message_id=([A-Za-z0-9_]+)", message.content)
@@ -270,6 +279,7 @@ def test_runner_passes_and_records_shared_benchmark_limits(tmp_path, monkeypatch
         max_tool_rounds=6,
         max_provider_calls=12,
         max_turn_seconds=90,
+        provider_timeout_seconds=75,
     )
 
     results = [run_case(_passing_controlled_case(), arm=arm, config=config) for arm in Arm]
@@ -279,6 +289,26 @@ def test_runner_passes_and_records_shared_benchmark_limits(tmp_path, monkeypatch
     assert all(result.max_tool_rounds == 6 for result in results)
     assert all(result.max_provider_calls == 12 for result in results)
     assert all(result.max_turn_seconds == 90 for result in results)
+    assert all(result.provider_timeout_seconds == 75 for result in results)
+
+
+def test_runner_configures_timeout_on_a_provider_sdk_client(tmp_path) -> None:
+    provider = MatrixProvider()
+    client = TimeoutOptionsClient()
+    provider._client = client
+    config = RunConfig(
+        output_root=tmp_path / "runs",
+        run_id="provider-timeout",
+        project_root=Path.cwd(),
+        model="fake/fake-model",
+        context_window=32_768,
+        provider_factory=lambda: provider,
+        provider_timeout_seconds=75,
+    )
+
+    run_case(_passing_controlled_case(), arm=Arm.AUTO_ONLY, config=config)
+
+    assert client.timeouts == [75]
 
 
 def test_runner_cli_exposes_benchmark_limit_defaults(monkeypatch) -> None:
@@ -302,6 +332,7 @@ def test_runner_cli_exposes_benchmark_limit_defaults(monkeypatch) -> None:
     assert arguments.max_tool_rounds == 6
     assert arguments.max_provider_calls == 12
     assert arguments.max_turn_seconds == 90.0
+    assert arguments.provider_timeout_seconds == 120.0
 
 
 def test_runner_cli_exits_nonzero_for_a_boundary_gate_failure(monkeypatch) -> None:
