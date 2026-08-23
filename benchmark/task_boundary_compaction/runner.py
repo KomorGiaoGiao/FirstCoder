@@ -340,6 +340,7 @@ def _run_aider_chain_arm(
             destination_data_root=data_root,
             session_id="benchmark",
         )
+        b_start_event_index = len(store.list_events("benchmark"))
         session = _resume_benchmark_session(
             store=store,
             data_root=data_root,
@@ -368,8 +369,17 @@ def _run_aider_chain_arm(
             project_root=project_root,
             image_tag=_aider_image_tag(config=config, case_id=case.case_id, arm=arm),
         )
-        event_summary = _event_summary(store, session.session_id)
-        _write_sanitized_events(store, session.session_id, events_path)
+        event_summary = _event_summary(
+            store,
+            session.session_id,
+            start_event_index=b_start_event_index,
+        )
+        _write_sanitized_events(
+            store,
+            session.session_id,
+            events_path,
+            start_event_index=b_start_event_index,
+        )
         provider_calls = _provider_metrics(routes)
         all_calls = (*recorded_task_a_calls, *provider_calls)
         usage_complete = all(
@@ -734,14 +744,19 @@ def _aider_image_tag(*, config: RunConfig, case_id: str, arm: Arm) -> str:
     return f"firstcoder-tbc-{digest}"
 
 
-def _event_summary(store: JsonlSessionStore, session_id: str) -> _EventSummary:
+def _event_summary(
+    store: JsonlSessionStore,
+    session_id: str,
+    *,
+    start_event_index: int = 0,
+) -> _EventSummary:
     boundary_event_count = 0
     boundary_change_count = 0
     agent_turn_telemetry_count = 0
     compactions: list[CompactionMetric] = []
     seen_boundary_change = False
     confounded_auto = False
-    for event in store.list_events(session_id):
+    for event in store.list_events(session_id)[start_event_index:]:
         if event.type == "task_boundary_observed":
             boundary_event_count += 1
             if bool(event.payload.get("should_trigger_compaction")):
@@ -769,11 +784,17 @@ def _event_summary(store: JsonlSessionStore, session_id: str) -> _EventSummary:
     )
 
 
-def _write_sanitized_events(store: JsonlSessionStore, session_id: str, path: Path) -> None:
+def _write_sanitized_events(
+    store: JsonlSessionStore,
+    session_id: str,
+    path: Path,
+    *,
+    start_event_index: int = 0,
+) -> None:
     """Persist only fields needed to audit boundary and compaction decisions."""
 
     records: list[dict[str, object]] = []
-    for event in store.list_events(session_id):
+    for event in store.list_events(session_id)[start_event_index:]:
         if event.type == "task_boundary_observed":
             records.append(
                 {

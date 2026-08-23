@@ -20,10 +20,14 @@ from benchmark.task_boundary_compaction.models import Arm, BenchmarkCase, Provid
 from benchmark.task_boundary_compaction.runner import (
     RunConfig,
     _aider_docker_command,
+    _event_summary,
     _resolve_providers,
     _trial_status,
+    _write_sanitized_events,
     run_aider_chain_case,
 )
+from firstcoder.context.events import SessionEvent
+from firstcoder.context.store import JsonlSessionStore
 from firstcoder.providers.base import ChatProvider
 from firstcoder.providers.types import ChatRequest, ChatResponse, TokenUsage
 from firstcoder.providers.types import MainRequestOptions
@@ -202,6 +206,48 @@ def test_aider_chain_records_task_a_once_then_replays_it_for_all_b_arms(tmp_path
     assert next(result for result in results if result.arm is Arm.FULL).task_hash_changed_count == 1
     assert len({result.recorded_task_a_calls for result in results}) == 1
     assert not (tmp_path / "runs" / "test" / "a-to-b" / "capture" / "project").exists()
+
+
+def test_aider_chain_event_artifacts_start_after_cloned_task_a_events(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / "data")
+    for event_id, event_type, payload in (
+        ("a-boundary", "task_boundary_observed", {"should_trigger_compaction": True}),
+        ("a-compaction", "compaction_completed", {"trigger": "task_hash_changed", "status": "success"}),
+        ("a-telemetry", "agent_turn_telemetry", {}),
+    ):
+        store.append_event(SessionEvent(id=event_id, session_id="benchmark", type=event_type, payload=payload))
+    b_start_event_index = len(store.list_events("benchmark"))
+    store.append_event(
+        SessionEvent(
+            id="b-boundary",
+            session_id="benchmark",
+            type="task_boundary_observed",
+            payload={"should_trigger_compaction": True},
+        )
+    )
+    store.append_event(
+        SessionEvent(
+            id="b-compaction",
+            session_id="benchmark",
+            type="compaction_completed",
+            payload={"trigger": "task_hash_changed", "status": "success"},
+        )
+    )
+    store.append_event(SessionEvent(id="b-telemetry", session_id="benchmark", type="agent_turn_telemetry"))
+
+    summary = _event_summary(store, "benchmark", start_event_index=b_start_event_index)
+    events_path = tmp_path / "events.json"
+    _write_sanitized_events(store, "benchmark", events_path, start_event_index=b_start_event_index)
+
+    assert summary.boundary_event_count == 1
+    assert summary.boundary_change_count == 1
+    assert len(summary.compactions) == 1
+    assert summary.agent_turn_telemetry_count == 1
+    assert json.loads(events_path.read_text(encoding="utf-8")) == [
+        {"type": "task_boundary_observed", "decision": "unknown", "confirmed_change": False, "should_trigger_compaction": True},
+        {"type": "compaction_completed", "trigger": "task_hash_changed", "completed": True},
+        {"type": "agent_turn_telemetry"},
+    ]
 
 
 def _run_config(tmp_path: Path, **overrides) -> RunConfig:
