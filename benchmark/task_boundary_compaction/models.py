@@ -158,8 +158,8 @@ class TrialResult:
     repetition: int = 1
     max_tool_rounds: int = 6
     max_provider_calls: int = 12
-    max_turn_seconds: float = 90.0
-    provider_timeout_seconds: float = 120.0
+    max_turn_seconds: float = 240.0
+    provider_timeout_seconds: float = 180.0
     budget_window_type: str = "simulated_budget_window"
     artifact_paths: Mapping[str, str] = field(default_factory=dict)
 

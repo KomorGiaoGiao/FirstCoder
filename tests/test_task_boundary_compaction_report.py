@@ -336,8 +336,8 @@ def test_runner_cli_exposes_benchmark_limit_defaults(monkeypatch) -> None:
 
     assert arguments.max_tool_rounds == 6
     assert arguments.max_provider_calls == 12
-    assert arguments.max_turn_seconds == 90.0
-    assert arguments.provider_timeout_seconds == 45.0
+    assert arguments.max_turn_seconds == 240.0
+    assert arguments.provider_timeout_seconds == 180.0
 
 
 def test_runner_cli_exits_nonzero_for_a_boundary_gate_failure(monkeypatch) -> None:
