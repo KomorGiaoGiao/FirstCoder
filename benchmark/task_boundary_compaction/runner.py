@@ -211,9 +211,8 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
             confounded_auto=event_summary.confounded_auto,
             provider_error=provider_error,
             verifier_exit_code=verifier_exit_code,
+            usage_complete=usage_complete,
         )
-        if status == "passed" and not usage_complete:
-            status = "usage_incomplete"
         result = TrialResult(
             case_id=benchmark_case.case_id,
             arm=arm,
@@ -481,6 +480,7 @@ def _trial_status(
     confounded_auto: bool,
     provider_error: bool,
     verifier_exit_code: int | None,
+    usage_complete: bool = True,
 ) -> str:
     if provider_error:
         return "provider_error"
@@ -493,6 +493,8 @@ def _trial_status(
         return "confounded_auto"
     if verifier_exit_code is None:
         return "verifier_error"
+    if not usage_complete:
+        return "usage_incomplete"
     if verifier_exit_code != 0:
         return "verifier_failed"
     return "passed"

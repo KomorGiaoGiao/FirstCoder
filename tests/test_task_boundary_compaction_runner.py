@@ -256,3 +256,15 @@ def test_positive_classifier_only_boundary_stays_confounded_when_auto_precedes_i
         provider_error=False,
         verifier_exit_code=0,
     ) == "confounded_auto"
+
+
+def test_usage_incomplete_outranks_verifier_failure_for_token_aggregation() -> None:
+    assert _trial_status(
+        arm=Arm.FULL,
+        expected_boundary=True,
+        boundary_change_count=1,
+        confounded_auto=False,
+        provider_error=False,
+        verifier_exit_code=1,
+        usage_complete=False,
+    ) == "usage_incomplete"
