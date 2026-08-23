@@ -1,0 +1,41 @@
+{
+  "suite": "historical",
+  "cases": [
+    {
+      "case_id": "compact-before-main",
+      "target_commit": "b71f1a086d4d1d25b1b155c2d91063d031db99d9",
+      "base_commit": "de5ce515fbe1eb3b5764f794a2e85c0272cd5016",
+      "focused_test_files": [
+        "tests/test_agent_context_loop.py",
+        "tests/test_context_builder_new.py"
+      ]
+    },
+    {
+      "case_id": "dynamic-context-budget",
+      "target_commit": "de5ce515fbe1eb3b5764f794a2e85c0272cd5016",
+      "base_commit": "9ee8e8cf96b00e33931bd1cb2289cda698fe92b0",
+      "focused_test_files": [
+        "tests/test_context_triggers.py",
+        "tests/test_context_window_manager.py"
+      ]
+    },
+    {
+      "case_id": "protect-unconsumed-context",
+      "target_commit": "046bc1aedc7bc3b9dce7b158138efedff519bf49",
+      "base_commit": "94528a16ce1d2e34f4b71b864c82679504984f37",
+      "focused_test_files": [
+        "tests/test_context_compaction_pipeline.py",
+        "tests/test_context_store.py"
+      ]
+    },
+    {
+      "case_id": "validate-l4-candidate",
+      "target_commit": "9ee8e8cf96b00e33931bd1cb2289cda698fe92b0",
+      "base_commit": "046bc1aedc7bc3b9dce7b158138efedff519bf49",
+      "focused_test_files": [
+        "tests/test_context_llm_compact.py",
+        "tests/test_context_window_manager.py"
+      ]
+    }
+  ]
+}
