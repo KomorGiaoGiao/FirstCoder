@@ -24,6 +24,7 @@ def build_report(results: Iterable[TrialResult], *, output_dir: str | Path) -> d
     result_list = list(results)
     summary = {
         "trial_count": len(result_list),
+        "budget_window_types": sorted({result.budget_window_type for result in result_list}),
         "arms": {arm.value: _arm_summary(result_list, arm) for arm in Arm},
         "deltas": _deltas(result_list),
         "raw_status_counts": _status_counts(result_list),
@@ -147,6 +148,8 @@ def _render_markdown(summary: dict[str, object]) -> str:
     assert isinstance(arms, dict)
     rows = [
         "# 任务边界压缩基准汇总",
+        "",
+        "预算窗口类型：" + ", ".join(summary["budget_window_types"]),
         "",
         "| Arm | Trial | Pass | Eligible | Provider token P50 | P95 耗时（秒） | TASK_HASH_CHANGED |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",

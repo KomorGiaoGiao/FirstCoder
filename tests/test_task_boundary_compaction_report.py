@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import re
 
@@ -114,7 +115,23 @@ def test_run_case_writes_isolated_results_and_builds_causal_summary(tmp_path) ->
     assert full.agent_turn_telemetry_count == 2
     assert any(metric.trigger == "task_hash_changed" for metric in full.compactions)
     assert not any(metric.trigger == "task_hash_changed" for metric in classifier_only.compactions)
-    assert all("data" in result.artifact_paths["data_root"] for result in results)
+    for result in results:
+        assert result.to_dict()["budget_window_type"] == "simulated_budget_window"
+        assert set(result.artifact_paths) == {"trial_root", "events", "result"}
+        trial_root = Path(result.artifact_paths["trial_root"])
+        assert not (trial_root / "data").exists()
+        assert not (trial_root / "project").exists()
+        sanitized_events = Path(result.artifact_paths["events"]).read_text(encoding="utf-8")
+        assert "任务 B" not in sanitized_events
+        assert "已检查实现" not in sanitized_events
+        assert "content" not in sanitized_events
+        for event in json.loads(sanitized_events):
+            if event["type"] == "task_boundary_observed":
+                assert set(event) == {"type", "should_trigger_compaction"}
+            elif event["type"] in {"compaction_completed", "llm_compaction_completed"}:
+                assert set(event) == {"type", "trigger", "completed"}
+            else:
+                assert event == {"type": "agent_turn_telemetry"}
 
     summary = build_report(results, output_dir=tmp_path / "summary")
 
@@ -224,14 +241,12 @@ def test_run_matrix_writes_invalid_results_before_boundary_gate_fails(tmp_path) 
     with pytest.raises(RuntimeError, match="fake-controlled"):
         run_matrix([case], repetitions=1, config=config)
 
-    assert (
-        tmp_path
-        / "runs"
-        / "invalid-boundary"
-        / "fake-controlled"
-        / Arm.FULL.value
-        / "result.json"
-    ).is_file()
+    for arm in Arm:
+        trial_root = tmp_path / "runs" / "invalid-boundary" / "fake-controlled" / arm.value
+        assert (trial_root / "result.json").is_file()
+        assert (trial_root / "events.json").is_file()
+        assert not (trial_root / "data").exists()
+        assert not (trial_root / "project").exists()
 
 
 def test_runner_passes_and_records_shared_benchmark_limits(tmp_path, monkeypatch) -> None:

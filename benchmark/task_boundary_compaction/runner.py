@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -93,7 +94,7 @@ class RunConfig:
 
 
 def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResult:
-    """Run one arm in a brand-new project and JSONL data root, then write ``result.json``."""
+    """Run one arm in a new private work area and retain only sanitized artifacts."""
 
     benchmark_case = case.benchmark_case
     trial_root = config.output_root / config.run_id / benchmark_case.case_id / arm.value
@@ -101,106 +102,110 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
         raise FileExistsError(f"benchmark trial directory already exists: {trial_root}")
     project_root = trial_root / "project"
     data_root = trial_root / "data"
+    events_path = trial_root / "events.json"
     trial_root.mkdir(parents=True)
-    _materialize_case(case, project_root=project_root, source_repo_root=config.project_root)
+    try:
+        _materialize_case(case, project_root=project_root, source_repo_root=config.project_root)
 
-    provider, request_options = _resolve_provider(config)
-    recording_provider = RecordingProvider(provider)
-    store = JsonlSessionStore(data_root)
-    session = _create_benchmark_session(
-        store=store,
-        data_root=data_root,
-        project_root=project_root,
-    )
-    context_manager = ContextWindowManager(
-        store=store,
-        l4_service=LlmCompactService(
+        provider, request_options = _resolve_provider(config)
+        recording_provider = RecordingProvider(provider)
+        store = JsonlSessionStore(data_root)
+        session = _create_benchmark_session(
             store=store,
-            summarizer=ProviderLlmCompactSummarizer(recording_provider),
-        ),
-    )
-    loop = BenchmarkAgentLoop(
-        session=session,
-        provider=recording_provider,
-        tools=_benchmark_tools(project_root, data_root),
-        context_manager=context_manager,
-        request_options=request_options,
-        context_window=config.context_window,
-        limits=AgentLoopLimits(
+            data_root=data_root,
+            project_root=project_root,
+        )
+        context_manager = ContextWindowManager(
+            store=store,
+            l4_service=LlmCompactService(
+                store=store,
+                summarizer=ProviderLlmCompactSummarizer(recording_provider),
+            ),
+        )
+        loop = BenchmarkAgentLoop(
+            session=session,
+            provider=recording_provider,
+            tools=_benchmark_tools(project_root, data_root),
+            context_manager=context_manager,
+            request_options=request_options,
+            context_window=config.context_window,
+            limits=AgentLoopLimits(
+                max_tool_rounds=config.max_tool_rounds,
+                max_provider_calls=config.max_provider_calls,
+                max_turn_seconds=config.max_turn_seconds,
+            ),
+            arm=arm,
+        )
+        initial_budget = loop.context_budget_for_view(session.rebuild_view())
+        session.runtime_state.active_task_hash = f"seed_{benchmark_case.case_id}"
+        seed_old_task_context(
+            session,
+            case_id=benchmark_case.case_id,
+            target_input_tokens=int(initial_budget.high_watermark * config.seed_fraction),
+            estimate_budget=loop.context_budget_for_view,
+        )
+
+        started_at = time.perf_counter()
+        provider_error = False
+        try:
+            for turn in benchmark_case.turns:
+                loop._run_user_turn_sync(turn.message)
+        except BaseException:
+            provider_error = True
+        elapsed_seconds = time.perf_counter() - started_at
+        verifier_exit_code, verifier_stdout, verifier_stderr = _run_verifier(
+            benchmark_case.verify_command,
+            cwd=project_root,
+        )
+        event_summary = _event_summary(store, session.session_id)
+        _write_sanitized_events(store, session.session_id, events_path)
+        usage_complete = all(
+            metric.input_tokens is not None
+            and metric.output_tokens is not None
+            and metric.total_tokens is not None
+            for metric in recording_provider.metrics
+        )
+        status = _trial_status(
+            arm=arm,
+            expected_boundary=benchmark_case.expected_boundary,
+            boundary_change_count=event_summary.boundary_change_count,
+            confounded_auto=event_summary.confounded_auto,
+            provider_error=provider_error,
+            verifier_exit_code=verifier_exit_code,
+        )
+        if status == "passed" and not usage_complete:
+            status = "usage_incomplete"
+        result = TrialResult(
+            case_id=benchmark_case.case_id,
+            arm=arm,
+            model=config.model,
+            context_window=config.context_window,
+            status=status,
+            verifier_exit_code=verifier_exit_code,
+            verifier_stdout_sha256=_sha256(verifier_stdout),
+            verifier_stderr_sha256=_sha256(verifier_stderr),
+            provider_calls=tuple(recording_provider.metrics),
+            compactions=event_summary.compactions,
+            boundary_event_count=event_summary.boundary_event_count,
+            task_hash_changed_count=event_summary.boundary_change_count,
+            agent_turn_telemetry_count=event_summary.agent_turn_telemetry_count,
+            usage_complete=usage_complete,
+            elapsed_seconds=elapsed_seconds,
+            repetition=config.repetition,
             max_tool_rounds=config.max_tool_rounds,
             max_provider_calls=config.max_provider_calls,
             max_turn_seconds=config.max_turn_seconds,
-        ),
-        arm=arm,
-    )
-    initial_budget = loop.context_budget_for_view(session.rebuild_view())
-    session.runtime_state.active_task_hash = f"seed_{benchmark_case.case_id}"
-    seed_old_task_context(
-        session,
-        case_id=benchmark_case.case_id,
-        target_input_tokens=int(initial_budget.high_watermark * config.seed_fraction),
-        estimate_budget=loop.context_budget_for_view,
-    )
-
-    started_at = time.perf_counter()
-    provider_error = False
-    try:
-        for turn in benchmark_case.turns:
-            loop._run_user_turn_sync(turn.message)
-    except BaseException:
-        provider_error = True
-    elapsed_seconds = time.perf_counter() - started_at
-    verifier_exit_code, verifier_stdout, verifier_stderr = _run_verifier(
-        benchmark_case.verify_command,
-        cwd=project_root,
-    )
-    event_summary = _event_summary(store, session.session_id)
-    usage_complete = all(
-        metric.input_tokens is not None
-        and metric.output_tokens is not None
-        and metric.total_tokens is not None
-        for metric in recording_provider.metrics
-    )
-    status = _trial_status(
-        arm=arm,
-        expected_boundary=benchmark_case.expected_boundary,
-        boundary_change_count=event_summary.boundary_change_count,
-        confounded_auto=event_summary.confounded_auto,
-        provider_error=provider_error,
-        verifier_exit_code=verifier_exit_code,
-    )
-    if status == "passed" and not usage_complete:
-        status = "usage_incomplete"
-    result = TrialResult(
-        case_id=benchmark_case.case_id,
-        arm=arm,
-        model=config.model,
-        context_window=config.context_window,
-        status=status,
-        verifier_exit_code=verifier_exit_code,
-        verifier_stdout_sha256=_sha256(verifier_stdout),
-        verifier_stderr_sha256=_sha256(verifier_stderr),
-        provider_calls=tuple(recording_provider.metrics),
-        compactions=event_summary.compactions,
-        boundary_event_count=event_summary.boundary_event_count,
-        task_hash_changed_count=event_summary.boundary_change_count,
-        agent_turn_telemetry_count=event_summary.agent_turn_telemetry_count,
-        usage_complete=usage_complete,
-        elapsed_seconds=elapsed_seconds,
-        repetition=config.repetition,
-        max_tool_rounds=config.max_tool_rounds,
-        max_provider_calls=config.max_provider_calls,
-        max_turn_seconds=config.max_turn_seconds,
-        artifact_paths={
-            "trial_root": str(trial_root),
-            "project_root": str(project_root),
-            "data_root": str(data_root),
-            "session_jsonl": str(data_root / "sessions" / f"{session.session_id}.jsonl"),
-            "result": str(trial_root / "result.json"),
-        },
-    )
-    _write_result(result, trial_root / "result.json")
-    return result
+            artifact_paths={
+                "trial_root": str(trial_root),
+                "events": str(events_path),
+                "result": str(trial_root / "result.json"),
+            },
+        )
+        _write_result(result, trial_root / "result.json")
+        return result
+    finally:
+        _remove_private_trial_directory(project_root, trial_root=trial_root)
+        _remove_private_trial_directory(data_root, trial_root=trial_root)
 
 
 def run_matrix(
@@ -347,6 +352,44 @@ def _event_summary(store: JsonlSessionStore, session_id: str) -> _EventSummary:
         compactions=tuple(compactions),
         confounded_auto=confounded_auto,
     )
+
+
+def _write_sanitized_events(store: JsonlSessionStore, session_id: str, path: Path) -> None:
+    """Persist only fields needed to audit boundary and compaction decisions."""
+
+    records: list[dict[str, object]] = []
+    for event in store.list_events(session_id):
+        if event.type == "task_boundary_observed":
+            records.append(
+                {
+                    "type": event.type,
+                    "should_trigger_compaction": bool(event.payload.get("should_trigger_compaction")),
+                }
+            )
+        elif event.type in {"compaction_completed", "llm_compaction_completed"}:
+            records.append(
+                {
+                    "type": event.type,
+                    "trigger": str(event.payload.get("trigger") or "unknown"),
+                    "completed": event.payload.get("status") == "success",
+                }
+            )
+        elif event.type == "agent_turn_telemetry":
+            records.append({"type": event.type})
+    path.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _remove_private_trial_directory(path: Path, *, trial_root: Path) -> None:
+    """Delete a known trial child without ever resolving a broad target."""
+
+    resolved_trial_root = trial_root.resolve()
+    resolved_path = path.resolve()
+    if resolved_path.parent != resolved_trial_root or resolved_path.name not in {"project", "data"}:
+        raise ValueError(f"refusing to remove non-trial private path: {path}")
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def _trial_status(

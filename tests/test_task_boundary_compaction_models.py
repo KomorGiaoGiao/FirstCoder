@@ -104,7 +104,7 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
         usage_complete=True,
         elapsed_seconds=2.5,
         repetition=2,
-        artifact_paths={"data_root": "/tmp/data", "result": "/tmp/result.json"},
+        artifact_paths={"events": "/tmp/events.json", "result": "/tmp/result.json"},
     )
 
     encoded = result.to_dict()
@@ -114,6 +114,7 @@ def test_trial_result_round_trips_without_provider_or_secret_data() -> None:
     assert "provider" not in encoded
     assert encoded["provider_calls"][0]["kind"] == "main"
     assert encoded["repetition"] == 2
+    assert encoded["budget_window_type"] == "simulated_budget_window"
 
 
 def test_trial_result_rejects_an_unknown_serialized_arm() -> None:

@@ -1,6 +1,6 @@
 # 任务边界压缩 Benchmark
 
-这个目录只实现基准测试，不修改 `firstcoder/` 的生产控制流、用户全局配置或正常 `.firstcoder/` 会话。每个 `(case, arm, repetition)` 会在输出目录下创建独立的 `project/` 和 `data/` 根目录，结果只保存 JSONL 事件、token/耗时指标、verifier 退出码与输出哈希，不保存 prompt、模型回答正文、工具参数或凭证。
+这个目录只实现基准测试，不修改 `firstcoder/` 的生产控制流、用户全局配置或正常 `.firstcoder/` 会话。每个 `(case, arm, repetition)` 会在输出目录下临时创建独立的 `project/` 和 `data/` 根目录；trial 完成后会删除两者。结果只保留白名单化的 `events.json`、token/耗时指标、verifier 退出码与输出哈希，不保存 JSONL、prompt、模型回答正文、工具参数或凭证。
 
 ## 三臂定义
 

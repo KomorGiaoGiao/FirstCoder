@@ -14,6 +14,7 @@
 
 - 这是仅位于 `benchmark/` 的功能。不得增加运行时 feature flag、CLI `--context-window` 参数或生产配置字段。
 - 不得写入 `~/.config/firstcoder/config.toml`、任何项目的 `firstcoder.toml`，也不得使用普通 `.firstcoder/` 数据根。每次 benchmark 都必须在运行目录下获得显式创建的全新 `data_root`。
+- `project/` 与 `data_root` 仅可在 trial 执行期间存在。提取指标后必须删除它们；最终产物只能保留白名单化的 `events.json`、token/耗时、verifier 退出码和 stdout/stderr 哈希。不得保留 JSONL、prompt、模型正文、工具参数、工具结果或凭证，也不得在 `result.json` 指向已删除的私有会话文件。
 - benchmark runner 仅把 `context_window` 直接传给测试专用的 `AgentLoop`。试运行可以使用 `32_768`；这不会改变用户界面应用配置的窗口。报告必须将它标为 `simulated_budget_window`，不得称作生产窗口结果。
 - 每个 arm 必须使用相同的 provider/model、温度、推理强度、工具限制、项目快照、用户消息和上下文窗口值。运行必须使用非流式模式，以稳定收集 provider 的 `usage`。
 - 三个 arm 的含义固定如下：
@@ -403,4 +404,3 @@ git commit -m "Add task-boundary compaction benchmark runner"
 - [ ] **步骤 5：应用预先声明的决策规则**
 
 仅当 full 相对 `auto_only` 没有实质 verifier 通过率退化，且在真实长上下文 case 中 full 的全 provider token 总量中位数低于 `classifier_only` 时，才称该功能有收益。即便总 token 改善，也要单独报告分类器成本。若 32K 与 200K 的结果不同，必须同时报告，不能把模拟窗口结果外推为生产结果。
-
