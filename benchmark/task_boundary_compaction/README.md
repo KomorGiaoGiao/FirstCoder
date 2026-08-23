@@ -14,6 +14,8 @@
 
 比较 `full - classifier_only` 得到已经扣除分类器是否存在这一因素后的边界压缩效果；比较 `classifier_only - auto_only` 得到隐藏分类器成本；比较 `full - auto_only` 得到整套功能净效果。
 
+`--classifier-model` 未指定时，隐藏分类器会复用 `--model`；指定后，runner 在同一个已配置 provider 下单独创建该模型的请求。主 Agent 和 L4 始终使用 `--model`。这只影响 benchmark 进程，不会修改正常应用配置。
+
 ## 运行前准备
 
 在隔离 worktree 中安装开发依赖：
@@ -47,16 +49,17 @@ python -m venv .venv
 .venv/bin/python -m benchmark.task_boundary_compaction.runner \
   --suite controlled \
   --model Yuren/gpt-5.6-terra \
+  --classifier-model Yuren/gpt-5.6-luna \
   --context-window 32768 \
   --repetitions 1 \
   --max-tool-rounds 6 \
   --max-provider-calls 12 \
   --max-turn-seconds 240 \
-  --output benchmark/runs/task-boundary-compaction/pilot-32k
+  --output benchmark/runs/task-boundary-compaction/token-only-luna-32k
 
 .venv/bin/python -m benchmark.task_boundary_compaction.report \
-  --input benchmark/runs/task-boundary-compaction/pilot-32k \
-  --output benchmark/runs/task-boundary-compaction/pilot-32k/summary
+  --input benchmark/runs/task-boundary-compaction/token-only-luna-32k \
+  --output benchmark/runs/task-boundary-compaction/token-only-luna-32k/summary
 ```
 
 `--context-window 32768` 只传给这次 benchmark 的 `BenchmarkAgentLoop`，是 `simulated_budget_window`，不会写入 `~/.config/firstcoder/config.toml`、项目 `firstcoder.toml` 或正常应用状态。每个受控 trial 都将旧任务 A 注入到当前高水位的 80%，因此运行 B 续接轮时尚未到 AUTO 高水位；如果在预期边界前已经发生 AUTO 压缩，结果会标为 `confounded_auto`，并从因果聚合排除。
@@ -69,16 +72,17 @@ python -m venv .venv
 .venv/bin/python -m benchmark.task_boundary_compaction.runner \
   --suite historical \
   --model Yuren/gpt-5.6-terra \
+  --classifier-model Yuren/gpt-5.6-luna \
   --context-window 200000 \
   --repetitions 1 \
   --max-tool-rounds 6 \
   --max-provider-calls 12 \
   --max-turn-seconds 240 \
-  --output benchmark/runs/task-boundary-compaction/real-200k
+  --output benchmark/runs/task-boundary-compaction/token-only-luna-200k
 
 .venv/bin/python -m benchmark.task_boundary_compaction.report \
-  --input benchmark/runs/task-boundary-compaction/real-200k \
-  --output benchmark/runs/task-boundary-compaction/real-200k/summary
+  --input benchmark/runs/task-boundary-compaction/token-only-luna-200k \
+  --output benchmark/runs/task-boundary-compaction/token-only-luna-200k/summary
 ```
 
 历史集会使用 `git archive <base>` 生成独立项目，再仅以 target commit 覆盖该改动引入的聚焦测试。任务 B 是真实提交，而不是人工编造的 bug；验证器始终运行原始测试，任务 A 只写入隔离的 JSONL 上下文，不会改动 B 工作树。
@@ -87,5 +91,6 @@ python -m venv .venv
 
 - `summary.json` 同时保留所有原始状态；`confounded_auto`、`invalid_boundary`、`provider_error`、`verifier_error` 和 `usage_incomplete` 不参与 token/延迟聚合。
 - `verifier_failed` 是有效的质量结果：保留在通过率与成本统计中，不能当作基础设施异常隐藏。
+- **Token-only 运行**只读三个全 provider token 差值：`full - classifier_only` 是已扣除 Luna 分类成本的边界压缩变化，`classifier_only - auto_only` 是 Luna 分类成本，`full - auto_only` 是整套净变化。负数表示左侧 arm 消耗更少。`verifier_failed` 仍计入 token；本轮不据此判断质量、产品收益或金额收益。
 - 只有当全部 full 正例观察到任务变化、负例无误触发、B verifier 质量不退化、且至少 90% trial 的 usage 完整时，才将两套集扩展到三次重复。
 - 只有 full 相对 `auto_only` 没有实质 verifier 通过率退化，并且真实长上下文 case 中 full 的全 provider token 中位数低于 `classifier_only`，才可以称任务边界压缩有收益。32K 与 200K 结果必须并列报告，不能将模拟窗口外推为生产结论。
