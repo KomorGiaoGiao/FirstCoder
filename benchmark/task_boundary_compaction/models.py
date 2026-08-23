@@ -151,6 +151,8 @@ class TrialResult:
     provider_calls: tuple[ProviderCallMetric, ...] = ()
     compactions: tuple[CompactionMetric, ...] = ()
     boundary_event_count: int = 0
+    task_hash_changed_count: int = 0
+    agent_turn_telemetry_count: int = 0
     usage_complete: bool = False
     elapsed_seconds: float = 0.0
     artifact_paths: Mapping[str, str] = field(default_factory=dict)
@@ -166,6 +168,10 @@ class TrialResult:
             raise ValueError("status must not be blank")
         if self.boundary_event_count < 0:
             raise ValueError("boundary_event_count must be non-negative")
+        if self.task_hash_changed_count < 0:
+            raise ValueError("task_hash_changed_count must be non-negative")
+        if self.agent_turn_telemetry_count < 0:
+            raise ValueError("agent_turn_telemetry_count must be non-negative")
         if self.elapsed_seconds < 0:
             raise ValueError("elapsed_seconds must be non-negative")
         if any(not key.strip() or not value.strip() for key, value in self.artifact_paths.items()):
@@ -184,6 +190,8 @@ class TrialResult:
             "provider_calls": [metric.to_dict() for metric in self.provider_calls],
             "compactions": [metric.to_dict() for metric in self.compactions],
             "boundary_event_count": self.boundary_event_count,
+            "task_hash_changed_count": self.task_hash_changed_count,
+            "agent_turn_telemetry_count": self.agent_turn_telemetry_count,
             "usage_complete": self.usage_complete,
             "elapsed_seconds": self.elapsed_seconds,
             "artifact_paths": dict(self.artifact_paths),
@@ -207,6 +215,8 @@ class TrialResult:
                 CompactionMetric.from_dict(metric) for metric in data.get("compactions", ())
             ),
             boundary_event_count=data.get("boundary_event_count", 0),
+            task_hash_changed_count=data.get("task_hash_changed_count", 0),
+            agent_turn_telemetry_count=data.get("agent_turn_telemetry_count", 0),
             usage_complete=data.get("usage_complete", False),
             elapsed_seconds=data.get("elapsed_seconds", 0.0),
             artifact_paths=data.get("artifact_paths", {}),

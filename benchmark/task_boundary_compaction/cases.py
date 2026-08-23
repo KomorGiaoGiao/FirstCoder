@@ -13,6 +13,29 @@ from benchmark.task_boundary_compaction.models import BenchmarkCase, TurnSpec
 
 
 @dataclass(frozen=True, slots=True)
+class RepositoryFile:
+    """One text file materialized into a disposable controlled task project."""
+
+    path: str
+    content: str
+
+    def __post_init__(self) -> None:
+        _validate_relative_path(self.path, field_name="repository_files.path")
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledCase:
+    """A deterministic, verifier-backed fixture for the causal pilot."""
+
+    benchmark_case: BenchmarkCase
+    repository_files: tuple[RepositoryFile, ...]
+
+    @property
+    def case_id(self) -> str:
+        return self.benchmark_case.case_id
+
+
+@dataclass(frozen=True, slots=True)
 class HistoricalCase:
     """A real FirstCoder change reconstructed from its parent snapshot."""
 
@@ -33,6 +56,38 @@ class HistoricalMaterialization:
 
     worktree: Path
     focused_test_files: tuple[Path, ...]
+
+
+def load_controlled_cases(manifest_path: str | Path) -> tuple[ControlledCase, ...]:
+    """Load committed deterministic cases without consulting the surrounding Git history."""
+
+    manifest = _load_manifest(manifest_path)
+    raw_cases = manifest.get("cases")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError("cases must be a non-empty list")
+
+    cases: list[ControlledCase] = []
+    seen_case_ids: set[str] = set()
+    for raw_case in raw_cases:
+        if not isinstance(raw_case, dict):
+            raise ValueError("case entries must be objects")
+        case_id = _required_string(raw_case, "case_id")
+        if case_id in seen_case_ids:
+            raise ValueError(f"duplicate case_id: {case_id}")
+        seen_case_ids.add(case_id)
+        expected_boundary = raw_case.get("expected_boundary")
+        if not isinstance(expected_boundary, bool):
+            raise ValueError("expected_boundary must be a boolean")
+        benchmark_case = BenchmarkCase(
+            case_id=case_id,
+            kind="controlled",
+            turns=_turns(raw_case),
+            verify_command=_verify_command(raw_case),
+            expected_boundary=expected_boundary,
+        )
+        files = _repository_files(raw_case)
+        cases.append(ControlledCase(benchmark_case=benchmark_case, repository_files=files))
+    return tuple(cases)
 
 
 def load_historical_cases(manifest_path: str | Path, *, repo_root: str | Path) -> tuple[HistoricalCase, ...]:
@@ -117,6 +172,20 @@ def materialize_historical_case(
     return HistoricalMaterialization(worktree=worktree, focused_test_files=tuple(materialized_tests))
 
 
+def materialize_controlled_case(case: ControlledCase, *, destination: str | Path) -> Path:
+    """Write the case's fixed files into a fresh disposable project directory."""
+
+    worktree = Path(destination)
+    if worktree.exists():
+        raise FileExistsError(f"controlled worktree already exists: {worktree}")
+    worktree.mkdir(parents=True)
+    for repository_file in case.repository_files:
+        destination_path = _safe_child_path(worktree, repository_file.path)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        destination_path.write_text(repository_file.content, encoding="utf-8")
+    return worktree
+
+
 def _load_manifest(path: str | Path) -> dict[str, object]:
     try:
         parsed = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -149,11 +218,55 @@ def _focused_test_files(data: dict[str, object]) -> tuple[str, ...]:
     for raw_path in raw_paths:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ValueError("focused_test_files must contain non-blank strings")
+        _validate_relative_path(raw_path, field_name="focused_test_files")
         path = PurePosixPath(raw_path)
-        if path.is_absolute() or ".." in path.parts or not str(path).startswith("tests/"):
+        if not str(path).startswith("tests/"):
             raise ValueError("focused_test_files must stay below tests/")
         paths.append(str(path))
     return tuple(paths)
+
+
+def _turns(data: dict[str, object]) -> tuple[TurnSpec, ...]:
+    raw_turns = data.get("turns")
+    if not isinstance(raw_turns, list):
+        raise ValueError("turns must be a list")
+    turns: list[TurnSpec] = []
+    for raw_turn in raw_turns:
+        if not isinstance(raw_turn, dict):
+            raise ValueError("turns must contain objects")
+        message = _required_string(raw_turn, "message")
+        expected_decision = _required_string(raw_turn, "expected_decision")
+        turns.append(TurnSpec(message=message, expected_decision=expected_decision))
+    return tuple(turns)
+
+
+def _verify_command(data: dict[str, object]) -> tuple[str, ...]:
+    raw_command = data.get("verify_command")
+    if not isinstance(raw_command, list) or not raw_command:
+        raise ValueError("verify_command must be a non-empty list")
+    if any(not isinstance(part, str) or not part.strip() for part in raw_command):
+        raise ValueError("verify_command must contain non-blank strings")
+    return tuple(raw_command)
+
+
+def _repository_files(data: dict[str, object]) -> tuple[RepositoryFile, ...]:
+    raw_files = data.get("repository_files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise ValueError("repository_files must be a non-empty list")
+    files: list[RepositoryFile] = []
+    paths: set[str] = set()
+    for raw_file in raw_files:
+        if not isinstance(raw_file, dict):
+            raise ValueError("repository_files must contain objects")
+        path = _required_string(raw_file, "path")
+        content = raw_file.get("content")
+        if not isinstance(content, str):
+            raise ValueError("repository_files.content must be a string")
+        if path in paths:
+            raise ValueError(f"duplicate repository file path: {path}")
+        paths.add(path)
+        files.append(RepositoryFile(path=path, content=content))
+    return tuple(files)
 
 
 def _git_text(repo_root: Path, arguments: list[str]) -> str:
@@ -191,3 +304,9 @@ def _safe_child_path(root: Path, relative_path: str) -> Path:
     if not candidate.is_relative_to(root.resolve()):
         raise ValueError(f"path escapes benchmark worktree: {relative_path}")
     return candidate
+
+
+def _validate_relative_path(value: str, *, field_name: str) -> None:
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
+        raise ValueError(f"{field_name} must be a safe relative path")
