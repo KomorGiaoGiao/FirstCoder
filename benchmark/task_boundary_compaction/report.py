@@ -50,7 +50,7 @@ def load_results(input_dir: str | Path) -> list[TrialResult]:
 
 def _arm_summary(results: list[TrialResult], arm: Arm) -> dict[str, object]:
     arm_results = [result for result in results if result.arm is arm]
-    eligible = [result for result in arm_results if result.status not in _EXCLUDED_STATUSES]
+    eligible = [result for result in arm_results if _exclusion_reason(result) is None]
     all_tokens = [_trial_total_tokens(result) for result in eligible]
     classifier_tokens = [_trial_kind_total_tokens(result, "classifier") for result in eligible]
     l4_tokens = [_trial_kind_total_tokens(result, "l4") for result in eligible]
@@ -59,7 +59,7 @@ def _arm_summary(results: list[TrialResult], arm: Arm) -> dict[str, object]:
         "trial_count": len(arm_results),
         "eligible_trial_count": len(eligible),
         "pass_count": sum(result.status == "passed" for result in arm_results),
-        "excluded_status_counts": _status_counts(arm_results, excluded_only=True),
+        "excluded_status_counts": _excluded_status_counts(arm_results),
         "all_provider_total_tokens_median": _median_or_none(all_tokens),
         "classifier_total_tokens_median": _median_or_none(classifier_tokens),
         "l4_total_tokens_median": _median_or_none(l4_tokens),
@@ -105,7 +105,7 @@ def _eligible_trial_totals(
 ) -> dict[tuple[str, int], list[int]]:
     totals: dict[tuple[str, int], list[int]] = defaultdict(list)
     for result in results:
-        if result.arm is not arm or result.status in _EXCLUDED_STATUSES:
+        if result.arm is not arm or _exclusion_reason(result) is not None:
             continue
         total_tokens = _trial_total_tokens(result)
         if total_tokens is not None:
@@ -134,12 +134,27 @@ def _percentile_or_none(values: list[float], percentile: float) -> float | None:
     return ordered[index]
 
 
-def _status_counts(results: Iterable[TrialResult], *, excluded_only: bool = False) -> dict[str, int]:
+def _status_counts(results: Iterable[TrialResult]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for result in results:
-        if excluded_only and result.status not in _EXCLUDED_STATUSES:
-            continue
         counts[result.status] = counts.get(result.status, 0) + 1
+    return counts
+
+
+def _exclusion_reason(result: TrialResult) -> str | None:
+    if not result.usage_complete:
+        return "usage_incomplete"
+    if result.status in _EXCLUDED_STATUSES:
+        return result.status
+    return None
+
+
+def _excluded_status_counts(results: Iterable[TrialResult]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results:
+        reason = _exclusion_reason(result)
+        if reason is not None:
+            counts[reason] = counts.get(reason, 0) + 1
     return counts
 
 

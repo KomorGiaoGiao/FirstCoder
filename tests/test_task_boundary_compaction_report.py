@@ -235,6 +235,38 @@ def test_report_keeps_a_valid_verifier_failure_in_token_aggregates(tmp_path) -> 
     assert summary["arms"]["full"]["all_provider_total_tokens_median"] == 18.0
 
 
+def test_report_excludes_legacy_verifier_failure_with_incomplete_usage(tmp_path) -> None:
+    from benchmark.task_boundary_compaction.models import ProviderCallMetric, TrialResult
+
+    result = TrialResult(
+        case_id="incomplete-usage",
+        arm=Arm.FULL,
+        model="fake/fake-model",
+        context_window=32_768,
+        status="verifier_failed",
+        verifier_exit_code=1,
+        verifier_stdout_sha256="a" * 64,
+        verifier_stderr_sha256="b" * 64,
+        provider_calls=(
+            ProviderCallMetric(
+                kind="main",
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                elapsed_seconds=0.1,
+            ),
+        ),
+        usage_complete=False,
+        artifact_paths={"result": str(tmp_path / "result.json")},
+    )
+
+    summary = build_report([result], output_dir=tmp_path / "summary")
+
+    assert summary["arms"]["full"]["eligible_trial_count"] == 0
+    assert summary["arms"]["full"]["excluded_status_counts"] == {"usage_incomplete": 1}
+    assert summary["arms"]["full"]["all_provider_total_tokens_median"] is None
+
+
 def test_report_delta_uses_only_case_and_repetition_matched_trials(tmp_path) -> None:
     from benchmark.task_boundary_compaction.models import ProviderCallMetric, TrialResult
 
