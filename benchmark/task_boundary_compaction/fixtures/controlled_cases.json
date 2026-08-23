@@ -1,0 +1,174 @@
+{
+  "suite": "controlled",
+  "cases": [
+    {
+      "case_id": "parser-normalization",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的用户名规范化，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：运行测试并确认修复。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def normalize_name(value):\n    return value.lower()\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import normalize_name\n\n\ndef test_normalize_name_collapses_whitespace_and_uses_hyphen():\n    assert normalize_name(' Ada    Lovelace ') == 'ada-lovelace'\n"}
+      ]
+    },
+    {
+      "case_id": "cache-key",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的缓存 key 格式，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：验证缓存 key 的测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def build_cache_key(namespace, identifier):\n    return namespace + identifier\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import build_cache_key\n\n\ndef test_build_cache_key_keeps_one_separator():\n    assert build_cache_key('video', '42') == 'video:42'\n"}
+      ]
+    },
+    {
+      "case_id": "retry-backoff",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的重试退避序列，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：运行重试相关测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def retry_delays(attempts):\n    return list(range(attempts))\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import retry_delays\n\n\ndef test_retry_delays_are_exponential_from_one_second():\n    assert retry_delays(3) == [1, 2, 4]\n"}
+      ]
+    },
+    {
+      "case_id": "csv-validation",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的 CSV 列名解析，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：验证 CSV 测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def parse_headers(line):\n    return line.split(',')\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import parse_headers\n\n\ndef test_parse_headers_strips_surrounding_spaces():\n    assert parse_headers(' id, name ,created_at ') == ['id', 'name', 'created_at']\n"}
+      ]
+    },
+    {
+      "case_id": "pagination-cursor",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的分页 cursor 边界，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：运行分页测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def next_cursor(items):\n    return str(items[-1]['id'])\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import next_cursor\n\n\ndef test_next_cursor_is_none_for_an_empty_page():\n    assert next_cursor([]) is None\n"}
+      ]
+    },
+    {
+      "case_id": "config-merge",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的配置覆盖顺序，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：验证配置合并测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def merge_config(base, override):\n    return {**override, **base}\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import merge_config\n\n\ndef test_override_wins_over_base_value():\n    assert merge_config({'timeout': 10}, {'timeout': 30}) == {'timeout': 30}\n"}
+      ]
+    },
+    {
+      "case_id": "date-format",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的日期格式，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：运行日期格式测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def render_date(value):\n    return value.strftime('%d/%m/%Y')\n"},
+        {"path": "tests/test_subject.py", "content": "from datetime import date\n\nfrom subject import render_date\n\n\ndef test_render_date_uses_iso_calendar_order():\n    assert render_date(date(2026, 8, 23)) == '2026-08-23'\n"}
+      ]
+    },
+    {
+      "case_id": "path-resolution",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的相对路径解析，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：验证路径解析测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "from pathlib import Path\n\n\ndef resolve_project_path(root, relative):\n    return Path(relative)\n"},
+        {"path": "tests/test_subject.py", "content": "from pathlib import Path\n\nfrom subject import resolve_project_path\n\n\ndef test_resolve_project_path_is_relative_to_root():\n    assert resolve_project_path('/tmp/project', 'src/app.py') == Path('/tmp/project/src/app.py')\n"}
+      ]
+    },
+    {
+      "case_id": "response-serialization",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的响应序列化，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：运行响应序列化测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def serialize_response(value):\n    return {'ok': True}\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import serialize_response\n\n\ndef test_serialize_response_keeps_payload_value():\n    assert serialize_response({'id': 7}) == {'ok': True, 'data': {'id': 7}}\n"}
+      ]
+    },
+    {
+      "case_id": "permission-selection",
+      "expected_boundary": true,
+      "turns": [
+        {"message": "任务 B：修复 subject.py 的权限选择规则，并让测试通过。", "expected_decision": "new"},
+        {"message": "继续任务 B：验证权限选择测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def select_permission(requested, allowed):\n    return allowed[0]\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import select_permission\n\n\ndef test_select_permission_returns_requested_when_allowed():\n    assert select_permission('write', ['read', 'write']) == 'write'\n"}
+      ]
+    },
+    {
+      "case_id": "parser-follow-up",
+      "expected_boundary": false,
+      "turns": [
+        {"message": "继续任务 A：把 parser 的空白规范化修好。", "expected_decision": "same"},
+        {"message": "继续任务 A：运行 parser 测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def normalize(value):\n    return value\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import normalize\n\n\ndef test_normalize_trims_value():\n    assert normalize('  done  ') == 'done'\n"}
+      ]
+    },
+    {
+      "case_id": "cache-follow-up",
+      "expected_boundary": false,
+      "turns": [
+        {"message": "继续任务 A：补上 cache key 的 namespace。", "expected_decision": "same"},
+        {"message": "继续任务 A：运行 cache 测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def make_key(namespace, value):\n    return value\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import make_key\n\n\ndef test_make_key_keeps_namespace():\n    assert make_key('user', '9') == 'user:9'\n"}
+      ]
+    },
+    {
+      "case_id": "retry-follow-up",
+      "expected_boundary": false,
+      "turns": [
+        {"message": "继续任务 A：补齐 retry 的最后一次尝试。", "expected_decision": "same"},
+        {"message": "继续任务 A：运行 retry 测试。", "expected_decision": "same"}
+      ],
+      "verify_command": ["python", "-m", "pytest", "-q"],
+      "repository_files": [
+        {"path": "subject.py", "content": "def attempts(count):\n    return list(range(count))\n"},
+        {"path": "tests/test_subject.py", "content": "from subject import attempts\n\n\ndef test_attempts_are_one_based():\n    assert attempts(3) == [1, 2, 3]\n"}
+      ]
+    }
+  ]
+}
