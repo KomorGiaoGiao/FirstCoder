@@ -378,6 +378,8 @@ def _write_sanitized_events(store: JsonlSessionStore, session_id: str, path: Pat
             records.append(
                 {
                     "type": event.type,
+                    "decision": str(event.payload.get("decision") or "unknown"),
+                    "confirmed_change": bool(event.payload.get("confirmed_change")),
                     "should_trigger_compaction": bool(event.payload.get("should_trigger_compaction")),
                 }
             )

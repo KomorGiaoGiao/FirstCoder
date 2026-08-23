@@ -136,7 +136,12 @@ def test_run_case_writes_isolated_results_and_builds_causal_summary(tmp_path) ->
         assert "content" not in sanitized_events
         for event in json.loads(sanitized_events):
             if event["type"] == "task_boundary_observed":
-                assert set(event) == {"type", "should_trigger_compaction"}
+                assert set(event) == {
+                    "type",
+                    "decision",
+                    "confirmed_change",
+                    "should_trigger_compaction",
+                }
             elif event["type"] in {"compaction_completed", "llm_compaction_completed"}:
                 assert set(event) == {"type", "trigger", "completed"}
             else:
