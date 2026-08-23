@@ -76,3 +76,32 @@ def test_seed_rejects_a_target_that_cannot_remain_below_auto_high_water(tmp_path
             target_input_tokens=high_watermark,
             estimate_budget=loop.context_budget_for_view,
         )
+
+
+def test_seeded_repeated_payload_is_ascii_for_four_char_token_estimation(tmp_path) -> None:
+    store = JsonlSessionStore(tmp_path)
+    session = AgentSession.create(store=store, session_id="ascii-seed", agents_md="")
+    session.runtime_state.active_task_hash = "task_a"
+    loop = AgentLoop(
+        session=session,
+        provider=NoopProvider(),
+        context_window=32_768,
+        request_options=MainRequestOptions(max_tokens=4_096),
+    )
+
+    seed_old_task_context(
+        session,
+        case_id="controlled-parser",
+        target_input_tokens=21_000,
+        estimate_budget=loop.context_budget_for_view,
+    )
+
+    repeated_payloads = [
+        part.content.split("\n", maxsplit=1)[1]
+        for message in session.rebuild_view().messages
+        for part in message.parts
+        if "| case=controlled-parser | pair=" in part.content
+    ]
+
+    assert repeated_payloads
+    assert all(payload.isascii() for payload in repeated_payloads)

@@ -83,9 +83,9 @@ def seed_old_task_context(
 
 
 def _seed_text(case_id: str, pair_index: int, role: str, token_count: int) -> str:
-    header = f"[任务 A 已完成 | case={case_id} | pair={pair_index} | role={role}]\n"
+    header = f"[Task A complete | case={case_id} | pair={pair_index} | role={role}]\n"
     evidence = (
-        "任务 A 的确定性历史：已检查输入、记录约束、验证预期，并保留与任务 B 无关的实现细节。"
+        "Task A log: input data, rules, test steps, and notes remain separate from Task B. "
     )
     body_length = max(1, token_count * 4)
     repeated = (evidence * (body_length // len(evidence) + 1))[:body_length]
