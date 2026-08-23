@@ -51,7 +51,9 @@ def load_results(input_dir: str | Path) -> list[TrialResult]:
 def _arm_summary(results: list[TrialResult], arm: Arm) -> dict[str, object]:
     arm_results = [result for result in results if result.arm is arm]
     eligible = [result for result in arm_results if _exclusion_reason(result) is None]
+    task_a_tokens = [_recorded_task_a_total_tokens(result) for result in eligible]
     all_tokens = [_trial_total_tokens(result) for result in eligible]
+    full_chain_tokens = [_full_chain_total_tokens(result) for result in eligible]
     classifier_tokens = [_trial_kind_total_tokens(result, "classifier") for result in eligible]
     l4_tokens = [_trial_kind_total_tokens(result, "l4") for result in eligible]
     elapsed = [result.elapsed_seconds for result in eligible]
@@ -60,6 +62,9 @@ def _arm_summary(results: list[TrialResult], arm: Arm) -> dict[str, object]:
         "eligible_trial_count": len(eligible),
         "pass_count": sum(result.status == "passed" for result in arm_results),
         "excluded_status_counts": _excluded_status_counts(arm_results),
+        "recorded_task_a_total_tokens_median": _median_or_none(task_a_tokens),
+        "task_b_provider_total_tokens_median": _median_or_none(all_tokens),
+        "full_chain_total_tokens_median": _median_or_none(full_chain_tokens),
         "all_provider_total_tokens_median": _median_or_none(all_tokens),
         "classifier_total_tokens_median": _median_or_none(classifier_tokens),
         "l4_total_tokens_median": _median_or_none(l4_tokens),
@@ -92,9 +97,17 @@ def _delta(results: list[TrialResult], left: Arm, right: Arm) -> dict[str, float
         for key in sorted(left_values.keys() & right_values.keys())
         if len(left_values[key]) == 1 and len(right_values[key]) == 1
     ]
+    left_chain_values = _eligible_trial_chain_totals(results, arm=left)
+    right_chain_values = _eligible_trial_chain_totals(results, arm=right)
+    paired_chain_deltas = [
+        left_chain_values[key][0] - right_chain_values[key][0]
+        for key in sorted(left_chain_values.keys() & right_chain_values.keys())
+        if len(left_chain_values[key]) == 1 and len(right_chain_values[key]) == 1
+    ]
     return {
         "paired_trial_count": len(paired_deltas),
         "all_provider_total_tokens": _median_or_none(paired_deltas),
+        "full_chain_total_tokens": _median_or_none(paired_chain_deltas),
     }
 
 
@@ -113,8 +126,35 @@ def _eligible_trial_totals(
     return totals
 
 
+def _eligible_trial_chain_totals(
+    results: list[TrialResult],
+    *,
+    arm: Arm,
+) -> dict[tuple[str, int], list[int]]:
+    totals: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for result in results:
+        if result.arm is not arm or _exclusion_reason(result) is not None:
+            continue
+        total_tokens = _full_chain_total_tokens(result)
+        if total_tokens is not None:
+            totals[(result.case_id, result.repetition)].append(total_tokens)
+    return totals
+
+
 def _trial_total_tokens(result: TrialResult) -> int | None:
     return usage_totals(result.provider_calls)["all"].total_tokens
+
+
+def _recorded_task_a_total_tokens(result: TrialResult) -> int | None:
+    return usage_totals(result.recorded_task_a_calls)["all"].total_tokens
+
+
+def _full_chain_total_tokens(result: TrialResult) -> int | None:
+    task_a_tokens = _recorded_task_a_total_tokens(result)
+    task_b_tokens = _trial_total_tokens(result)
+    if task_a_tokens is None or task_b_tokens is None:
+        return None
+    return task_a_tokens + task_b_tokens
 
 
 def _trial_kind_total_tokens(result: TrialResult, kind: str) -> int | None:
@@ -166,19 +206,21 @@ def _render_markdown(summary: dict[str, object]) -> str:
         "",
         "预算窗口类型：" + ", ".join(summary["budget_window_types"]),
         "",
-        "| Arm | Trial | Pass | Eligible | Provider token P50 | P95 耗时（秒） | TASK_HASH_CHANGED |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Arm | Trial | Pass | Eligible | A 固定 token P50 | B token P50 | 全链路 token P50 | P95 耗时（秒） | TASK_HASH_CHANGED |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for arm in Arm:
         data = arms[arm.value]
         assert isinstance(data, dict)
         rows.append(
-            "| {arm} | {trials} | {passed} | {eligible} | {tokens} | {p95} | {trigger} |".format(
+            "| {arm} | {trials} | {passed} | {eligible} | {task_a_tokens} | {tokens} | {chain_tokens} | {p95} | {trigger} |".format(
                 arm=arm.value,
                 trials=data["trial_count"],
                 passed=data["pass_count"],
                 eligible=data["eligible_trial_count"],
+                task_a_tokens=data["recorded_task_a_total_tokens_median"],
                 tokens=data["all_provider_total_tokens_median"],
+                chain_tokens=data["full_chain_total_tokens_median"],
                 p95=data["elapsed_seconds_p95"],
                 trigger=data["task_hash_changed_compaction_count"],
             )
@@ -190,7 +232,8 @@ def _render_markdown(summary: dict[str, object]) -> str:
         assert isinstance(data, dict)
         rows.append(
             f"- `{name}`：配对 trial = {data['paired_trial_count']}，"
-            f"全 provider token 差值中位数 = {data['all_provider_total_tokens']}"
+            f"B 阶段全 provider token 差值中位数 = {data['all_provider_total_tokens']}，"
+            f"全链路 token 差值中位数 = {data['full_chain_total_tokens']}"
         )
     return "\n".join(rows) + "\n"
 

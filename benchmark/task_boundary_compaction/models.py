@@ -149,6 +149,7 @@ class TrialResult:
     verifier_stdout_sha256: str | None
     verifier_stderr_sha256: str | None
     classifier_model: str = ""
+    recorded_task_a_calls: tuple[ProviderCallMetric, ...] = ()
     provider_calls: tuple[ProviderCallMetric, ...] = ()
     compactions: tuple[CompactionMetric, ...] = ()
     boundary_event_count: int = 0
@@ -209,6 +210,7 @@ class TrialResult:
             "verifier_exit_code": self.verifier_exit_code,
             "verifier_stdout_sha256": self.verifier_stdout_sha256,
             "verifier_stderr_sha256": self.verifier_stderr_sha256,
+            "recorded_task_a_calls": [metric.to_dict() for metric in self.recorded_task_a_calls],
             "provider_calls": [metric.to_dict() for metric in self.provider_calls],
             "compactions": [metric.to_dict() for metric in self.compactions],
             "boundary_event_count": self.boundary_event_count,
@@ -237,6 +239,10 @@ class TrialResult:
             verifier_exit_code=data.get("verifier_exit_code"),
             verifier_stdout_sha256=data.get("verifier_stdout_sha256"),
             verifier_stderr_sha256=data.get("verifier_stderr_sha256"),
+            recorded_task_a_calls=tuple(
+                ProviderCallMetric.from_dict(metric)
+                for metric in data.get("recorded_task_a_calls", ())
+            ),
             provider_calls=tuple(
                 ProviderCallMetric.from_dict(metric) for metric in data.get("provider_calls", ())
             ),

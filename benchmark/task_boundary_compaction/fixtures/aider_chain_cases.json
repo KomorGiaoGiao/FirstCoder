@@ -1,0 +1,93 @@
+{
+  "suite": "aider-chain",
+  "cases": [
+    {
+      "case_id": "natural-zipper-to-phone-number",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_zipper"],
+      "b_task_id": "polyglot_java_phone-number"
+    },
+    {
+      "case_id": "natural-kindergarten-to-linked-list",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_kindergarten-garden"],
+      "b_task_id": "polyglot_java_simple-linked-list"
+    },
+    {
+      "case_id": "natural-ocr-to-word-search",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_ocr-numbers"],
+      "b_task_id": "polyglot_java_word-search"
+    },
+    {
+      "case_id": "natural-all-your-base-to-custom-set",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_all-your-base"],
+      "b_task_id": "polyglot_java_custom-set"
+    },
+    {
+      "case_id": "natural-pythagorean-to-tic-tac-toe",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_pythagorean-triplet"],
+      "b_task_id": "polyglot_java_state-of-tic-tac-toe"
+    },
+    {
+      "case_id": "natural-bowling-to-hangman",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_bowling"],
+      "b_task_id": "polyglot_java_hangman"
+    },
+    {
+      "case_id": "natural-alphametics-to-pov",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_alphametics"],
+      "b_task_id": "polyglot_java_pov"
+    },
+    {
+      "case_id": "natural-book-store-to-two-bucket",
+      "chain_type": "natural",
+      "a_task_ids": ["polyglot_java_book-store"],
+      "b_task_id": "polyglot_java_two-bucket"
+    },
+    {
+      "case_id": "batch-poker-rest-series-to-rational",
+      "chain_type": "batch",
+      "a_task_ids": [
+        "polyglot_java_poker",
+        "polyglot_java_rest-api",
+        "polyglot_java_series"
+      ],
+      "b_task_id": "polyglot_java_rational-numbers"
+    },
+    {
+      "case_id": "batch-ledger-change-queen-to-bottle",
+      "chain_type": "batch",
+      "a_task_ids": [
+        "polyglot_java_ledger",
+        "polyglot_java_change",
+        "polyglot_java_queen-attack"
+      ],
+      "b_task_id": "polyglot_java_bottle-song"
+    },
+    {
+      "case_id": "batch-satellite-vlq-tree-to-circular",
+      "chain_type": "batch",
+      "a_task_ids": [
+        "polyglot_java_satellite",
+        "polyglot_java_variable-length-quantity",
+        "polyglot_java_tree-building"
+      ],
+      "b_task_id": "polyglot_java_circular-buffer"
+    },
+    {
+      "case_id": "batch-sgf-transpose-twelve-to-protein",
+      "chain_type": "batch",
+      "a_task_ids": [
+        "polyglot_java_sgf-parsing",
+        "polyglot_java_transpose",
+        "polyglot_java_twelve-days"
+      ],
+      "b_task_id": "polyglot_java_protein-translation"
+    }
+  ]
+}

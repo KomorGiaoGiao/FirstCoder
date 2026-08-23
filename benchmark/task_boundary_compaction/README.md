@@ -2,6 +2,8 @@
 
 这个目录只实现基准测试，不修改 `firstcoder/` 的生产控制流、用户全局配置或正常 `.firstcoder/` 会话。每个 `(case, arm, repetition)` 会在输出目录下临时创建独立的 `project/` 和 `data/` 根目录；trial 完成后会删除两者。结果只保留白名单化的 `events.json`、token/耗时指标、verifier 退出码与输出哈希，不保存 JSONL、prompt、模型回答正文、工具参数或凭证。
 
+`aider-chain` 是推荐的真实链路集：任务 A 先由 Agent 真正执行并记录一次，再将同一份私有 session 重放到三个隔离的任务 B 工作区。不会向 B 复制 A 的文件状态，也不会用重复字符串填充上下文。现有 `controlled` 与 `historical` 集仍保留作旧的合成高水位压力测试，不能用它们单独声称真实长任务收益。
+
 每个 B 轮默认最多执行 6 个工具回合、12 次 provider 调用、240 秒循环时间，主模型输出上限为 4096 tokens；对 OpenAI SDK 路由还会注入仅本次 trial 生效的 180 秒 HTTP 请求超时（严格小于 240 秒轮次上限，覆盖真实 provider 的已观测长尾延迟并为分类器失败后的同轮重试保留时间）。可通过 runner 的对应 `--max-*` 与 `--provider-timeout-seconds` 参数覆盖，但 HTTP 请求超时必须严格小于轮次上限，且三臂必须使用相同值。
 
 ## 三臂定义
@@ -36,6 +38,8 @@ python -m venv .venv
   tests/test_task_boundary_compaction_models.py \
   tests/test_task_boundary_compaction_loop.py \
   tests/test_task_boundary_compaction_seed.py \
+  tests/test_task_boundary_compaction_cases.py \
+  tests/test_task_boundary_compaction_chain.py \
   tests/test_task_boundary_compaction_provider_observer.py \
   tests/test_task_boundary_compaction_runner.py \
   tests/test_task_boundary_compaction_report.py -q
@@ -66,7 +70,31 @@ python -m venv .venv
 
 每个 B 用户轮固定上限为 6 个工具轮、12 次 provider 调用和 240 秒，主模型输出上限固定为 4096 tokens；OpenAI SDK 路由的单请求超时默认 180 秒。真实 provider 会保留当前 Model Catalog profile 的 `temperature` 和 `extra_body`，但不会采用其 `request.max_tokens`，以确保所有 benchmark 主请求都遵循 4096 的输出上限。三个 arm 使用同一组 benchmark 专属限制；这些值会写入每个 `result.json`，不会改变生产 `AgentLoopLimits` 默认值或 Model Catalog。达到任一上限的轮会停止并保留结果，避免微型题无限工具循环。
 
-## 历史真实任务：200K 试运行
+## Aider 真实任务链：12 条 token-only 运行
+
+本机需要可读的 Aider Polyglot 根目录和可用 Docker。固定集含 8 条自然链（单题 A 的分析、实现、验证 → 独立 B）及 4 条批任务长链（三题 A 修复包 → 独立 B），共使用 32 道互不重复的 Java 题。每条 A 只执行一次；B 才按三个 arm 执行。报告分别给出 A 固定基线、B token 和全链路 token。
+
+```bash
+.venv/bin/python -m benchmark.task_boundary_compaction.runner \
+  --suite aider-chain \
+  --aider-root /Users/x/Desktop/Komor_Code/FirstCoder/.local/harbor-datasets/aider-polyglot \
+  --model Yuren/gpt-5.6-terra \
+  --classifier-model Yuren/gpt-5.6-luna \
+  --context-window 32768 \
+  --repetitions 1 \
+  --max-tool-rounds 6 \
+  --max-provider-calls 12 \
+  --max-turn-seconds 240 \
+  --output benchmark/runs/task-boundary-compaction/aider-chain-luna-32k
+
+.venv/bin/python -m benchmark.task_boundary_compaction.report \
+  --input benchmark/runs/task-boundary-compaction/aider-chain-luna-32k \
+  --output benchmark/runs/task-boundary-compaction/aider-chain-luna-32k/summary
+```
+
+每个 B verifier 使用该题原有 Dockerfile 建镜像，挂载新的 B 项目为 `/app`、原始测试为只读 `/tests`，再运行 `tests/test.sh`。临时镜像 tag 在 verifier 后删除。`--context-window` 仍只是 benchmark 的 simulated budget，不改生产配置；自然链不强行填到水位，批任务链也只由真实题面、代码、工具和测试输出形成上下文。
+
+## 旧历史集：200K 合成压力试运行
 
 ```bash
 .venv/bin/python -m benchmark.task_boundary_compaction.runner \
@@ -85,12 +113,12 @@ python -m venv .venv
   --output benchmark/runs/task-boundary-compaction/token-only-luna-200k/summary
 ```
 
-历史集会使用 `git archive <base>` 生成独立项目，再仅以 target commit 覆盖该改动引入的聚焦测试。任务 B 是真实提交，而不是人工编造的 bug；验证器始终运行原始测试，任务 A 只写入隔离的 JSONL 上下文，不会改动 B 工作树。
+历史集会使用 `git archive <base>` 生成独立项目，再仅以 target commit 覆盖该改动引入的聚焦测试。任务 B 是真实提交，而不是人工编造的 bug；但任务 A 是程序化普通文本 seed，因此它只能回答合成高水位压力下的 token 变化，不是题目链。
 
 ## 解读与扩样规则
 
 - `summary.json` 同时保留所有原始状态；`confounded_auto`、`invalid_boundary`、`provider_error`、`verifier_error` 和 `usage_incomplete` 不参与 token/延迟聚合。
 - `verifier_failed` 是有效的质量结果：保留在通过率与成本统计中，不能当作基础设施异常隐藏。
-- **Token-only 运行**只读三个全 provider token 差值：`full - classifier_only` 是已扣除 Luna 分类成本的边界压缩变化，`classifier_only - auto_only` 是 Luna 分类成本，`full - auto_only` 是整套净变化。负数表示左侧 arm 消耗更少。`verifier_failed` 仍计入 token；本轮不据此判断质量、产品收益或金额收益。
+- **Token-only 运行**分别读取 A 固定基线、B 阶段全 provider token 和全链路 token。三个差值中，`full - classifier_only` 是已扣除 Luna 分类成本的边界压缩变化，`classifier_only - auto_only` 是 Luna 分类成本，`full - auto_only` 是整套净变化；负数表示左侧 arm 消耗更少。`verifier_failed` 仍计入 token；本轮不据此判断质量、产品收益或金额收益。
 - 只有当全部 full 正例观察到任务变化、负例无误触发、B verifier 质量不退化、且至少 90% trial 的 usage 完整时，才将两套集扩展到三次重复。
 - 只有 full 相对 `auto_only` 没有实质 verifier 通过率退化，并且真实长上下文 case 中 full 的全 provider token 中位数低于 `classifier_only`，才可以称任务边界压缩有收益。32K 与 200K 结果必须并列报告，不能将模拟窗口外推为生产结论。

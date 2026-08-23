@@ -3,22 +3,205 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
 import tarfile
+from dataclasses import dataclass, field
 
 import pytest
 
 from benchmark.task_boundary_compaction.cases import (
+    AiderChainCase,
+    AiderTask,
     load_historical_cases,
     materialize_historical_case,
 )
-from benchmark.task_boundary_compaction.models import Arm
-from benchmark.task_boundary_compaction.runner import RunConfig, _resolve_providers, _trial_status
+from benchmark.task_boundary_compaction.models import Arm, BenchmarkCase, ProviderCallMetric, TrialResult, TurnSpec
+from benchmark.task_boundary_compaction.runner import (
+    RunConfig,
+    _aider_docker_command,
+    _resolve_providers,
+    _trial_status,
+    run_aider_chain_case,
+)
+from firstcoder.providers.base import ChatProvider
+from firstcoder.providers.types import ChatRequest, ChatResponse, TokenUsage
 from firstcoder.providers.types import MainRequestOptions
 
 
 BASE_COMMIT = "a" * 40
 TARGET_COMMIT = "b" * 40
+
+
+@dataclass
+class _ChainProvider(ChatProvider):
+    main_requests: list[ChatRequest] = field(default_factory=list)
+    classifier_requests: list[ChatRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    @property
+    def model(self) -> str:
+        return "fake-model"
+
+    def complete(self, request: ChatRequest) -> ChatResponse:
+        usage = TokenUsage(input_tokens=10, output_tokens=2, total_tokens=12)
+        if request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512:
+            self.classifier_requests.append(request)
+            basis_message = next(
+                (
+                    message
+                    for message in reversed(request.messages)
+                    if re.search(r"basis_message_id=([A-Za-z0-9_]+)", message.content)
+                ),
+                None,
+            )
+            assert basis_message is not None
+            decision = "new" if not self.main_requests else "same"
+            basis_match = re.search(r"basis_message_id=([A-Za-z0-9_]+)", basis_message.content)
+            assert basis_match is not None
+            basis_message_id = basis_match.group(1)
+            return ChatResponse(
+                provider=self.name,
+                model=self.model,
+                content=f'{{"decision":"{decision}","basis_message_id":"{basis_message_id}"}}',
+                usage=usage,
+            )
+        self.main_requests.append(request)
+        return ChatResponse(provider=self.name, model=self.model, content="完成", usage=usage)
+
+
+def _aider_task(tmp_path: Path, task_id: str) -> AiderTask:
+    task_root = tmp_path / task_id
+    workspace = task_root / "environment" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "Subject.java").write_text("class Subject {}\n", encoding="utf-8")
+    tests = task_root / "tests"
+    tests.mkdir()
+    (tests / "test.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    dockerfile = task_root / "environment" / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    return AiderTask(
+        task_id=task_id,
+        task_root=task_root,
+        instruction=f"# Instructions\n\nImplement {task_id}.",
+        workspace_dir=workspace,
+        tests_dir=tests,
+        dockerfile=dockerfile,
+    )
+
+
+def test_aider_docker_command_mounts_disposable_project_and_readonly_original_tests(tmp_path: Path) -> None:
+    task_root = tmp_path / "polyglot_java_zipper"
+    workspace = task_root / "environment" / "workspace"
+    workspace.mkdir(parents=True)
+    tests = task_root / "tests"
+    tests.mkdir()
+    dockerfile = task_root / "environment" / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    task = AiderTask(
+        task_id="polyglot_java_zipper",
+        task_root=task_root,
+        instruction="# Instructions\n",
+        workspace_dir=workspace,
+        tests_dir=tests,
+        dockerfile=dockerfile,
+    )
+    project = tmp_path / "trial" / "project"
+    project.mkdir(parents=True)
+
+    verifier_logs = tmp_path / "trial" / "verifier-logs"
+    build, run = _aider_docker_command(
+        task=task,
+        project_root=project,
+        verifier_log_dir=verifier_logs,
+        image_tag="firstcoder-tbc-a1b2",
+    )
+
+    assert build == ["docker", "build", "--tag", "firstcoder-tbc-a1b2", str(task_root / "environment")]
+    assert run[:4] == ["docker", "run", "--rm", "--mount"]
+    assert any(f"source={project.resolve()},target=/app" in argument for argument in run)
+    assert any(f"source={tests.resolve()},target=/tests,readonly" in argument for argument in run)
+    assert any(f"source={verifier_logs.resolve()},target=/logs/verifier" in argument for argument in run)
+    assert run[-3:-1] == ["bash", "-c"]
+    assert "reward.txt" in run[-1]
+
+
+def test_trial_result_round_trips_fixed_task_a_metrics() -> None:
+    result = TrialResult(
+        case_id="chain",
+        arm=Arm.FULL,
+        model="main",
+        classifier_model="classifier",
+        context_window=32_768,
+        status="passed",
+        verifier_exit_code=0,
+        verifier_stdout_sha256="stdout",
+        verifier_stderr_sha256="stderr",
+        recorded_task_a_calls=(
+            ProviderCallMetric("main", input_tokens=10, output_tokens=5, total_tokens=15, elapsed_seconds=0.1),
+        ),
+    )
+
+    restored = TrialResult.from_dict(result.to_dict())
+
+    assert restored.recorded_task_a_calls == result.recorded_task_a_calls
+
+
+def test_aider_chain_records_task_a_once_then_replays_it_for_all_b_arms(tmp_path: Path, monkeypatch) -> None:
+    import benchmark.task_boundary_compaction.runner as runner
+
+    task_a = _aider_task(tmp_path, "task-a")
+    task_b = _aider_task(tmp_path, "task-b")
+    chain = AiderChainCase(
+        benchmark_case=BenchmarkCase(
+            case_id="a-to-b",
+            kind="aider_chain",
+            turns=(
+                TurnSpec("任务 B：解决独立题", "new"),
+                TurnSpec("继续任务 B：验证", "same"),
+            ),
+            verify_command=("__aider_docker_verifier__",),
+            expected_boundary=True,
+        ),
+        chain_type="natural",
+        a_tasks=(task_a,),
+        b_task=task_b,
+        a_turns=("任务 A：只分析 task-a", "继续任务 A：实现 task-a", "继续任务 A：验证 task-a"),
+    )
+    providers: list[_ChainProvider] = []
+
+    def provider_factory() -> _ChainProvider:
+        provider = _ChainProvider()
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(runner, "_run_aider_verifier", lambda **_kwargs: (0, "ok", ""))
+    results = run_aider_chain_case(
+        chain,
+        arms=tuple(Arm),
+        config=_run_config(
+            tmp_path,
+            provider_factory=provider_factory,
+            max_turn_seconds=90,
+            provider_timeout_seconds=45,
+        ),
+    )
+
+    assert len(results) == 3
+    assert all(len(result.recorded_task_a_calls) >= 3 for result in results)
+    assert all(len(result.provider_calls) >= 2 for result in results)
+    assert all(result.verifier_exit_code == 0 for result in results)
+    assert {result.arm: result.status for result in results} == {
+        Arm.AUTO_ONLY: "passed",
+        Arm.CLASSIFIER_ONLY: "passed",
+        Arm.FULL: "passed",
+    }
+    assert next(result for result in results if result.arm is Arm.FULL).task_hash_changed_count == 1
+    assert len({result.recorded_task_a_calls for result in results}) == 1
+    assert not (tmp_path / "runs" / "test" / "a-to-b" / "capture" / "project").exists()
 
 
 def _run_config(tmp_path: Path, **overrides) -> RunConfig:

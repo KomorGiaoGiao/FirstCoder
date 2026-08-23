@@ -235,6 +235,36 @@ def test_report_keeps_a_valid_verifier_failure_in_token_aggregates(tmp_path) -> 
     assert summary["arms"]["full"]["all_provider_total_tokens_median"] == 18.0
 
 
+def test_report_separates_fixed_task_a_and_task_b_token_totals(tmp_path) -> None:
+    from benchmark.task_boundary_compaction.models import ProviderCallMetric, TrialResult
+
+    result = TrialResult(
+        case_id="aider-chain",
+        arm=Arm.FULL,
+        model="fake/fake-model",
+        context_window=32_768,
+        status="passed",
+        verifier_exit_code=0,
+        verifier_stdout_sha256="a" * 64,
+        verifier_stderr_sha256="b" * 64,
+        recorded_task_a_calls=(
+            ProviderCallMetric("main", input_tokens=70, output_tokens=30, total_tokens=100, elapsed_seconds=0.1),
+        ),
+        provider_calls=(
+            ProviderCallMetric("main", input_tokens=10, output_tokens=2, total_tokens=12, elapsed_seconds=0.1),
+        ),
+        usage_complete=True,
+        artifact_paths={"result": str(tmp_path / "result.json")},
+    )
+
+    summary = build_report([result], output_dir=tmp_path / "summary")
+
+    arm_summary = summary["arms"]["full"]
+    assert arm_summary["recorded_task_a_total_tokens_median"] == 100.0
+    assert arm_summary["task_b_provider_total_tokens_median"] == 12.0
+    assert arm_summary["full_chain_total_tokens_median"] == 112.0
+
+
 def test_report_excludes_legacy_verifier_failure_with_incomplete_usage(tmp_path) -> None:
     from benchmark.task_boundary_compaction.models import ProviderCallMetric, TrialResult
 
