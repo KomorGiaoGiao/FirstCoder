@@ -59,10 +59,10 @@ class MatrixProvider(ChatProvider):
 
 @dataclass
 class TimeoutOptionsClient:
-    timeouts: list[float] = field(default_factory=list)
+    options: list[dict[str, float | int]] = field(default_factory=list)
 
-    def with_options(self, *, timeout: float):
-        self.timeouts.append(timeout)
+    def with_options(self, *, timeout: float, max_retries: int):
+        self.options.append({"timeout": timeout, "max_retries": max_retries})
         return self
 
 
@@ -308,7 +308,7 @@ def test_runner_configures_timeout_on_a_provider_sdk_client(tmp_path) -> None:
 
     run_case(_passing_controlled_case(), arm=Arm.AUTO_ONLY, config=config)
 
-    assert client.timeouts == [75]
+    assert client.options == [{"timeout": 75, "max_retries": 0}]
 
 
 def test_runner_cli_exposes_benchmark_limit_defaults(monkeypatch) -> None:

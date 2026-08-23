@@ -279,7 +279,7 @@ def _configure_provider_timeout(provider: ChatProvider, *, seconds: float) -> No
     client = getattr(provider, "_client", None)
     with_options = getattr(client, "with_options", None)
     if callable(with_options):
-        setattr(provider, "_client", with_options(timeout=seconds))
+        setattr(provider, "_client", with_options(timeout=seconds, max_retries=0))
 
 
 def _create_benchmark_session(*, store: JsonlSessionStore, data_root: Path, project_root: Path) -> AgentSession:
