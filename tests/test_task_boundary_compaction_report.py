@@ -155,6 +155,47 @@ def test_run_case_writes_isolated_results_and_builds_causal_summary(tmp_path) ->
     assert summary["arms"]["full"]["pass_count"] == 1
 
 
+def test_run_case_routes_hidden_classifier_to_its_own_provider(tmp_path) -> None:
+    main_providers: list[MatrixProvider] = []
+    classifier_providers: list[MatrixProvider] = []
+
+    def main_factory() -> MatrixProvider:
+        provider = MatrixProvider()
+        main_providers.append(provider)
+        return provider
+
+    def classifier_factory() -> MatrixProvider:
+        provider = MatrixProvider()
+        classifier_providers.append(provider)
+        return provider
+
+    result = run_case(
+        _passing_controlled_case(),
+        arm=Arm.FULL,
+        config=RunConfig(
+            output_root=tmp_path / "runs",
+            run_id="separate-classifier",
+            project_root=Path.cwd(),
+            model="Yuren/gpt-5.6-terra",
+            classifier_model="Yuren/gpt-5.6-luna",
+            context_window=32_768,
+            provider_factory=main_factory,
+            classifier_provider_factory=classifier_factory,
+        ),
+    )
+
+    assert result.classifier_model == "Yuren/gpt-5.6-luna"
+    assert any(metric.kind == "classifier" for metric in result.provider_calls)
+    assert all(
+        not (request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512)
+        for request in main_providers[0].requests
+    )
+    assert any(
+        request.tools == [] and request.tool_choice == "none" and request.max_tokens == 512
+        for request in classifier_providers[0].requests
+    )
+
+
 def test_report_keeps_a_valid_verifier_failure_in_token_aggregates(tmp_path) -> None:
     from benchmark.task_boundary_compaction.models import ProviderCallMetric, TrialResult
 
@@ -175,6 +216,13 @@ def test_report_keeps_a_valid_verifier_failure_in_token_aggregates(tmp_path) -> 
                 total_tokens=12,
                 elapsed_seconds=0.1,
             ),
+            ProviderCallMetric(
+                kind="classifier",
+                input_tokens=5,
+                output_tokens=1,
+                total_tokens=6,
+                elapsed_seconds=0.1,
+            ),
         ),
         usage_complete=True,
         artifact_paths={"result": str(tmp_path / "result.json")},
@@ -184,7 +232,7 @@ def test_report_keeps_a_valid_verifier_failure_in_token_aggregates(tmp_path) -> 
 
     assert summary["arms"]["full"]["pass_count"] == 0
     assert summary["arms"]["full"]["eligible_trial_count"] == 1
-    assert summary["arms"]["full"]["all_provider_total_tokens_median"] == 12.0
+    assert summary["arms"]["full"]["all_provider_total_tokens_median"] == 18.0
 
 
 def test_report_delta_uses_only_case_and_repetition_matched_trials(tmp_path) -> None:
@@ -338,6 +386,30 @@ def test_runner_cli_exposes_benchmark_limit_defaults(monkeypatch) -> None:
     assert arguments.max_provider_calls == 12
     assert arguments.max_turn_seconds == 240.0
     assert arguments.provider_timeout_seconds == 180.0
+    assert arguments.classifier_model is None
+
+
+def test_runner_cli_accepts_classifier_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "runner",
+            "--suite",
+            "controlled",
+            "--model",
+            "Yuren/gpt-5.6-terra",
+            "--classifier-model",
+            "Yuren/gpt-5.6-luna",
+            "--context-window",
+            "32768",
+            "--output",
+            "benchmark/runs/example",
+        ],
+    )
+
+    arguments = _parse_arguments()
+
+    assert arguments.classifier_model == "Yuren/gpt-5.6-luna"
 
 
 def test_runner_cli_exits_nonzero_for_a_boundary_gate_failure(monkeypatch) -> None:

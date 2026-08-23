@@ -13,7 +13,7 @@ from benchmark.task_boundary_compaction.cases import (
     materialize_historical_case,
 )
 from benchmark.task_boundary_compaction.models import Arm
-from benchmark.task_boundary_compaction.runner import RunConfig, _resolve_provider, _trial_status
+from benchmark.task_boundary_compaction.runner import RunConfig, _resolve_providers, _trial_status
 from firstcoder.providers.types import MainRequestOptions
 
 
@@ -46,13 +46,13 @@ def test_run_config_rejects_provider_timeout_that_leaves_no_turn_retry_time(
         )
 
 
-def test_real_provider_resolution_uses_benchmark_output_limit_and_profile_request_settings(
+def test_real_provider_resolution_uses_distinct_classifier_profile_when_configured(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     import benchmark.task_boundary_compaction.runner as runner
 
-    profile_request = type(
+    terra_request = type(
         "ProfileRequest",
         (),
         {
@@ -61,33 +61,59 @@ def test_real_provider_resolution_uses_benchmark_output_limit_and_profile_reques
             "extra_body": {"reasoning_effort": "medium"},
         },
     )()
-    profile = type("Profile", (), {"request": profile_request})()
+    luna_request = type(
+        "ProfileRequest",
+        (),
+        {
+            "temperature": 0.0,
+            "max_tokens": 1_024,
+            "extra_body": {"reasoning_effort": "low"},
+        },
+    )()
+    terra_profile = type("Profile", (), {"request": terra_request})()
+    luna_profile = type("Profile", (), {"request": luna_request})()
+    profiles = {
+        "Yuren/gpt-5.6-terra": terra_profile,
+        "Yuren/gpt-5.6-luna": luna_profile,
+    }
     app_config = type(
         "AppConfig",
         (),
-        {"model_catalog": lambda self: type("Catalog", (), {"require": lambda self, ref: profile})()},
+        {
+            "model_catalog": lambda self: type(
+                "Catalog", (), {"require": lambda self, ref: profiles[ref]}
+            )()
+        },
     )()
-    provider = object()
+    terra_provider = object()
+    luna_provider = object()
     monkeypatch.setattr(runner, "load_config", lambda *, project_root: app_config)
     monkeypatch.setattr(
         runner,
         "create_provider_for_model",
-        lambda received_config, received_profile: provider,
+        lambda received_config, received_profile: (
+            terra_provider if received_profile is terra_profile else luna_provider
+        ),
     )
     config = _run_config(
         tmp_path,
-        model="catalog/model",
+        model="Yuren/gpt-5.6-terra",
+        classifier_model="Yuren/gpt-5.6-luna",
         request_options=MainRequestOptions(max_tokens=4_096),
     )
 
-    resolved_provider, options = _resolve_provider(config)
+    resolved = _resolve_providers(config)
 
-    assert resolved_provider is provider
-    assert options.temperature == 0.35
-    assert options.max_tokens == 4_096
-    assert options.extra_body == {"reasoning_effort": "medium"}
-    assert profile_request.max_tokens == 8_192
-    assert profile_request.extra_body == {"reasoning_effort": "medium"}
+    assert resolved.main_provider is terra_provider
+    assert resolved.classifier_provider is luna_provider
+    assert resolved.classifier_model == "Yuren/gpt-5.6-luna"
+    assert resolved.main_options.temperature == 0.35
+    assert resolved.main_options.max_tokens == 4_096
+    assert resolved.main_options.extra_body == {"reasoning_effort": "medium"}
+    assert resolved.classifier_options.temperature == 0.0
+    assert resolved.classifier_options.extra_body == {"reasoning_effort": "low"}
+    assert terra_request.max_tokens == 8_192
+    assert luna_request.max_tokens == 1_024
 
 
 def _write_manifest(tmp_path: Path, *, focused_test_files: list[str] | None = None) -> Path:

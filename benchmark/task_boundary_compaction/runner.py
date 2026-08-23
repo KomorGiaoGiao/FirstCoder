@@ -58,6 +58,17 @@ class BenchmarkValidityError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class _ResolvedProviders:
+    """The main and hidden-classifier routes for one isolated trial."""
+
+    main_provider: ChatProvider
+    classifier_provider: ChatProvider
+    main_options: MainRequestOptions
+    classifier_options: MainRequestOptions
+    classifier_model: str
+
+
+@dataclass(frozen=True, slots=True)
 class RunConfig:
     """All mutable state for a trial lives below ``output_root/run_id``."""
 
@@ -67,6 +78,8 @@ class RunConfig:
     model: str
     context_window: int
     provider_factory: ProviderFactory | None = None
+    classifier_model: str | None = None
+    classifier_provider_factory: ProviderFactory | None = None
     request_options: MainRequestOptions = MainRequestOptions(max_tokens=4_096)
     random_seed: int = 0
     seed_fraction: float = 0.80
@@ -81,6 +94,8 @@ class RunConfig:
             raise ValueError("run_id must not be blank")
         if not self.model.strip():
             raise ValueError("model must not be blank")
+        if self.classifier_model is not None and not self.classifier_model.strip():
+            raise ValueError("classifier_model must not be blank when provided")
         if self.context_window <= 0:
             raise ValueError("context_window must be positive")
         if not 0.75 <= self.seed_fraction < 0.90:
@@ -113,9 +128,19 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
     try:
         _materialize_case(case, project_root=project_root, source_repo_root=config.project_root)
 
-        provider, request_options = _resolve_provider(config)
-        _configure_provider_timeout(provider, seconds=config.provider_timeout_seconds)
-        recording_provider = RecordingProvider(provider)
+        resolved = _resolve_providers(config)
+        _configure_provider_timeout(resolved.main_provider, seconds=config.provider_timeout_seconds)
+        main_recording_provider = RecordingProvider(resolved.main_provider)
+        if resolved.classifier_provider is resolved.main_provider:
+            classifier_recording_provider = main_recording_provider
+            recording_providers = (main_recording_provider,)
+        else:
+            _configure_provider_timeout(
+                resolved.classifier_provider,
+                seconds=config.provider_timeout_seconds,
+            )
+            classifier_recording_provider = RecordingProvider(resolved.classifier_provider)
+            recording_providers = (main_recording_provider, classifier_recording_provider)
         store = JsonlSessionStore(data_root)
         session = _create_benchmark_session(
             store=store,
@@ -126,15 +151,17 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
             store=store,
             l4_service=LlmCompactService(
                 store=store,
-                summarizer=ProviderLlmCompactSummarizer(recording_provider),
+                summarizer=ProviderLlmCompactSummarizer(main_recording_provider),
             ),
         )
         loop = BenchmarkAgentLoop(
             session=session,
-            provider=recording_provider,
+            provider=main_recording_provider,
+            classifier_provider=classifier_recording_provider,
             tools=_benchmark_tools(project_root, data_root),
             context_manager=context_manager,
-            request_options=request_options,
+            request_options=resolved.main_options,
+            classifier_request_options=resolved.classifier_options,
             context_window=config.context_window,
             limits=AgentLoopLimits(
                 max_tool_rounds=config.max_tool_rounds,
@@ -166,11 +193,16 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
         )
         event_summary = _event_summary(store, session.session_id)
         _write_sanitized_events(store, session.session_id, events_path)
+        provider_calls = tuple(
+            metric
+            for recording_provider in recording_providers
+            for metric in recording_provider.metrics
+        )
         usage_complete = all(
             metric.input_tokens is not None
             and metric.output_tokens is not None
             and metric.total_tokens is not None
-            for metric in recording_provider.metrics
+            for metric in provider_calls
         )
         status = _trial_status(
             arm=arm,
@@ -186,12 +218,13 @@ def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResul
             case_id=benchmark_case.case_id,
             arm=arm,
             model=config.model,
+            classifier_model=resolved.classifier_model,
             context_window=config.context_window,
             status=status,
             verifier_exit_code=verifier_exit_code,
             verifier_stdout_sha256=_sha256(verifier_stdout),
             verifier_stderr_sha256=_sha256(verifier_stderr),
-            provider_calls=tuple(recording_provider.metrics),
+            provider_calls=provider_calls,
             compactions=event_summary.compactions,
             boundary_event_count=event_summary.boundary_event_count,
             task_hash_changed_count=event_summary.boundary_change_count,
@@ -260,18 +293,47 @@ def _materialize_case(case: CaseDefinition, *, project_root: Path, source_repo_r
     materialize_historical_case(case, repo_root=source_repo_root, destination=project_root)
 
 
-def _resolve_provider(config: RunConfig) -> tuple[ChatProvider, MainRequestOptions]:
+def _resolve_providers(config: RunConfig) -> _ResolvedProviders:
+    """Resolve the main and classifier models without consulting production runtime wiring."""
+
+    classifier_model = config.classifier_model or config.model
     if config.provider_factory is not None:
-        return config.provider_factory(), config.request_options
+        main_provider = config.provider_factory()
+        classifier_provider = (
+            config.classifier_provider_factory()
+            if config.classifier_provider_factory is not None
+            else main_provider
+        )
+        return _ResolvedProviders(
+            main_provider=main_provider,
+            classifier_provider=classifier_provider,
+            main_options=config.request_options,
+            classifier_options=MainRequestOptions(),
+            classifier_model=classifier_model,
+        )
     app_config = load_config(project_root=config.project_root)
-    profile = app_config.model_catalog().require(config.model)
-    return (
-        create_provider_for_model(app_config, profile),
-        MainRequestOptions(
-            temperature=profile.request.temperature,
+    catalog = app_config.model_catalog()
+    main_profile = catalog.require(config.model)
+    main_provider = create_provider_for_model(app_config, main_profile)
+    if config.classifier_model is None:
+        classifier_profile = main_profile
+        classifier_provider = main_provider
+    else:
+        classifier_profile = catalog.require(config.classifier_model)
+        classifier_provider = create_provider_for_model(app_config, classifier_profile)
+    return _ResolvedProviders(
+        main_provider=main_provider,
+        classifier_provider=classifier_provider,
+        main_options=MainRequestOptions(
+            temperature=main_profile.request.temperature,
             max_tokens=config.request_options.max_tokens,
-            extra_body=profile.request.extra_body,
+            extra_body=main_profile.request.extra_body,
         ),
+        classifier_options=MainRequestOptions(
+            temperature=classifier_profile.request.temperature,
+            extra_body=classifier_profile.request.extra_body,
+        ),
+        classifier_model=classifier_model,
     )
 
 
@@ -473,6 +535,7 @@ def _parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run task-boundary compaction benchmark trials.")
     parser.add_argument("--suite", choices=("controlled", "historical"), required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--classifier-model")
     parser.add_argument("--context-window", type=int, required=True)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
@@ -501,6 +564,7 @@ def main() -> None:
         run_id=arguments.run_id,
         project_root=arguments.project_root,
         model=arguments.model,
+        classifier_model=arguments.classifier_model,
         context_window=arguments.context_window,
         max_tool_rounds=arguments.max_tool_rounds,
         max_provider_calls=arguments.max_provider_calls,
