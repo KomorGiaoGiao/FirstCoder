@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -88,6 +89,15 @@ def test_materializers_copy_workspace_without_touching_aider_source(tmp_path: Pa
     assert (a_destination / "01-task-a" / "Subject.java").exists()
     assert materialized == (("task-a", a_destination / "01-task-a"),)
     assert (task_a / "environment" / "workspace" / "Subject.java").exists()
+    for project_root in (a_destination, b_destination):
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
 
 
 def test_load_aider_chain_cases_rejects_task_reuse_and_invalid_layout(tmp_path: Path) -> None:

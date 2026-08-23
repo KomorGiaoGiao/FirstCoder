@@ -256,9 +256,8 @@ def materialize_aider_task(task: AiderTask, *, destination: str | Path) -> Path:
     """Copy only an exercise workspace into a disposable agent project."""
 
     target = Path(destination)
-    if target.exists():
-        raise FileExistsError(f"Aider destination already exists: {target}")
-    shutil.copytree(task.workspace_dir, target)
+    _copy_aider_workspace(task, destination=target)
+    _initialize_disposable_git_repository(target)
     return target
 
 
@@ -276,8 +275,9 @@ def materialize_aider_batch(
     materialized: list[tuple[str, Path]] = []
     for index, task in enumerate(chain.a_tasks, start=1):
         task_root = root / f"{index:02d}-{task.task_id}"
-        materialize_aider_task(task, destination=task_root)
+        _copy_aider_workspace(task, destination=task_root)
         materialized.append((task.task_id, task_root))
+    _initialize_disposable_git_repository(root)
     return tuple(materialized)
 
 
@@ -342,6 +342,36 @@ def _load_aider_task(root: Path, task_id: str) -> AiderTask:
         workspace_dir=workspace_dir,
         tests_dir=tests_dir,
         dockerfile=dockerfile,
+    )
+
+
+def _copy_aider_workspace(task: AiderTask, *, destination: Path) -> None:
+    if destination.exists():
+        raise FileExistsError(f"Aider destination already exists: {destination}")
+    shutil.copytree(task.workspace_dir, destination)
+    gradlew = destination / "gradlew"
+    if gradlew.is_file():
+        gradlew.chmod(gradlew.stat().st_mode | 0o111)
+
+
+def _initialize_disposable_git_repository(project_root: Path) -> None:
+    """Prevent temporary exercises from walking upward into the FirstCoder Git tree."""
+
+    subprocess.run(["git", "init", "--quiet"], cwd=project_root, check=True)
+    subprocess.run(["git", "add", "--all"], cwd=project_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=FirstCoder Benchmark",
+            "-c",
+            "user.email=benchmark@localhost",
+            "commit",
+            "--quiet",
+            "--message=benchmark baseline",
+        ],
+        cwd=project_root,
+        check=True,
     )
 
 
