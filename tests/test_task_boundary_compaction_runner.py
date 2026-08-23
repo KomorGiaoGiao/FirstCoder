@@ -13,11 +13,81 @@ from benchmark.task_boundary_compaction.cases import (
     materialize_historical_case,
 )
 from benchmark.task_boundary_compaction.models import Arm
-from benchmark.task_boundary_compaction.runner import _trial_status
+from benchmark.task_boundary_compaction.runner import RunConfig, _resolve_provider, _trial_status
+from firstcoder.providers.types import MainRequestOptions
 
 
 BASE_COMMIT = "a" * 40
 TARGET_COMMIT = "b" * 40
+
+
+def _run_config(tmp_path: Path, **overrides) -> RunConfig:
+    values = {
+        "output_root": tmp_path / "runs",
+        "run_id": "test",
+        "project_root": tmp_path,
+        "model": "fake/model",
+        "context_window": 32_768,
+    }
+    values.update(overrides)
+    return RunConfig(**values)
+
+
+@pytest.mark.parametrize("provider_timeout_seconds", [90, 91])
+def test_run_config_rejects_provider_timeout_that_leaves_no_turn_retry_time(
+    tmp_path: Path,
+    provider_timeout_seconds: float,
+) -> None:
+    with pytest.raises(ValueError, match="strictly smaller than max_turn_seconds"):
+        _run_config(
+            tmp_path,
+            max_turn_seconds=90,
+            provider_timeout_seconds=provider_timeout_seconds,
+        )
+
+
+def test_real_provider_resolution_uses_benchmark_output_limit_and_profile_request_settings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import benchmark.task_boundary_compaction.runner as runner
+
+    profile_request = type(
+        "ProfileRequest",
+        (),
+        {
+            "temperature": 0.35,
+            "max_tokens": 8_192,
+            "extra_body": {"reasoning_effort": "medium"},
+        },
+    )()
+    profile = type("Profile", (), {"request": profile_request})()
+    app_config = type(
+        "AppConfig",
+        (),
+        {"model_catalog": lambda self: type("Catalog", (), {"require": lambda self, ref: profile})()},
+    )()
+    provider = object()
+    monkeypatch.setattr(runner, "load_config", lambda *, project_root: app_config)
+    monkeypatch.setattr(
+        runner,
+        "create_provider_for_model",
+        lambda received_config, received_profile: provider,
+    )
+    config = _run_config(
+        tmp_path,
+        model="catalog/model",
+        request_options=MainRequestOptions(max_tokens=4_096),
+    )
+
+    resolved_provider, options = _resolve_provider(config)
+
+    assert resolved_provider is provider
+    assert options.temperature == 0.35
+    assert options.max_tokens == 4_096
+    assert options.extra_body == {"reasoning_effort": "medium"}
+    assert profile_request.max_tokens == 8_192
+    assert profile_request.extra_body == {"reasoning_effort": "medium"}
 
 
 def _write_manifest(tmp_path: Path, *, focused_test_files: list[str] | None = None) -> Path:

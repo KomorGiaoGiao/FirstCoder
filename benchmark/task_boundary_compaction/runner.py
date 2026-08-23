@@ -50,7 +50,7 @@ ProviderFactory: TypeAlias = Callable[[], ChatProvider]
 _DEFAULT_MAX_TOOL_ROUNDS = 6
 _DEFAULT_MAX_PROVIDER_CALLS = 12
 _DEFAULT_MAX_TURN_SECONDS = 90.0
-_DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
+_DEFAULT_PROVIDER_TIMEOUT_SECONDS = 45.0
 
 
 class BenchmarkValidityError(RuntimeError):
@@ -95,6 +95,8 @@ class RunConfig:
             raise ValueError("max_turn_seconds must be positive")
         if self.provider_timeout_seconds <= 0:
             raise ValueError("provider_timeout_seconds must be positive")
+        if self.provider_timeout_seconds >= self.max_turn_seconds:
+            raise ValueError("provider_timeout_seconds must be strictly smaller than max_turn_seconds")
 
 
 def run_case(case: CaseDefinition, *, arm: Arm, config: RunConfig) -> TrialResult:
@@ -267,7 +269,7 @@ def _resolve_provider(config: RunConfig) -> tuple[ChatProvider, MainRequestOptio
         create_provider_for_model(app_config, profile),
         MainRequestOptions(
             temperature=profile.request.temperature,
-            max_tokens=profile.request.max_tokens,
+            max_tokens=config.request_options.max_tokens,
             extra_body=profile.request.extra_body,
         ),
     )

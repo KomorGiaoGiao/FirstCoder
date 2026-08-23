@@ -2,7 +2,7 @@
 
 这个目录只实现基准测试，不修改 `firstcoder/` 的生产控制流、用户全局配置或正常 `.firstcoder/` 会话。每个 `(case, arm, repetition)` 会在输出目录下临时创建独立的 `project/` 和 `data/` 根目录；trial 完成后会删除两者。结果只保留白名单化的 `events.json`、token/耗时指标、verifier 退出码与输出哈希，不保存 JSONL、prompt、模型回答正文、工具参数或凭证。
 
-每个 B 轮默认最多执行 6 个工具回合、12 次 provider 调用、90 秒循环时间；对 OpenAI SDK 路由还会注入仅本次 trial 生效的 120 秒 HTTP 请求超时。可通过 runner 的对应 `--max-*` 与 `--provider-timeout-seconds` 参数覆盖，但三臂必须使用相同值。
+每个 B 轮默认最多执行 6 个工具回合、12 次 provider 调用、90 秒循环时间，主模型输出上限为 4096 tokens；对 OpenAI SDK 路由还会注入仅本次 trial 生效的 45 秒 HTTP 请求超时（严格小于 90 秒轮次上限，为分类器失败后的同轮重试保留时间）。可通过 runner 的对应 `--max-*` 与 `--provider-timeout-seconds` 参数覆盖，但 HTTP 请求超时必须严格小于轮次上限，且三臂必须使用相同值。
 
 ## 三臂定义
 
@@ -61,7 +61,7 @@ python -m venv .venv
 
 `--context-window 32768` 只传给这次 benchmark 的 `BenchmarkAgentLoop`，是 `simulated_budget_window`，不会写入 `~/.config/firstcoder/config.toml`、项目 `firstcoder.toml` 或正常应用状态。每个受控 trial 都将旧任务 A 注入到当前高水位的 80%，因此运行 B 续接轮时尚未到 AUTO 高水位；如果在预期边界前已经发生 AUTO 压缩，结果会标为 `confounded_auto`，并从因果聚合排除。
 
-每个 B 用户轮固定上限为 6 个工具轮、12 次 provider 调用和 90 秒。三个 arm 使用同一组 benchmark 专属限制；这些值会写入每个 `result.json`，不会改变生产 `AgentLoopLimits` 默认值。达到任一上限的轮会停止并保留结果，避免微型题无限工具循环。
+每个 B 用户轮固定上限为 6 个工具轮、12 次 provider 调用和 90 秒，主模型输出上限固定为 4096 tokens；OpenAI SDK 路由的单请求超时默认 45 秒。真实 provider 会保留当前 Model Catalog profile 的 `temperature` 和 `extra_body`，但不会采用其 `request.max_tokens`，以确保所有 benchmark 主请求都遵循 4096 的输出上限。三个 arm 使用同一组 benchmark 专属限制；这些值会写入每个 `result.json`，不会改变生产 `AgentLoopLimits` 默认值或 Model Catalog。达到任一上限的轮会停止并保留结果，避免微型题无限工具循环。
 
 ## 历史真实任务：200K 试运行
 
