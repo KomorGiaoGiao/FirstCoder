@@ -33,13 +33,6 @@ FirstCoder 是一个能真实运行的本地 coding agent，带有 Textual TUI�
 
 ![FirstCoder 规划、请求权限并完成本地任务](docs/images/firstcoder-demo.gif)
 
-## Star History
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-dark.svg">
-  <img alt="FirstCoder Star 历史曲线" src="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-light.svg">
-</picture>
-
 ## 为什么做 FirstCoder
 
 大多数 coding-agent 演示展示的是表面：一个 prompt 进去，代码改完出来。FirstCoder 关注的是中间的机械结构。
@@ -222,3 +215,10 @@ FirstCoder 想回答的是一个很多 coding agent 不会正面回答的问题�
 > 内部到底发生了什么？
 
 它是一个真实可运行的 agent，但它同样也是一个可以按子系统逐步读懂的 Python 项目。
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-dark.svg">
+  <img alt="FirstCoder Star 历史曲线" src="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-light.svg">
+</picture>
