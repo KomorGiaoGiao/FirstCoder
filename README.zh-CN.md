@@ -33,6 +33,13 @@ FirstCoder 是一个能真实运行的本地 coding agent，带有 Textual TUI�
 
 ![FirstCoder 规划、请求权限并完成本地任务](docs/images/firstcoder-demo.gif)
 
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-dark.svg">
+  <img alt="FirstCoder Star 历史曲线" src="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-light.svg">
+</picture>
+
 ## 为什么做 FirstCoder
 
 大多数 coding-agent 演示展示的是表面：一个 prompt 进去，代码改完出来。FirstCoder 关注的是中间的机械结构。

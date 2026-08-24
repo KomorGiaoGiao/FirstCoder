@@ -1,0 +1,24 @@
+name: Star History
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ranxi2001/star-history-ci@0f86d8edecf4b8b9034da114ab5973ce5d27495f
+        with:
+          repos: ${{ github.repository }}
+          token: ${{ secrets.STAR }}

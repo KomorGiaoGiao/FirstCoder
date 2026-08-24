@@ -33,6 +33,13 @@ If you want to understand how coding agents actually work, FirstCoder keeps the 
 
 ![FirstCoder planning, requesting permission, and completing a local task](docs/images/firstcoder-demo.gif)
 
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-dark.svg">
+  <img alt="FirstCoder star history" src="https://raw.githubusercontent.com/KomorGiaoGiao/FirstCoder/output/star-history-light.svg">
+</picture>
+
 ## Why FirstCoder
 
 Most coding-agent demos show the surface: a prompt goes in, code changes come out. FirstCoder focuses on the machinery in between.
