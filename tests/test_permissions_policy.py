@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from firstcoder.permissions.policy import DefaultPermissionPolicy
+from firstcoder.permissions.policy import DefaultPermissionPolicy, _is_dangerous_shell_command
 from firstcoder.permissions.types import (
     PermissionAction,
     PermissionDecisionKind,
@@ -245,6 +245,15 @@ def test_aggressive_shell_still_requires_confirmation_for_destructive_commands(t
             mode=PermissionMode.AGGRESSIVE,
         )
         assert decision.kind == PermissionDecisionKind.ASK, command
+
+
+def test_dangerous_shell_command_pattern_supports_shell_whitespace() -> None:
+    for command in (
+        "rm\t-rf firstcoder",
+        "chmod\t777 script.sh",
+        "python -m    pip install package",
+    ):
+        assert _is_dangerous_shell_command(command), command
 
 
 def test_shell_respects_disable_auto_allow_metadata_even_in_aggressive_mode(tmp_path) -> None:

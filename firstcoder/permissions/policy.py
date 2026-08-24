@@ -40,17 +40,8 @@ _AGGRESSIVE_ALLOWED_COMMANDS = (
     "cargo test",
     "make test",
 )
-_DANGEROUS_SHELL_PREFIXES = (
-    "rm",
-    "sudo",
-    "curl",
-    "wget",
-    "chmod",
-    "chown",
-    "python -m pip",
-    "python3 -m pip",
-    "pip",
-    "pip3",
+_DANGEROUS_SHELL_PATTERN = re.compile(
+    r"^\s*(?:rm|sudo|curl|wget|chmod|chown|python3?\s+-m\s+pip|pip3?)\b"
 )
 _SHELL_CONTROL_PATTERN = re.compile(r"(&&|\|\||\$\(|[;&|<>`\r\n])")
 
@@ -193,7 +184,7 @@ def _is_aggressive_allowed_shell_command(command: str) -> bool:
 
 
 def _is_dangerous_shell_command(command: str) -> bool:
-    return any(_command_matches_prefix(command, prefix) for prefix in _DANGEROUS_SHELL_PREFIXES)
+    return bool(_DANGEROUS_SHELL_PATTERN.search(command))
 
 
 def _has_shell_control_operator(command: str) -> bool:
