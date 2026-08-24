@@ -79,6 +79,7 @@ class AgentChatRunner:
 
     current_session: CurrentSessionState
     provider: ChatProvider
+    classifier_provider: ChatProvider | None = None
     tools: list[Tool] | None = None
     tools_provider: Callable[[], list[Tool]] | None = None
     context_builder: ContextBuilder | None = None
@@ -86,6 +87,7 @@ class AgentChatRunner:
     limits: AgentLoopLimits | None = None
     use_streaming: bool = False
     request_options: MainRequestOptions = field(default_factory=MainRequestOptions)
+    classifier_request_options: MainRequestOptions | None = None
     context_window: int | None = None
     loops: list[AgentLoop] = field(default_factory=list)
     last_display_lines: list[str] = field(default_factory=list)
@@ -280,6 +282,8 @@ class AgentChatRunner:
             "session": self.current_session.session,
             "provider": self.provider,
             "request_options": self.request_options,
+            "classifier_provider": self.classifier_provider,
+            "classifier_request_options": self.classifier_request_options,
             "context_window": self.context_window,
             "tools": self._current_tools(),
             "context_builder": self.context_builder,

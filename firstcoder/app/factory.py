@@ -145,6 +145,21 @@ def create_firstcoder_app(
             provider = create_provider_for_model(resolved_app_config, selected_profile)
         except ProviderConfigError as error:
             raise ValueError(str(error)) from error
+    classifier_provider: ChatProvider | None = None
+    classifier_request_options: MainRequestOptions | None = None
+    classifier_model_ref = resolved_app_config.get_config_value("task_boundary_classifier_model")
+    if classifier_model_ref is not None:
+        classifier_model_ref = classifier_model_ref.strip()
+        if not classifier_model_ref:
+            raise ValueError("task_boundary_classifier_model 不能为空")
+        classifier_profile = model_catalog.get(classifier_model_ref)
+        if classifier_profile is None:
+            raise ValueError(f"任务边界分类模型未配置：{classifier_model_ref}")
+        try:
+            classifier_provider = create_provider_for_model(resolved_app_config, classifier_profile)
+        except ProviderConfigError as error:
+            raise ValueError(f"任务边界分类模型配置错误：{error}") from error
+        classifier_request_options = _main_request_options(classifier_profile)
     store = JsonlSessionStore(resolved_data_root)
     sandbox_access = SandboxAccess()
     background_manager = BackgroundJobManager()
@@ -241,12 +256,14 @@ def create_firstcoder_app(
     chat_runner = AgentChatRunner(
         current_session=current,
         provider=resolved_provider,
+        classifier_provider=classifier_provider,
         tools=current_tools,
         tools_provider=tool_provider,
         context_manager=context_manager,
         limits=AgentLoopLimits.default(),
         use_streaming=_should_use_streaming(resolved_provider, resolved_app_config),
         request_options=_main_request_options(selected_profile),
+        classifier_request_options=classifier_request_options,
         context_window=selected_profile.context_window if selected_profile is not None else None,
         background_manager=background_manager,
         runtime_capabilities=resolved_capabilities,

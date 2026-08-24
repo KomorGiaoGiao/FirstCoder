@@ -134,6 +134,7 @@ You can keep several provider/model profiles in one global or project TOML file.
 
 ```toml
 default_model = "yuren/gpt-5.6-terra"
+task_boundary_classifier_model = "yuren/gpt-5.6-luna"
 
 [providers.yuren]
 type = "openai-compatible"
@@ -149,11 +150,16 @@ temperature = 0.2
 max_tokens = 8192
 reasoning_effort = "high"
 extra_body = { reasoning_summary = "auto" }
+
+[models."yuren/gpt-5.6-luna"]
+label = "Yuren Luna (task-boundary classifier)"
 ```
 
 Use `firstcoder --model provider/model` to choose the initial profile for a run. In the TUI, `/models` opens the configured model picker and `/model provider/model` switches immediately. `firstcoder config show` prints the configured model references and labels, but never prints API keys, environment-variable values, request bodies, or model-state contents.
 
 `temperature`, `max_tokens`, and `extra_body` are sent with the main model request. `reasoning_effort` is represented as a request extension and passed through when the selected provider supports it; providers that do not recognize it may reject or ignore it. Internal classifiers and compact summarization keep their own bounded token budgets.
+
+`task_boundary_classifier_model` is optional. When set, hidden task-boundary requests use that fixed model profile while the main agent and L4 compaction keep using the selected main profile. It may point to another model under the same provider, so it reuses that provider's API-key environment variable and base URL. Its `temperature` and request extensions are inherited, but its output remains capped at 512 tokens; provider/format failures still fall back to the existing conservative `uncertain` decision.
 
 > A small detail for observant users: some provider/model combinations give the
 > TUI topbar a little more character.

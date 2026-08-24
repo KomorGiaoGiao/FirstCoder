@@ -127,6 +127,7 @@ Provider 主线同时覆盖 OpenAI Chat Completions 兼容路径与原生 Anthro
 
 ```toml
 default_model = "yuren/gpt-5.6-terra"
+task_boundary_classifier_model = "yuren/gpt-5.6-luna"
 
 [providers.yuren]
 type = "openai-compatible"
@@ -141,11 +142,16 @@ temperature = 0.2
 max_tokens = 8192
 reasoning_effort = "high"
 extra_body = { reasoning_summary = "auto" }
+
+[models."yuren/gpt-5.6-luna"]
+label = "Yuren Luna（任务边界分类）"
 ```
 
 命令行可以用 `firstcoder --model provider/model` 指定本次运行的初始模型。TUI 中 `/models` 会打开已配置模型的选择器，`/model provider/model` 可以立即切换。`firstcoder config show` 只显示模型引用和标签，不会显示 API key、环境变量值、请求体或模型状态文件内容。
 
 `temperature`、`max_tokens` 和 `extra_body` 会随主模型请求发送。`reasoning_effort` 作为请求扩展参数透传；是否支持取决于所选 provider，不支持的 provider 可能忽略或拒绝它。内部分类器和上下文压缩仍使用各自固定的 token 上限。
+
+`task_boundary_classifier_model` 是可选配置。设置后，隐藏的任务边界分类请求固定使用该 profile；主 Agent 与 L4 压缩仍使用当前选择的主模型。它可以指向同一 provider 下的另一模型，因此复用该 provider 的 API-key 环境变量和 Base URL。分类请求会继承该 profile 的 `temperature` 与扩展参数，但输出始终限制为 512 tokens；provider/格式连续失败时仍沿用保守的 `uncertain` 兜底。
 
 默认配置路径：
 

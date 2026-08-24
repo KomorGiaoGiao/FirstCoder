@@ -108,6 +108,73 @@ def test_task_boundary_classifier_keeps_its_fixed_request_options(tmp_path) -> N
     assert request.extra_body == {}
 
 
+def test_task_boundary_classifier_inherits_profile_options_but_caps_output_tokens(tmp_path) -> None:
+    session = _session(tmp_path)
+    classifier = TaskBoundaryClassifier(
+        session=session,
+        provider=RecordingProvider(),
+        request_options=MainRequestOptions(
+            temperature=0.1,
+            max_tokens=8_192,
+            extra_body={"reasoning_effort": "low"},
+        ),
+        context_builder=ContextBuilder(),
+        compact_if_needed=lambda **_: None,
+        check_cancelled=lambda: None,
+        reserve_provider_call=lambda: None,
+        check_turn_timeout=lambda: None,
+        tag_task_boundary_messages=lambda *_: None,
+    )
+
+    request = classifier.build_request(attempt=0)
+
+    assert request.max_tokens == 512
+    assert request.temperature == 0.1
+    assert request.extra_body == {"reasoning_effort": "low"}
+
+
+def test_agent_loop_routes_hidden_boundary_classification_to_classifier_provider(tmp_path) -> None:
+    session = _session(tmp_path)
+    main_provider = RecordingProvider()
+    classifier_provider = RecordingProvider()
+    loop = AgentLoop(
+        session=session,
+        provider=main_provider,
+        classifier_provider=classifier_provider,
+    )
+
+    loop._run_user_turn_sync("初始化任务")
+    loop._run_user_turn_sync("继续读取 README")
+
+    assert len(main_provider.requests) == 2
+    assert len(classifier_provider.requests) == 3
+    assert all(request.tools == [] for request in classifier_provider.requests)
+    assert all(request.tool_choice == "none" for request in classifier_provider.requests)
+
+
+def test_agent_loop_applies_classifier_profile_options_to_hidden_requests(tmp_path) -> None:
+    session = _session(tmp_path)
+    classifier_provider = RecordingProvider()
+    loop = AgentLoop(
+        session=session,
+        provider=RecordingProvider(),
+        classifier_provider=classifier_provider,
+        classifier_request_options=MainRequestOptions(
+            temperature=0.1,
+            max_tokens=8_192,
+            extra_body={"reasoning_effort": "low"},
+        ),
+    )
+
+    loop._run_user_turn_sync("初始化任务")
+    loop._run_user_turn_sync("继续读取 README")
+
+    request = classifier_provider.requests[0]
+    assert request.max_tokens == 512
+    assert request.temperature == 0.1
+    assert request.extra_body == {"reasoning_effort": "low"}
+
+
 def test_main_request_options_copy_extra_body() -> None:
     options_body = {"nested": {"value": 1}}
     options = MainRequestOptions(extra_body=options_body)
@@ -132,3 +199,25 @@ def test_chat_runner_passes_context_window_to_agent_loop(tmp_path) -> None:
 
     assert loop.context_window == 128_000
     assert loop.request_options.max_tokens == 8_192
+
+
+def test_chat_runner_passes_classifier_configuration_to_agent_loop(tmp_path) -> None:
+    session = _session(tmp_path)
+    classifier_provider = RecordingProvider()
+    runner = AgentChatRunner(
+        current_session=CurrentSessionState(session),
+        provider=RecordingProvider(),
+        classifier_provider=classifier_provider,
+        classifier_request_options=MainRequestOptions(
+            temperature=0.1,
+            max_tokens=8_192,
+            extra_body={"reasoning_effort": "low"},
+        ),
+    )
+
+    loop = runner._create_loop(CancellationToken())
+
+    assert loop.classifier_provider is classifier_provider
+    assert loop.classifier_request_options.temperature == 0.1
+    assert loop.classifier_request_options.max_tokens == 8_192
+    assert loop.classifier_request_options.extra_body == {"reasoning_effort": "low"}

@@ -96,6 +96,8 @@ class AgentLoop:
         guidance_provider: Callable[[], list[str]] | None = None,
         cancellation_token: CancellationToken | None = None,
         request_options: MainRequestOptions | None = None,
+        classifier_provider: ChatProvider | None = None,
+        classifier_request_options: MainRequestOptions | None = None,
         context_window: int | None = None,
         background_manager: BackgroundJobManager | None = None,
         background_tool_names: frozenset[str] | None = None,
@@ -108,6 +110,8 @@ class AgentLoop:
         self.tool_settlement = ToolCallSettlement(session)
         self.task_plan_policy = TaskPlanPolicy(session)
         self.provider = provider
+        self.classifier_provider = classifier_provider or provider
+        self.classifier_request_options = classifier_request_options or MainRequestOptions()
         self.request_options = request_options or MainRequestOptions()
         self.context_window = context_window
         self.context_builder = context_builder or ContextBuilder()
@@ -152,7 +156,8 @@ class AgentLoop:
         self.turn_telemetry = AgentTurnTelemetry()
         self.task_boundary_classifier = TaskBoundaryClassifier(
             session=session,
-            provider=provider,
+            provider=self.classifier_provider,
+            request_options=self.classifier_request_options,
             context_builder=self.context_builder,
             compact_if_needed=self._compact_if_needed,
             check_cancelled=self._check_cancelled,

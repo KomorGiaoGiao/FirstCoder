@@ -322,6 +322,57 @@ def test_factory_catalog_startup_honors_model_spec_over_default(tmp_path: Path) 
     assert app.chat_runner.context_window == 200_000
 
 
+def test_factory_uses_configured_model_for_task_boundary_classifier(tmp_path: Path) -> None:
+    config = _catalog_config()
+    assert config.project_config is not None
+    config.project_config["task_boundary_classifier_model"] = "yuren/gpt-5.6-luna"
+    config.project_config["models"]["yuren/gpt-5.6-luna"] = {
+        "request": {
+            "temperature": 0.1,
+            "reasoning_effort": "low",
+        }
+    }
+
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        app_config=config,
+        session_id="sess_test",
+        tools=[],
+    )
+
+    assert app.chat_runner.provider.model == "main"
+    assert app.chat_runner.classifier_provider is not None
+    assert app.chat_runner.classifier_provider.name == "yuren"
+    assert app.chat_runner.classifier_provider.model == "gpt-5.6-luna"
+    assert app.chat_runner.classifier_request_options is not None
+    assert app.chat_runner.classifier_request_options.temperature == 0.1
+    assert app.chat_runner.classifier_request_options.extra_body == {"reasoning_effort": "low"}
+
+
+def test_model_switch_preserves_explicit_task_boundary_classifier(tmp_path: Path) -> None:
+    config = _catalog_config()
+    assert config.project_config is not None
+    config.project_config["task_boundary_classifier_model"] = "yuren/gpt-5.6-luna"
+    config.project_config["models"]["yuren/gpt-5.6-luna"] = {}
+    app = create_firstcoder_app(
+        project_root=tmp_path,
+        data_root=tmp_path / ".firstcoder",
+        app_config=config,
+        session_id="sess_test",
+        tools=[],
+    )
+    classifier_provider = app.chat_runner.classifier_provider
+
+    result = app.command_handler.handle("/model mimo/pro")
+
+    assert result.output == "Model switched: mimo/pro"
+    assert app.chat_runner.provider.model == "pro"
+    assert app.chat_runner.classifier_provider is classifier_provider
+    assert app.chat_runner.classifier_provider is not None
+    assert app.chat_runner.classifier_provider.model == "gpt-5.6-luna"
+
+
 def test_factory_catalog_startup_honors_default_over_saved_state(tmp_path: Path) -> None:
     data_root = tmp_path / ".firstcoder"
     ModelStateStore(data_root / "model_state.json").record_selection("mimo/pro")
