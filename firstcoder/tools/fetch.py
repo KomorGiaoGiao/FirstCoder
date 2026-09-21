@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from urllib import error, parse, request
 
 from firstcoder.permissions.types import PermissionAction
@@ -31,8 +32,9 @@ def create_fetch_tool() -> Tool:
             return make_error_result("fetch", "max_chars 必须大于 0")
 
         req = request.Request(url, headers={"User-Agent": "FirstCoder/0.1"})
+        opener = request.build_opener(_SafeRedirectHandler)
         try:
-            with request.urlopen(req, timeout=timeout_seconds) as response:
+            with opener.open(req, timeout=timeout_seconds) as response:
                 body = response.read()
                 status = getattr(response, "status", None)
                 headers = dict(response.getheaders())
@@ -71,3 +73,51 @@ def _is_private_or_local_url(parsed: parse.ParseResult) -> bool:
     except ValueError:
         return False
     return address.is_private or address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified or address.is_reserved
+
+
+class _SafeRedirectHandler(request.HTTPRedirectHandler):
+    """Reject redirects to private, local, or newly-resolved private targets."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = parse.urlparse(newurl)
+        if parsed.scheme not in ("http", "https"):
+            raise error.HTTPError(
+                newurl, code, f"不安全的重定向协议：{parsed.scheme}", headers, fp,
+            )
+        if _is_private_or_local_url(parsed):
+            raise error.HTTPError(
+                newurl, code, "重定向目标为本机、内网或链路本地地址", headers, fp,
+            )
+        if _resolves_to_private_ip(parsed.hostname or ""):
+            raise error.HTTPError(
+                newurl, code, "重定向目标解析到内网地址", headers, fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _resolves_to_private_ip(hostname: str) -> bool:
+    """Resolve hostname and check whether any result is a private/local address."""
+
+    hostname = hostname.rstrip(".").lower()
+    if not hostname:
+        return True
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return True
+    for info in infos:
+        address_str = info[4][0]
+        try:
+            address = ipaddress.ip_address(address_str)
+        except ValueError:
+            continue
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_unspecified
+            or address.is_reserved
+        ):
+            return True
+    return False
