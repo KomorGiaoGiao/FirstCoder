@@ -272,6 +272,7 @@ def run_aider_chain_case(
 ) -> list[TrialResult]:
     """Record one real task A, then replay it into isolated task-B arm trials."""
 
+    arm_list = tuple(arms)
     case_root = config.output_root / config.run_id / case.case_id
     capture_root = case_root / "capture"
     capture_project_root = capture_root / "project"
@@ -297,8 +298,18 @@ def run_aider_chain_case(
             arm=Arm.FULL,
             config=config,
         )
-        for message in case.a_turns:
-            capture_loop._run_user_turn_sync(message)
+        started_at = time.perf_counter()
+        try:
+            for message in case.a_turns:
+                capture_loop._run_user_turn_sync(message)
+        except BaseException:
+            return _write_capture_provider_error_results(
+                case,
+                arms=arm_list,
+                config=config,
+                routes=capture_routes,
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
         recorded_task_a_calls = _provider_metrics(capture_routes)
         return [
             _run_aider_chain_arm(
@@ -308,11 +319,70 @@ def run_aider_chain_case(
                 captured_data_root=capture_data_root,
                 recorded_task_a_calls=recorded_task_a_calls,
             )
-            for arm in arms
+            for arm in arm_list
         ]
     finally:
         _remove_private_trial_directory(capture_project_root, trial_root=capture_root)
         _remove_private_trial_directory(capture_data_root, trial_root=capture_root)
+
+
+def _write_capture_provider_error_results(
+    case: AiderChainCase,
+    *,
+    arms: tuple[Arm, ...],
+    config: RunConfig,
+    routes: _RecordingRoutes,
+    elapsed_seconds: float,
+) -> list[TrialResult]:
+    """Persist every arm when the shared task-A capture cannot be completed.
+
+    No task-B replay is possible without a complete private capture. Recording
+    each skipped arm as a provider error preserves matrix shape and lets later
+    cases run, while keeping these rows out of causal aggregation.
+    """
+
+    recorded_task_a_calls = _provider_metrics(routes)
+    usage_complete = all(
+        metric.input_tokens is not None
+        and metric.output_tokens is not None
+        and metric.total_tokens is not None
+        for metric in recorded_task_a_calls
+    )
+    results: list[TrialResult] = []
+    for arm in arms:
+        trial_root = config.output_root / config.run_id / case.case_id / arm.value
+        if trial_root.exists():
+            raise FileExistsError(f"benchmark trial directory already exists: {trial_root}")
+        trial_root.mkdir(parents=True)
+        events_path = trial_root / "events.json"
+        events_path.write_text("[]\n", encoding="utf-8")
+        result = TrialResult(
+            case_id=case.case_id,
+            arm=arm,
+            model=config.model,
+            classifier_model=routes.resolved.classifier_model,
+            context_window=config.context_window,
+            status="provider_error",
+            verifier_exit_code=None,
+            verifier_stdout_sha256=None,
+            verifier_stderr_sha256=None,
+            recorded_task_a_calls=recorded_task_a_calls,
+            usage_complete=usage_complete,
+            elapsed_seconds=elapsed_seconds,
+            repetition=config.repetition,
+            max_tool_rounds=config.max_tool_rounds,
+            max_provider_calls=config.max_provider_calls,
+            max_turn_seconds=config.max_turn_seconds,
+            provider_timeout_seconds=config.provider_timeout_seconds,
+            artifact_paths={
+                "trial_root": str(trial_root),
+                "events": str(events_path),
+                "result": str(trial_root / "result.json"),
+            },
+        )
+        _write_result(result, trial_root / "result.json")
+        results.append(result)
+    return results
 
 
 def _run_aider_chain_arm(
@@ -871,6 +941,8 @@ def _require_full_boundary_events(
     invalid_trials: list[str] = []
     for result in results:
         if result.arm is not Arm.FULL:
+            continue
+        if result.status == "provider_error":
             continue
         expected_boundary = expected_boundaries[result.case_id]
         expected_count = 1 if expected_boundary else 0

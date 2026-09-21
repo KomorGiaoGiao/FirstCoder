@@ -26,7 +26,11 @@ def test_fetch_reads_text_response(monkeypatch, tmp_path):
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-    monkeypatch.setattr(fetch_module.request, "urlopen", lambda request, timeout: FakeContext())
+    class FakeOpener:
+        def open(self, req, timeout=None):
+            return FakeContext()
+
+    monkeypatch.setattr(fetch_module.request, "build_opener", lambda *args: FakeOpener())
     registry = create_builtin_registry(tmp_path, include_network_tools=True)
 
     result = registry.execute("fetch", {"url": "https://example.com"})

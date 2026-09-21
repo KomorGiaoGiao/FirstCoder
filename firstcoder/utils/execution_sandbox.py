@@ -11,8 +11,8 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 from firstcoder.utils.sandbox import PathSandbox
 from firstcoder.utils.subprocess import CommandResult, run_command
 
-_SENSITIVE_ENV_KEYWORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "COOKIE")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SENSITIVE_ENV_KEYWORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "COOKIE", "PASSPHRASE", "CREDENTIAL")
 
 
 class ExecutionSandbox:
@@ -33,9 +33,9 @@ class ExecutionSandbox:
         return self.path_sandbox.relative(path)
 
     def build_env(self, extra_env: dict[str, str] | None = None) -> dict[str, str]:
-        env = {key: value for key, value in os.environ.items() if not _is_sensitive_env_key(key)}
+        env = {key: value for key, value in os.environ.items() if not _contains_sensitive_keyword(key)}
         for key, value in (extra_env or {}).items():
-            if not _is_sensitive_env_key(key):
+            if not _contains_sensitive_keyword(str(key)):
                 env[str(key)] = str(value)
         return env
 
@@ -55,7 +55,7 @@ class ExecutionSandbox:
             key = str(raw_key)
             if not _ENV_KEY_RE.fullmatch(key):
                 raise ValueError(f"环境变量名不合法：{key}")
-            if _is_sensitive_env_key(key):
+            if _contains_sensitive_keyword(key):
                 rejected.append(key)
                 continue
             if not isinstance(raw_value, str):
@@ -97,5 +97,9 @@ class ExecutionSandbox:
 
 
 def _is_sensitive_env_key(key: str) -> bool:
+    return _contains_sensitive_keyword(key)
+
+
+def _contains_sensitive_keyword(key: str) -> bool:
     normalized = key.upper()
     return any(keyword in normalized for keyword in _SENSITIVE_ENV_KEYWORDS)

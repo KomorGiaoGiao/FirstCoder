@@ -208,6 +208,48 @@ def test_aider_chain_records_task_a_once_then_replays_it_for_all_b_arms(tmp_path
     assert not (tmp_path / "runs" / "test" / "a-to-b" / "capture" / "project").exists()
 
 
+def test_aider_chain_capture_provider_error_persists_all_arms_and_cleans_capture(tmp_path: Path, monkeypatch) -> None:
+    import benchmark.task_boundary_compaction.runner as runner
+
+    task_a = _aider_task(tmp_path, "task-a")
+    task_b = _aider_task(tmp_path, "task-b")
+    chain = AiderChainCase(
+        benchmark_case=BenchmarkCase(
+            case_id="capture-failure",
+            kind="aider_chain",
+            turns=(TurnSpec("任务 B：解决独立题", "new"), TurnSpec("继续任务 B：验证", "same")),
+            verify_command=("__aider_docker_verifier__",),
+            expected_boundary=True,
+        ),
+        chain_type="natural",
+        a_tasks=(task_a,),
+        b_task=task_b,
+        a_turns=("任务 A：只分析 task-a",),
+    )
+
+    class FailingCaptureProvider(_ChainProvider):
+        def complete(self, request: ChatRequest) -> ChatResponse:
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(runner, "_run_aider_verifier", lambda **_kwargs: pytest.fail("must not verify"))
+    results = run_aider_chain_case(
+        chain,
+        arms=tuple(Arm),
+        config=_run_config(tmp_path, provider_factory=FailingCaptureProvider),
+    )
+
+    assert [result.arm for result in results] == list(Arm)
+    assert all(result.status == "provider_error" for result in results)
+    assert all(result.verifier_exit_code is None for result in results)
+    for result in results:
+        trial_root = Path(result.artifact_paths["trial_root"])
+        assert (trial_root / "result.json").is_file()
+        assert json.loads((trial_root / "events.json").read_text(encoding="utf-8")) == []
+        assert not (trial_root / "project").exists()
+        assert not (trial_root / "data").exists()
+    assert not (tmp_path / "runs" / "test" / "capture-failure" / "capture" / "project").exists()
+
+
 def test_aider_chain_event_artifacts_start_after_cloned_task_a_events(tmp_path: Path) -> None:
     store = JsonlSessionStore(tmp_path / "data")
     for event_id, event_type, payload in (

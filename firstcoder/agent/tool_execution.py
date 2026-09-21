@@ -203,9 +203,14 @@ class ToolExecutor:
 
             if self.can_execute_in_parallel(tool_call):
                 batch_end = self.parallel_readonly_batch_end(tool_calls, index)
-                results = self.execute_parallel_readonly_batch(tool_calls[index:batch_end])
-                for batch_tool_call, result in zip(tool_calls[index:batch_end], results, strict=True):
-                    self._record_result(batch_tool_call, result, state=state)
+                batch = tool_calls[index:batch_end]
+                if len(batch) == 1:
+                    result = self.execute_single(batch[0])
+                    self._record_result(batch[0], result, state=state)
+                else:
+                    results = self.execute_parallel_readonly_batch(batch)
+                    for batch_tool_call, result in zip(batch, results, strict=True):
+                        self._record_result(batch_tool_call, result, state=state)
                 index = batch_end
                 continue
 
@@ -540,15 +545,35 @@ class ToolExecutor:
         return result
 
     def execute_parallel_readonly_batch(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
+        """Execute a batch of read-only tools in parallel.
+
+        Permission has already been confirmed ALLOW by ``can_execute_in_parallel``
+        before reaching this method.  Use ``execute_tool_call_after_permission_
+        confirmation`` to skip the redundant permission re-check inside the
+        PermissionAwareToolRegistry and go straight to the underlying executor.
+        """
+
         self._check_cancelled()
         for tool_call in tool_calls:
             self._emit_event("started", tool_call)
         with ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
-            results = list(executor.map(self.execute_with_cancellation_context, tool_calls))
+            results = list(executor.map(self._execute_parallel_tool, tool_calls))
         for tool_call, result in zip(tool_calls, results, strict=True):
             self._emit_event("finished", tool_call, result=result)
         self._check_cancelled()
         return results
+
+    def _execute_parallel_tool(self, tool_call: ToolCall) -> ToolResult:
+        """Execute one tool call in a parallel batch without re-checking permission.
+
+        The caller already verified ALLOW before entering the batch.  This avoids
+        the second ``registry.preflight`` + ``permission_manager.preflight`` round
+        trip that ``execute_tool_call`` would otherwise perform.
+        """
+
+        self._check_cancelled()
+        with cancellation_context(self.cancellation_token):
+            return self.session.execute_tool_call_after_permission_confirmation(tool_call)
 
     def execute_with_cancellation_context(self, tool_call: ToolCall) -> ToolResult:
         self._check_cancelled()

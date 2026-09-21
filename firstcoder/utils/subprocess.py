@@ -9,12 +9,18 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from firstcoder.runtime.cancellation import CancellationToken
 from firstcoder.utils.text import truncate_head_tail
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 
 
 @dataclass(slots=True)
@@ -84,6 +90,7 @@ def _run_command_with_process_group(
             encoding="utf-8",
             errors="replace",
             **_process_group_kwargs(),
+            **_resource_limit_kwargs(),
         )
     except OSError as exc:
         return CommandResult(
@@ -164,6 +171,26 @@ def _process_group_kwargs() -> dict[str, int | bool]:
     if os.name == "nt":
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
+
+
+def _resource_limit_kwargs() -> dict[str, object]:
+    """Apply CPU/memory rlimits to child processes on POSIX."""
+
+    if os.name == "nt" or resource is None:
+        return {}
+
+    def _apply_limits() -> None:
+        resource.setrlimit(resource.RLIMIT_CPU, (_MAX_CHILD_CPU_SECONDS, _MAX_CHILD_CPU_SECONDS))
+        resource.setrlimit(resource.RLIMIT_NPROC, (_MAX_CHILD_PROCESSES, _MAX_CHILD_PROCESSES))
+        if sys.platform == "linux":
+            resource.setrlimit(resource.RLIMIT_AS, (_MAX_CHILD_MEMORY_BYTES, _MAX_CHILD_MEMORY_BYTES))
+
+    return {"preexec_fn": _apply_limits}
+
+
+_MAX_CHILD_MEMORY_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+_MAX_CHILD_CPU_SECONDS = 3600
+_MAX_CHILD_PROCESSES = 512
 
 
 def process_group_kwargs() -> dict[str, int | bool]:

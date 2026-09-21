@@ -165,15 +165,15 @@ def test_shell_requires_confirmation_except_aggressive_known_verification(tmp_pa
     policy = DefaultPermissionPolicy(tmp_path)
 
     standard = policy.decide(
-        _request(PermissionAction.EXECUTE_SHELL, "pytest tests", cwd=tmp_path),
+        _request(PermissionAction.EXECUTE_SHELL, "ruff check .", cwd=tmp_path),
         mode=PermissionMode.STANDARD,
     )
     aggressive = policy.decide(
-        _request(PermissionAction.EXECUTE_SHELL, "pytest tests", cwd=tmp_path),
+        _request(PermissionAction.EXECUTE_SHELL, "ruff check .", cwd=tmp_path),
         mode=PermissionMode.AGGRESSIVE,
     )
     outside_cwd = policy.decide(
-        _request(PermissionAction.EXECUTE_SHELL, "pytest tests", cwd=tmp_path.parent),
+        _request(PermissionAction.EXECUTE_SHELL, "ruff check .", cwd=tmp_path.parent),
         mode=PermissionMode.AGGRESSIVE,
     )
 
@@ -186,6 +186,22 @@ def test_aggressive_allows_common_project_local_shell_commands(tmp_path) -> None
     policy = DefaultPermissionPolicy(tmp_path)
 
     allowed_commands = (
+        "ruff check .",
+        "mypy firstcoder",
+        "git status",
+        "git diff",
+        "git log",
+    )
+
+    for command in allowed_commands:
+        decision = policy.decide(
+            _request(PermissionAction.EXECUTE_SHELL, command, cwd=tmp_path),
+            mode=PermissionMode.AGGRESSIVE,
+        )
+        assert decision.kind == PermissionDecisionKind.ALLOW, command
+
+    requires_confirmation = (
+        "pytest",
         "python -m pytest -q",
         "python3 -m pytest tests",
         "git apply p1.patch",
@@ -197,12 +213,12 @@ def test_aggressive_allows_common_project_local_shell_commands(tmp_path) -> None
         "make test",
     )
 
-    for command in allowed_commands:
+    for command in requires_confirmation:
         decision = policy.decide(
             _request(PermissionAction.EXECUTE_SHELL, command, cwd=tmp_path),
             mode=PermissionMode.AGGRESSIVE,
         )
-        assert decision.kind == PermissionDecisionKind.ALLOW, command
+        assert decision.kind == PermissionDecisionKind.ASK, command
 
 
 def test_aggressive_shell_with_control_operator_requires_confirmation(tmp_path) -> None:

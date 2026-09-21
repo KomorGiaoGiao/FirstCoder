@@ -24,21 +24,11 @@ _SENSITIVE_FILENAMES = {".env"}
 _SENSITIVE_SUFFIXES = {".pem", ".key"}
 _READONLY_GIT_COMMANDS = {"status", "diff", "log"}
 _AGGRESSIVE_ALLOWED_COMMANDS = (
-    "pytest",
-    "python -m pytest",
-    "python3 -m pytest",
     "ruff",
     "mypy",
     "git status",
     "git diff",
     "git log",
-    "git apply",
-    "npm test",
-    "pnpm test",
-    "yarn test",
-    "go test",
-    "cargo test",
-    "make test",
 )
 _DANGEROUS_SHELL_PATTERN = re.compile(
     r"^\s*(?:rm|sudo|curl|wget|chmod|chown|python3?\s+-m\s+pip|pip3?)\b"
