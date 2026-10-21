@@ -30,6 +30,7 @@ class ModelStateStore:
         self.recent_limit = recent_limit
 
     def load(self) -> ModelSelectionState:
+        """读取偏好; 文件缺失/损坏/结构不对一律回落到空状态, 绝不抛给启动路径。"""
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
@@ -92,7 +93,7 @@ class ModelStateStore:
                 os.fsync(handle.fileno())
             Path(temporary_path).replace(self.path)
         except OSError:
-            # A preference write failure should not break a model switch.
+            # 偏好写失败不应阻断模型切换, 静默忽略。
             return
         finally:
             if temporary_path is not None:

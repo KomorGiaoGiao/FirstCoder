@@ -39,6 +39,12 @@ class BudgetProvider(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
+    """slash 命令的执行结果。
+
+    action 是命令层(纯逻辑, 不碰 widget) 通知 TUI 做 UI 副作用的通道,
+    由 FirstCoderApp._handle_command_action 消费。
+    """
+
     handled: bool
     output: str = ""
     action: dict[str, Any] | None = None
@@ -54,16 +60,25 @@ class ContextCommandHandler:
     inspector: ContextInspector = ContextInspector()
 
     def handle(self, text: str) -> CommandResult:
+        """按空白归一化后的整串精确匹配: /context -> /compact status -> /compact。
+
+        注意裸 /compact 在 TUI 里会被 FirstCoderApp._submit_composer 提前拦截放进
+        worker 执行(压缩可能调模型做摘要, 不能阻塞 UI 线程), 这里的分支主要服务
+        非 TUI 调用方与测试。全部不匹配返回 handled=False 让位给后续 handler。
+        """
         command = text.strip()
         if not command.startswith("/"):
             return CommandResult(handled=False)
 
+        # 多空格归一, "/compact   status" 也能匹配
         normalized = " ".join(command.split())
         if normalized == "/context":
+            # 只读巡检: 窗口/水位/checkpoint/归档等全景
             report = self._inspect()
             return CommandResult(handled=True, output=_render_context_report(report))
 
         if normalized == "/compact status":
+            # 只读巡检: 自动压缩开关、失败原因、近期压缩事件
             report = self._inspect()
             return CommandResult(handled=True, output=_render_compact_status(report))
 
@@ -146,6 +161,10 @@ def _render_compact_status(report: ContextInspectionReport) -> str:
 
 
 def _manual_target_tokens(budget: ContextBudget) -> int | None:
+    """手动 compact 的目标 token 数: 压到低水位与当前 60% 的较小者, 但不越过固定开销。
+
+    输入已经很小(<=2000) 或压不下去时返回 None, 让 manager 判断为无需压缩。
+    """
     if budget.input_tokens <= 2_000:
         return None
     proposed = min(budget.low_watermark - 1, int(budget.input_tokens * 0.6))

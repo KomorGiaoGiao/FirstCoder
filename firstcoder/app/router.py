@@ -10,15 +10,15 @@ from firstcoder.app.ports import CommandHandlerLike
 
 @dataclass(slots=True)
 class CompositeCommandHandler:
+    """按注册顺序委托各 handler, 第一个 handled 的胜出; 未匹配的 "/" 输入报 Unknown command。"""
+
     handlers: list[CommandHandlerLike]
 
     def handle(self, text: str) -> CommandResult:
-        handled_any = False
         for handler in self.handlers:
             result = handler.handle(text)
             if result.handled:
                 return result
-            handled_any = handled_any or result.handled
         if text.strip().startswith("/"):
             return CommandResult(handled=True, output=f"Unknown command: {' '.join(text.strip().split())}")
-        return CommandResult(handled=handled_any)
+        return CommandResult(handled=False)

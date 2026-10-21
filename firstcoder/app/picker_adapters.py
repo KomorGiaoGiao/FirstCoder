@@ -1,4 +1,8 @@
-"""Command-specific adapters for the reusable TUI picker."""
+"""可复用 picker 的命令适配器。
+
+每种 picker kind 各有一个 item 工厂(action dict -> TuiPickerItem); picker_command
+把选中项回译成 slash command, 让 picker 选择与普通命令走同一条处理路径。
+"""
 
 from __future__ import annotations
 

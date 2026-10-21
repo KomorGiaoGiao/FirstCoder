@@ -1,29 +1,42 @@
-"""Permission prompt rendering and answer parsing for the TUI."""
+"""TUI 权限确认卡的渲染与用户回答解析。
+
+回答解析分三层: "reject: <反馈>" 前缀 > 数字/英文别名映射 > 匹配 pending.options
+里的具体选项 id/label。返回 None 表示无法解析, 由调用方重打选项重问。
+"""
 
 from __future__ import annotations
+
+
+# 选项 id -> 展示编号的统一映射。permission_prompt_text 的确认卡编号和
+# permission_choice_for_text 的数字别名都从它派生, 避免两处硬编码漂移。
+_OPTION_NUMBERS = {
+    "deny": 1,
+    "allow_once": 2,
+    "allow_always_same_scope": 3,
+    "reject_with_feedback": 4,
+}
 
 
 def permission_choice_for_text(text: str, pending) -> str | None:
     normalized = text.strip().lower().replace(" ", "_")
     raw = text.strip()
     if raw.lower().startswith(("reject:", "reject_with_feedback:")):
+        # 拒绝并带反馈, 反馈原文回传给 agent。
         return f"reject_with_feedback: {raw.split(':', 1)[1].strip()}"
     aliases = {
-        "1": "deny",
         "no": "deny",
         "deny": "deny",
-        "4": "reject_with_feedback",
         "reject": "reject_with_feedback",
         "reject_with_feedback": "reject_with_feedback",
-        "2": "allow_once",
         "allow_once": "allow_once",
         "once": "allow_once",
         "allow": "allow_once",
-        "3": "allow_always_same_scope",
         "allow_always": "allow_always_same_scope",
         "always": "allow_always_same_scope",
         "allow_always_same_scope": "allow_always_same_scope",
     }
+    # 数字别名由统一编号映射派生, 保证和确认卡上展示的编号一致
+    aliases.update({str(number): option_id for option_id, number in _OPTION_NUMBERS.items()})
     if normalized in aliases:
         return aliases[normalized]
     for option in getattr(pending, "options", []) or []:
@@ -41,6 +54,10 @@ def permission_options_text(pending) -> str:
 
 
 def permission_prompt_text(pending) -> str:
+    """渲染权限确认卡: 标题(action/target/reason) + 编号选项 + reject 反馈提示。
+
+    展示编号取自模块级 _OPTION_NUMBERS, 与 permission_choice_for_text 的数字别名同源。
+    """
     payload = getattr(pending, "payload", {}) or {}
     action = str(payload.get("action") or "")
     target = str(payload.get("target") or "")
@@ -63,17 +80,11 @@ def permission_prompt_text(pending) -> str:
     options = list(getattr(pending, "options", []) or [])
     if options:
         choices: list[str] = []
-        option_numbers = {
-            "deny": 1,
-            "allow_once": 2,
-            "allow_always_same_scope": 3,
-            "reject_with_feedback": 4,
-        }
         for index, option in enumerate(options, start=1):
             label = str(getattr(option, "label", "") or getattr(option, "id", ""))
             option_id = str(getattr(option, "id", ""))
             rendered = permission_option_label(label, option_id)
-            choices.append(f"[{option_numbers.get(option_id, index)}] {rendered}")
+            choices.append(f"[{_OPTION_NUMBERS.get(option_id, index)}] {rendered}")
         lines.append("  " + "  ".join(choices))
     else:
         lines.append("  [1] deny  [2] allow once  [3] allow always")

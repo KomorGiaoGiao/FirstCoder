@@ -16,11 +16,11 @@ class SessionEvent:
     store 重放时如何把 payload 转成 `AgentMessage`。
     """
 
-    id: str
-    session_id: str
-    type: str
-    payload: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(default_factory=utc_now_iso)
+    id: str                                            # 事件唯一 id
+    session_id: str                                    # 所属会话, 决定追加到哪个 JSONL 文件
+    type: str                                          # 事件类型, 决定重放时折叠成什么 (见 store.py 的 EVENT_ROLE_MAP)
+    payload: dict[str, Any] = field(default_factory=dict)  # 事件载荷, 保持松散 dict, 各类型自带 schema
+    created_at: str = field(default_factory=utc_now_iso)   # 写入时的 UTC ISO 时间戳
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "SessionEvent":

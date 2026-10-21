@@ -1,4 +1,9 @@
-"""Rich rendering and input parsing for trusted pre-write reviews."""
+"""写前审查(prewrite review) 卡片的 Rich 渲染与输入解析。
+
+trusted 写操作在落盘前把 diff 作为权限确认 payload 交给 TUI; 这里的
+review all/clear/<path> 是纯 UI 展开命令, 只改本地展开状态, 不进入会话、
+不影响权限决策本身。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ def render_prewrite_review(
     max_diff_lines_per_file: int = DEFAULT_MAX_DIFF_LINES_PER_FILE,
     expand_first: bool = True,
 ) -> Text:
-    """Render one bounded review card with red/green unified diff lines."""
+    """渲染一张有界的审查卡: 红绿 unified diff, 默认只展开第一个文件。"""
 
     files = [item for item in _object_list(payload.get("files")) if isinstance(item, dict)]
     summary_value = payload.get("summary")

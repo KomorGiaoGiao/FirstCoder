@@ -122,9 +122,12 @@ def load_config(
     参与选择。
     """
 
-    load_dotenv()
-    env_snapshot = dict(os.environ if env is None else env)
+    # 只加载项目根目录下的 .env, 不用 load_dotenv() 的无参版本: 后者按
+    # "调用方文件所在目录向上查找", 对安装在 site-packages 里的包会漏掉
+    # 启动目录 (cwd) 下的 .env
     root = Path(project_root or os.getcwd()).resolve()
+    load_dotenv(root / ".env")
+    env_snapshot = dict(os.environ if env is None else env)
     global_path = default_global_config_path()
     project_path = root / PROJECT_CONFIG_NAME
     global_config = _read_toml_file(global_path)

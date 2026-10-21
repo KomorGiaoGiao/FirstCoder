@@ -1,4 +1,4 @@
-"""Activity-line, tool-event, and task-plan rendering helpers."""
+"""活动行、工具事件与任务面板的渲染助手。纯函数, 不持有状态。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from rich.markup import escape
 
 
 def activity_markup(text: str) -> str:
+    """按状态前缀给顶栏活动文本配色: waiting 琥珀, running 灰, error 红。"""
     color = "#7bba55"
     if text.startswith("waiting"):
         color = "#b28443"
@@ -45,6 +46,7 @@ def format_elapsed_time(elapsed_seconds: float) -> str:
 
 
 def tool_event_status(event) -> str | None:
+    """把工具事件 kind 映射为 UI 状态; 返回 None 表示该事件不值得渲染。"""
     kind = str(getattr(event, "kind", "") or "")
     if kind == "prewrite_review":
         return "review"
@@ -99,7 +101,10 @@ def post_tool_reasoning_text(name: str) -> str:
 
 
 def task_plan_panel_text(projection: Mapping[str, object]) -> str:
-    """Render one canonical task-plan projection without retaining plan data."""
+    """把会话任务计划投影渲染成面板文本; 纯渲染, 不持有 plan 数据。
+
+    linear 模式按 order 平铺; dag 模式按拓扑层级分组, 同层多任务标注 parallel。
+    """
 
     mode = str(projection["mode"])
     tasks = _task_lookup(projection.get("tasks"))
@@ -175,6 +180,7 @@ def _dependency_text(task: Mapping[str, object]) -> str:
 
 
 def tool_status_text(event) -> str:
+    """把工具事件压成一行中文状态文本; prewrite_review 返回空串(审查卡单独渲染)。"""
     tool_call = getattr(event, "tool_call", None)
     name = str(getattr(tool_call, "name", "") or "tool")
     kind = str(getattr(event, "kind", "") or "")

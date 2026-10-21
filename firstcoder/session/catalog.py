@@ -28,6 +28,8 @@ SAFE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def require_usable_record(record: SessionRecord) -> SessionRecord:
+    """resume 前的可用性闸门: corrupt/empty 的会话直接抛对应异常, ok 的放行。"""
+
     if record.status == "corrupt":
         raise SessionCorruptError(record.error or f"session is corrupt: {record.session_id}")
     if record.status == "empty":
@@ -68,6 +70,8 @@ class SessionCatalog:
 
 
 def record_from_path(path: Path) -> SessionRecord:
+    """从单个 JSONL 文件派生 SessionRecord; 损坏被隔离成 status="corrupt", 不影响其他会话。"""
+
     session_id = path.stem
     try:
         events = _load_events(path)
@@ -110,6 +114,12 @@ def _validate_session_id(session_id: str) -> None:
 
 
 def build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> SessionRecord:
+    """纯事件统计出 SessionRecord, 不碰磁盘。
+
+    统计来源: title 依次取 metadata.title -> 首条用户输入预览 -> session_id 兜底;
+    provider/model 取最近一条 assistant 消息的 metadata; 计数类字段按事件类型累加。
+    """
+
     metadata: dict[str, Any] = {}
     message_count = 0
     user_turn_count = 0
@@ -126,6 +136,7 @@ def build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> 
             metadata = merge_metadata_patch(metadata, event.payload)
 
         if event.type in MESSAGE_EVENT_TYPES:
+            # 消息计数只看三类消息事件; checkpoint/压缩等控制事件不算对话消息
             message_count += 1
 
         if event.type == "user_message":
@@ -148,6 +159,7 @@ def build_record_from_events(*, session_id: str, events: list[SessionEvent]) -> 
             checkpoint_count += 1
             latest_checkpoint_id = optional_str(event.payload.get("id")) or latest_checkpoint_id
 
+    # title 兜底链: 显式 metadata.title 优先, 其次是最近一条用户输入, 最后退化为 session_id
     title = optional_str(metadata.get("title")) or latest_user_input or session_id
     metadata["session_id"] = session_id
     return SessionRecord(

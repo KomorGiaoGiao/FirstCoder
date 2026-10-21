@@ -13,6 +13,8 @@ from firstcoder.context.models import AgentMessage, MessagePart, SessionView
 from firstcoder.planning.models import TaskPlan, TaskPlanError
 from firstcoder.planning.validation import validate_plan
 
+# 事件类型 -> 重放角色映射: 类型决定 replay 时折叠成哪种 AgentMessage.
+# background_notification 以 user 角色进入历史, 让模型把后台通知当作用户侧的新信息.
 EVENT_ROLE_MAP = {
     "user_message": "user",
     "assistant_message": "assistant",
@@ -35,17 +37,21 @@ class JsonlSessionStore:
     """
 
     def __init__(self, root: str | Path) -> None:
+        # 磁盘布局: root/sessions/<session_id>.jsonl 存事件日志, root/archives/<session_id>/
+        # 存压缩原文归档, root/session_index.json 是可重建的列表缓存.
         self.root = Path(root)
         self.sessions_dir = self.root / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def append_event(self, event: SessionEvent) -> None:
+        # 事实层写入只有一种姿势: 追加一行 JSON, 绝不改写已有行
         path = self._session_path(event.session_id)
         with path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(event.to_dict(), ensure_ascii=False, sort_keys=True))
             file.write("\n")
         from firstcoder.session.index import SessionIndex
 
+        # 顺带增量更新列表索引; 索引只是缓存, 就算失败事实也已落盘
         SessionIndex(self.root).update_event(event)
 
     def list_events(self, session_id: str) -> list[SessionEvent]:
@@ -197,6 +203,8 @@ def _apply_task_plan_payload(view: SessionView, event: SessionEvent) -> None:
     except (TaskPlanError, TypeError) as error:
         raise SessionStoreCorruptError(f"invalid task_plan_updated snapshot in event {event.id}: {error}") from error
 
+    # revision 链必须连续: previous_revision 等于当前 revision, 且每条只前进 1;
+    # 断链说明事件丢失或文件被改过, 重放出的计划不可信, 直接判损坏
     previous_revision = event.payload.get("previous_revision")
     revision = event.payload.get("revision")
     if isinstance(previous_revision, bool) or not isinstance(previous_revision, int) or isinstance(revision, bool) or not isinstance(revision, int):

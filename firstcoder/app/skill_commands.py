@@ -1,4 +1,4 @@
-"""Skill-related slash commands."""
+"""技能相关 slash 命令。"""
 
 from __future__ import annotations
 
@@ -11,11 +11,21 @@ from firstcoder.skills.models import SkillCatalog, SkillDefinition
 
 @dataclass(slots=True)
 class SkillCommandHandler:
-    """Handle `/skills`, `/skill <name>`, and exact `/<skill-name> <instruction>`."""
+    """处理 `/skills`、`/skill <name>`、`/skill-use <name>` 与精确的 `/<skill-name> <instruction>`。
+
+    catalog_provider 是惰性回调, 每次命令重新发现技能, 磁盘上新增技能不用重启。
+    """
 
     catalog_provider: Callable[[], SkillCatalog]
 
     def handle(self, text: str) -> CommandResult:
+        """按首个词精确匹配: /skills -> /skill -> /skill-use -> 精确技能名启动。
+
+        前三个是固定命令; 最后兜底把 `/<name>` 当作技能启动尝试(命中时注入
+        load_skill 指令走聊天路径)。都不匹配返回 handled=False 让位给后续
+        handler —— 这也是"任意 slash 命令没被技能认领时还能报 Unknown command"
+        的关键。
+        """
         command = text.strip()
         if not command.startswith("/"):
             return CommandResult(handled=False)
@@ -24,10 +34,13 @@ class SkillCommandHandler:
         name = parts[0]
         args = parts[1:]
         if name == "/skills":
+            # 列表 + skill_picker action, TUI 原地打开选择器
             return self._list_skills()
         if name == "/skill":
+            # 详情查看, _show_skill 内部做模糊匹配(name/path 精确或包含)
             return CommandResult(handled=True, output=self._show_skill(args))
         if name == "/skill-use":
+            # 引用技能: skill_referenced action 让 TUI 把 load_skill 提示插进输入框
             return self._reference_skill(args)
         launched = self._launch_exact_skill(name, command)
         if launched is not None:
@@ -92,6 +105,11 @@ class SkillCommandHandler:
         )
 
     def _launch_exact_skill(self, slash_name: str, command: str) -> CommandResult | None:
+        """精确匹配 `/<skill-name>`: 命中时注入 load_skill 指令文本当作用户消息发出去。
+
+        submit_chat action 让 TUI 把这段指令走正常聊天路径, 模型收到后调 load_skill
+        工具拿到技能正文再执行。技能未命中返回 None, 交给后续 handler。
+        """
         query = slash_name.removeprefix("/").lower()
         if not query:
             return None

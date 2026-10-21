@@ -52,7 +52,7 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 
 
 class McpManagerLike(Protocol):
-    """Factory-level MCP lifecycle and discovery boundary."""
+    """工厂层所需的 MCP 生命周期与发现接口边界。"""
 
     def connect_all(self) -> None: ...
 
@@ -72,7 +72,12 @@ class McpManagerLike(Protocol):
 
 
 class McpToolProvider:
-    """Merge a stable base tool set with the manager's current MCP catalog."""
+    """把稳定的内置工具集与 MCP manager 当前发现的工具目录合并。
+
+    每次调用都重新拉目录(MCP 连接是后台异步建立的, 工具集随时间变化)。
+    容错策略是降级而不是失败: manager.tools() 抛错时静默回退到内置工具,
+    单个工具适配失败(如名字冲突的 ValueError)只跳过该工具。
+    """
 
     def __init__(self, base_tools: list[Tool], manager: McpManagerLike, *, include_mcp: bool) -> None:
         self._base_tools = list(base_tools)
@@ -103,6 +108,7 @@ class McpToolProvider:
                     definition=tool.definition,
                 )
             )
+        # MCP 工具多时塞一个聚合搜索工具, 让模型按描述检索而不是全量进上下文。
         if entries and "mcp_tool_search" not in names:
             tools.append(create_mcp_tool_search(tuple(entries)))
         return tools
@@ -303,6 +309,8 @@ def create_firstcoder_app(
         catalog=model_catalog,
         state_store=model_state_store,
     )
+
+    # "/xxx"命令装配
     command_handler = CompositeCommandHandler(
         [
             HelpCommandHandler(),
@@ -341,6 +349,7 @@ def _shutdown_runtime(*, mcp_manager, background_manager, process_manager) -> No
 
 
 def _should_use_streaming(provider: ChatProvider, config: AppConfig) -> bool:
+    """provider 声称支持流式且配置未显式关闭时才启用; 默认开。"""
     if not bool(getattr(getattr(provider, "capabilities", None), "supports_streaming", False)):
         return False
     configured = config.get_provider_bool("streaming", env="FIRSTCODER_STREAMING", provider_name=provider.name)
@@ -350,6 +359,12 @@ def _should_use_streaming(provider: ChatProvider, config: AppConfig) -> bool:
 
 
 class RuntimeModelSwitcher:
+    """运行期模型切换: 换 provider 实例并同步到 chat_runner 与压缩摘要器。
+
+    compact_summarizer 也必须跟着换, 否则切换模型后上下文压缩仍在用旧模型出摘要。
+    persist=True 时把选择记入 ModelStateStore, 下次启动优先恢复。
+    """
+
     def __init__(
         self,
         *,
@@ -373,6 +388,7 @@ class RuntimeModelSwitcher:
         return _unique_model_states([ModelState(provider=profile.provider_id, model=profile.model_id) for profile in self._catalog.list()])
 
     def switch_model(self, spec: str) -> ModelState:
+        """/model <provider>/<model> 切换入口; 裸模型名只在目录可解析时可用。"""
         selected_provider, model = _parse_model_spec(spec)
         if selected_provider is None:
             raise ValueError("模型目录模式需要使用 <provider>/<model>")
@@ -416,6 +432,7 @@ def _initial_model_profile(
     model_spec: str | None,
     state: ModelSelectionState,
 ) -> ModelProfile:
+    """选启动模型, 优先级: 命令行显式指定 > 配置默认 > 上次选择 > 目录第一个。"""
     for ref in (model_spec, catalog.default_ref, state.last_selected):
         if ref and catalog.get(ref):
             return catalog.require(ref)

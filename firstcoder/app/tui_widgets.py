@@ -1,4 +1,4 @@
-"""Textual widgets used by the FirstCoder TUI."""
+"""FirstCoder TUI 用到的 Textual widgets。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,12 @@ from textual.widgets import Markdown, Static, TextArea
 
 
 class FirstCoderMarkdown(Markdown):
-    """Markdown output with selection gated by its render lifecycle."""
+    """可选中状态随渲染生命周期门控的 Markdown 输出。
+
+    流式更新期间 selectable=False, 配合 FirstCoderScreen 在选区命中时返回
+    (None, None) 封锁选择, 避免选中框跟着内容增长跳动; 段关闭后由
+    _finalize_stream_widget 调 set_selectable(True) 放开。
+    """
 
     ALLOW_SELECT = True
 
@@ -28,12 +33,14 @@ class FirstCoderMarkdown(Markdown):
         return self._selectable
 
     def set_selectable(self, selectable: bool) -> None:
-        """Toggle selection once no more Markdown updates will replace blocks."""
+        """确认不再有 Markdown 更新会替换 block 后, 才允许切换选中状态。"""
 
         self._selectable = selectable
         self.refresh()
 
 
+# Textual 的 Markdown 把各类 block 换成子类渲染; 这里动态子类化全部 block,
+# 让它们也带上 ALLOW_SELECT, 否则块级元素整段不可选。
 FirstCoderMarkdown.BLOCKS = {
     name: type(
         f"FirstCoder{block.__name__}",
@@ -45,11 +52,12 @@ FirstCoderMarkdown.BLOCKS = {
 
 
 class ComposerTextArea(TextArea):
-    """Multiline composer where Enter submits and Shift+Enter inserts a newline."""
+    """多行输入框: Enter 提交(发 Submitted 消息), Shift+Enter 换行。
 
-    # TextArea owns Ctrl+V, so an App binding is not invoked while the composer
-    # has focus. Route the key through this widget to stage clipboard images;
-    # terminal Paste events remain responsible for inserting plain text.
+    TextArea 自己吃掉了 Ctrl+V, App 级 binding 在输入框聚焦时不会触发, 所以
+    在这个 widget 上声明绑定并路由给 app 暂存剪贴板图片; 终端的 Paste 事件
+    仍负责插入普通文本。
+    """
     BINDINGS = [
         Binding("ctrl+v", "paste", show=False, priority=True),
         Binding("super+v", "paste", show=False, priority=True),
@@ -73,7 +81,7 @@ class ComposerTextArea(TextArea):
         await super()._on_key(event)
 
     async def _on_paste(self, event: events.Paste) -> None:
-        """Stage pasted files before TextArea inserts their paths as text."""
+        """先把粘贴内容交给 app 暂存为附件, 消费不了再让 TextArea 当文本插入。"""
 
         stage_attachments = getattr(self.app, "_stage_paste_attachments", None)
         if callable(stage_attachments) and stage_attachments(event.text):
@@ -83,14 +91,14 @@ class ComposerTextArea(TextArea):
         await super()._on_paste(event)
 
     def action_paste(self) -> None:
-        """Attach an OS clipboard image before the terminal emits its Paste event."""
+        """终端发出 Paste 事件前, 先尝试把系统剪贴板图片挂为附件。"""
 
         paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
         if callable(paste_attachment) and paste_attachment():
             return
 
     def action_paste_image(self) -> None:
-        """Attach an OS clipboard image and report when no image is available."""
+        """显式粘贴图片(F8): 剪贴板无图片时给出提示。"""
 
         paste_attachment = getattr(self.app, "_paste_composer_clipboard_image", None)
         if callable(paste_attachment) and paste_attachment():
@@ -101,11 +109,14 @@ class ComposerTextArea(TextArea):
 
 
 def _plain_static(content: object = "", *args, **kwargs) -> Static:
+    # 默认 markup=False: 输出区内容多为模型/工具文本, 不应当被当作 Rich markup 解析。
     kwargs.setdefault("markup", False)
     return Static(cast(VisualType, content), *args, **kwargs)
 
 
 def _observe_markdown_update(update_result) -> None:
+    """观察 Markdown.update 的 future: 取消(流式被打断)静默忽略, 真异常上抛。"""
+
     future = getattr(update_result, "_future", None)
     if future is None or not hasattr(future, "add_done_callback"):
         return
@@ -132,11 +143,11 @@ class FirstCoderTuiConfig:
 
 
 class FirstCoderScreen(Screen[None]):
-    """Notify the app after Textual has committed a new terminal size."""
+    """默认 Screen: 尺寸变化通知 app 刷顶栏, 并封锁流式 Markdown 上的选区。"""
 
     @staticmethod
     def _selection_is_blocked_by_streaming_markdown(widget) -> bool:
-        """Reject a leaf while any owning Markdown document is still updating."""
+        """叶子 widget 属于仍在更新的 Markdown 文档时, 拒绝其参与选区。"""
 
         parent = widget
         while parent is not None:

@@ -1,4 +1,7 @@
-"""Topbar markup helpers for the FirstCoder TUI."""
+"""FirstCoder TUI 顶栏的 markup 助手。
+
+PERMISSION_MODE_COLORS: 三种权限模式的顶栏配色, bypass 用警示红。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ def _markup_width(markup: str) -> int:
 
 
 def _truncate_markup(markup: str, width: int) -> str:
-    """Return styled markup constrained to one terminal row."""
+    """把带样式的 markup 截到一行终端宽度内。"""
     text = Text.from_markup(markup)
     text.truncate(max(0, width), overflow="ellipsis", pad=False)
     return text.markup
@@ -30,12 +33,12 @@ def _metadata_markup(values: list[tuple[str | None, str, int | None]], *, separa
 
 
 def _provider_name_markup(provider: str, *, glow_frame: int = 0) -> str:
-    """Render the provider-only part for ordinary, non-easter-egg labels."""
+    """渲染普通(非彩蛋) provider 标签。"""
     return f"[#7bba55]{escape(provider)}[/]"
 
 
 def _provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> str:
-    """Render provider/model labels, applying the optional Yuren easter egg."""
+    """渲染 provider/model 标签; 命中 Yuren 彩蛋时返回逐字流光版本。"""
     themed = yuren_topbar_themes.provider_model_markup(
         provider,
         model,

@@ -1,4 +1,8 @@
-"""Shared AgentSession assembly for new / resume / fork / factory paths."""
+"""new / resume / fork / factory 共用的 AgentSession 组装入口。
+
+窄入口: 只有这里知道怎么把 AGENTS.md, 技能目录, 权限管理器和沙箱组装成一个
+绑定项目的 AgentSession, app/UI 层不需要关心这些初始化细节。
+"""
 
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 
 @dataclass(slots=True)
 class SessionBootstrap:
-    """Single place that knows how to build a project-bound AgentSession."""
+    """唯一知道如何组装项目级 AgentSession 的地方。"""
 
     store: JsonlSessionStore
     project_root: str | Path
@@ -52,6 +56,7 @@ class SessionBootstrap:
         )
 
     def resume(self, session_id: str) -> AgentSession:
+        # 与 create 共用同一套组装参数, 差别只在 AgentSession.resume 走事件重放
         return AgentSession.resume(
             store=self.store,
             session_id=session_id,

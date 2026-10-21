@@ -1,4 +1,8 @@
-"""Lightweight session list index."""
+"""轻量 session 列表索引。
+
+索引只是缓存: 永远可以从 sessions/*.jsonl 事件日志重建, 损坏或版本不符时直接
+丢弃重来, 因此这里不需要任何崩溃恢复逻辑。
+"""
 
 from __future__ import annotations
 
@@ -18,13 +22,19 @@ _INDEX_LOCK = threading.RLock()
 
 
 class SessionIndex:
-    """Cache user-visible session summaries for fast `/sessions` and `/resume`."""
+    """缓存用户可见的会话摘要, 加速 /sessions 和 /resume 的列表查询。"""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.path = self.root / "session_index.json"
 
     def update_event(self, event: SessionEvent) -> None:
+        """事件落盘后增量更新对应会话的缓存记录。
+
+        记录由该会话的全部事件重新统计; 统计失败降级为 corrupt 记录写缓存,
+        绝不向上抛——索引失败不能阻塞事件持久化。
+        """
+
         from firstcoder.session.catalog import build_record_from_events
 
         with _INDEX_LOCK:
@@ -49,6 +59,8 @@ class SessionIndex:
         return sorted(records, key=session_sort_key, reverse=True)
 
     def rebuild(self) -> None:
+        """全量重建: 扫描 sessions/*.jsonl 重新统计, 索引文件丢失或损坏时的恢复路径。"""
+
         from firstcoder.session.catalog import record_from_path
 
         with _INDEX_LOCK:
@@ -61,6 +73,8 @@ class SessionIndex:
             self._write_data(data)
 
     def _reconcile_missing_files(self) -> None:
+        """补齐缓存里缺失的会话记录 (比如索引文件比某些日志文件老), 只增不删。"""
+
         from firstcoder.session.catalog import record_from_path
 
         sessions_dir = self.root / "sessions"
@@ -80,6 +94,7 @@ class SessionIndex:
                 self._write_data(data)
 
     def _load_data(self) -> dict[str, Any]:
+        # 缓存读不出来 (损坏/版本不符) 就返回空数据, 调用方会触发重建
         if not self.path.exists():
             return _empty_data()
         try:
@@ -94,6 +109,7 @@ class SessionIndex:
         return data
 
     def _write_data(self, data: dict[str, Any]) -> None:
+        # 先写 .tmp 再 replace: 原子替换, 进程中途死掉也不会留下半个索引文件
         self.root.mkdir(parents=True, exist_ok=True)
         tmp_path = self.path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")

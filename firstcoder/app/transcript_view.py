@@ -1,4 +1,8 @@
-"""Transcript entry classification and CSS helpers."""
+"""transcript 条目分类与 CSS class 映射。
+
+display_line_* 一组服务于"回放行"的分类: agent 侧 last_display_lines 是纯文本,
+靠 "Tool call:"/"Tool result:" 前缀识别工具行并映射回条目类型与状态。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ def display_line_kind(line: str) -> TuiEntryKind:
 
 
 def display_line_status(line: str) -> str | None:
+    # 回放行只有前缀可判: call 视为 running, result 视为 success。
     if line.startswith("Tool call:"):
         return "running"
     if line.startswith("Tool result:"):

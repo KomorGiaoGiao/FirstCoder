@@ -30,7 +30,11 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 
 @dataclass(slots=True)
 class ResumeService:
-    """把用户可见 resume 入口封装成窄服务。"""
+    """把用户可见 resume 入口封装成窄服务。
+
+    只串三步: 校验事件日志 -> bootstrap 组装 AgentSession -> 恢复 pending 权限确认;
+    视图重放、运行时恢复的细节都下沉给 context/bootstrap 层。
+    """
 
     store: JsonlSessionStore
     project_root: str | Path
@@ -41,6 +45,7 @@ class ResumeService:
     catalog: SessionCatalog | None = None
 
     def resume(self, session_id: str) -> ResumeResult:
+        # resume 永远从完整事件日志重放; checkpoint 只影响 provider 投影, 不是恢复边界
         validate_session_schema(self.store, session_id)
         catalog = self.catalog or SessionCatalog(self.store.root)
         record = require_usable_record(catalog.get_session(session_id))
@@ -59,11 +64,19 @@ class ResumeService:
 
 
 def validate_session_schema(store: JsonlSessionStore, session_id: str) -> None:
-    """Reject event logs that cannot be replayed by the current runtime."""
+    """拒绝当前运行时无法重放的事件日志, 四道校验依次是:
 
+    1. session_id 必须是安全的单文件名, 防路径穿越;
+    2. 日志文件必须存在且非空;
+    3. 每行必须是合法 JSON, 且首条是 session_created;
+    4. session_created 携带的 schema 版本必须与当前运行时匹配。
+    """
+
+    # 校验 1: id 防路径穿越
     if not is_safe_session_id(session_id):
         raise SessionInvalidIdError(f"invalid session_id: {session_id!r}")
     path = store.sessions_dir / f"{session_id}.jsonl"
+    # 校验 2: 文件存在 (非空在最后以 saw_content 判定)
     if not path.exists():
         raise SessionNotFoundError(f"session not found: {session_id}")
 
@@ -75,6 +88,7 @@ def validate_session_schema(store: JsonlSessionStore, session_id: str) -> None:
                 if not line.strip():
                     continue
                 saw_content = True
+                # 校验 3: 每行必须是合法 JSON
                 try:
                     envelope = json.loads(line)
                 except json.JSONDecodeError as error:
@@ -89,6 +103,7 @@ def validate_session_schema(store: JsonlSessionStore, session_id: str) -> None:
                     continue
                 saw_session_created = True
                 payload = envelope.get("payload")
+                # 校验 4: schema 版本必须匹配, 版本不符的旧日志不能用当前运行时重放
                 actual = payload.get("context_event_schema_version") if isinstance(payload, dict) else None
                 actual_version = str(actual) if actual is not None else "missing"
                 if actual_version != CONTEXT_EVENT_SCHEMA_VERSION:

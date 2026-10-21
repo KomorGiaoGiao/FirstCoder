@@ -77,12 +77,22 @@ __all__ = [
 
 @dataclass(slots=True)
 class _ActiveChatTurn:
+    """当前聊天 turn 的身份与令牌。
+
+    `token` 与 `FirstCoderApp._chat_turn_token` 配合做 stale 检测：打断或开启新 turn
+    会递增全局令牌，旧 worker 回调里的 token 随之失效，晚到的事件被静默丢弃。
+    """
+
     id: str
     token: int
 
 
 class FirstCoderApp(FirstCoderViewMixin, App[None]):
-    """最小 TUI 外壳。"""
+    """最小 TUI 外壳。
+
+    渲染与事件流助手拆在 `FirstCoderViewMixin`(tui_view.py)，这里只保留输入分发、
+    命令 action 路由、picker 交互、turn 生命周期(令牌/打断/权限恢复)。
+    """
 
     CSS_PATH = "tui.tcss"
     ALLOW_SELECT = True
@@ -116,18 +126,21 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         on_shutdown: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
+        # 外部注入的端口: 命令路由 / 聊天执行 / 当前会话, 均见 ports.py 的 Protocol。
         self.command_handler = command_handler
         self.chat_runner = chat_runner
         self.current_session = current_session
         self.config = config or FirstCoderTuiConfig()
         self._on_shutdown = on_shutdown
         self._shutdown_called = False
+        # turn 生命周期: busy/worker 互斥, _chat_turn_token 递增即作废旧 worker 的回调。
         self._chat_busy = False
         self._chat_worker = None
         self._compact_worker = None
         self._chat_turn_token = 0
         self._active_chat_turn: _ActiveChatTurn | None = None
         self._last_escape_at = 0.0
+        # 流式渲染状态: worker 线程入队 delta, UI 线程按 _stream_event_generation 防抖 drain。
         self._stream_reasoning_started = False
         self._stream_text_started = False
         self._stream_text_needs_newline = False
@@ -146,6 +159,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._pending_reasoning_text: list[str] = []
         self._reasoning_buffer = ""
         self._reasoning_is_fallback = False
+        # 动画状态: working(思考中) 与 activity(工具/流式) 各一套帧计时器。
         self._working_text = ""
         self._working_frame_index = 0
         self._working_timer: Timer | None = None
@@ -162,6 +176,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._activity_text = "idle · ready"
         self._input_history: list[str] = []
         self._input_history_index: int | None = None
+        # picker(会话/模型/技能选择) 与写前审查的展开状态, 都是纯 UI 状态。
         self._picker: TuiPickerState | None = None
         self._review_expanded_paths: set[str] = set()
         self._staged_attachments: list[UserAttachment] = []
@@ -195,18 +210,24 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._sync_provider_glow()
 
     def _on_terminal_resized(self) -> None:
-        """Refresh chrome after Textual has applied a terminal-size change."""
+        """终端尺寸变化已被 Textual 应用后, 刷新顶栏与欢迎页布局。"""
         self._refresh_session_subtitle()
         self._refresh_welcome_layout()
 
     def on_unmount(self) -> None:
         self._stop_welcome_particles()
         self._stop_provider_glow()
+        # 关闭钩子只触发一次, 重复 unmount(如测试重建 app) 不重复清理运行时。
         if not self._shutdown_called and self._on_shutdown is not None:
             self._shutdown_called = True
             self._on_shutdown()
 
     async def _submit_composer(self) -> None:
+        """输入框提交的总分发: picker 数字选择 > slash command > 普通聊天。
+
+        picker 激活时纯数字输入被当作选择消费掉(此时无法发送纯数字聊天内容);
+        其余输入先写入 transcript, 再按是否 "/" 开头分流到命令层或聊天层。
+        """
         input_widget = self.query_one("#input", TextArea)
         text = input_widget.text.strip()
         input_widget.clear()
@@ -214,11 +235,13 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         if not text and not attachments:
             return
         if not text:
+            # 只粘贴了附件没有文字时, 给模型一句默认指令。
             text = "请分析这些附件。"
         self._dismiss_welcome()
         self._record_input_history(text)
 
         if self._picker is not None and text.isdigit():
+            # picker 激活时纯数字优先视为选择项编号, 而不是聊天内容。
             if self._picker_select_number(int(text)):
                 return
 
@@ -250,6 +273,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._submit_chat_text(text, attachments=attachments)
 
     def _submit_manual_compact(self, text: str) -> None:
+        """手动 /compact: 与聊天 turn 互斥, 放进 worker 里跑, 避免压缩期间阻塞 UI。
+
+        command handler 是同步函数且内部可能调模型做摘要, 所以 worker 里再经
+        anyio.to_thread 甩到线程执行。
+        """
         if self._chat_busy:
             self._write_line("Chat is still running. Please wait before compacting context.", kind=TuiEntryKind.SYSTEM)
             return
@@ -265,6 +293,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             assert self.command_handler is not None
             result = await anyio.to_thread.run_sync(self.command_handler.handle, text)
         except asyncio.CancelledError:
+            # worker 被取消(退出/打断)属正常路径, 静默退出。
             return
         except Exception as exc:
             self._write_line(f"Manual compact error: {exc}", kind=TuiEntryKind.ERROR)
@@ -281,6 +310,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._set_activity("done")
 
     async def on_composer_text_area_submitted(self, event: ComposerTextArea.Submitted) -> None:
+        """Enter 提交: picker 激活时 Enter 意为"选中当前项", 否则走正常提交。"""
         event.stop()
         if self._picker is not None:
             self._picker_select_index(self._picker.selected_index)
@@ -288,6 +318,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         await self._submit_composer()
 
     def on_key(self, event: Key) -> None:
+        """全局按键路由: picker 按键 > Esc 打断 > 输入框聚焦时的历史召回(上下键)。"""
         if self._picker is not None and self._handle_picker_key(event):
             event.stop()
             event.prevent_default()
@@ -312,7 +343,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         input_widget.cursor_location = input_widget.document.end
 
     async def action_copy_output_or_quit(self) -> None:
-        """Copy a selection first; retain Ctrl+C as quit when nothing is selected."""
+        """Ctrl+C: 有选区先复制, 无选区才保留为退出。"""
 
         focused = self.focused
         if isinstance(focused, TextArea) and focused.selected_text:
@@ -328,11 +359,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
 
     def copy_to_clipboard(self, text: str) -> None:
         super().copy_to_clipboard(text)
+        # Textual 的剪贴板走 OSC52, macOS 上部分终端不生效, 用 pbcopy 兜底。
         if platform.system() == "Darwin":
             subprocess.run(["pbcopy"], input=text, text=True, check=False)
 
     def on_paste(self, event: events.Paste) -> None:
-        """Turn pasted file paths or clipboard images into pending attachments."""
+        """把粘贴的文件路径或剪贴板图片转为待发送附件。"""
 
         focused = getattr(self, "focused", None)
         if getattr(focused, "id", None) != "input":
@@ -342,7 +374,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             event.prevent_default()
 
     def _paste_composer_clipboard_image(self) -> bool:
-        """Attach a clipboard image when the focused TextArea handles Ctrl/Cmd+V."""
+        """焦点在输入框时, 处理 ComposerTextArea 转发来的 Ctrl/Cmd+V 图片粘贴。"""
 
         focused = getattr(self, "focused", None)
         if getattr(focused, "id", None) != "input":
@@ -350,7 +382,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return self._stage_paste_attachments(None)
 
     def _notify_clipboard_image_unavailable(self) -> None:
-        """Confirm that the paste shortcut ran when its clipboard image lookup failed."""
+        """剪贴板没有图片时给用户一个明确反馈, 确认快捷键已生效。"""
 
         self._write_line(
             "No clipboard image found. Copy an image first, or paste an image file path instead.",
@@ -358,6 +390,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         )
 
     def _stage_paste_attachments(self, paste_text: str | None) -> bool:
+        """解析粘贴内容为附件并暂存; 返回 True 表示该粘贴事件已被附件路径消费。
+
+        按 path 去重, 重复粘贴同一张图不会堆叠; 每次成功暂存输出 chip 提示。
+        """
         try:
             attachments = resolve_paste_attachments(paste_text)
         except (OSError, ValueError) as exc:
@@ -379,6 +415,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return self._chat_turn_token
 
     def _begin_active_chat_turn(self) -> int:
+        """开启新 turn: 递增令牌(旧 worker 回调全部失效)并重置耗时/工具计数。"""
         token = self._next_chat_turn_token()
         self._start_turn_metrics()
         self._active_chat_turn = _ActiveChatTurn(
@@ -388,6 +425,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return token
 
     def _resume_active_chat_turn(self) -> int:
+        """权限确认后恢复原 turn: 保留 turn 身份与耗时统计, 但换新令牌。
+
+        等待用户回答期间旧 worker 已结束; 回答后恢复执行时若沿用过期令牌, 任何
+        期间发生的打断都会让新 worker 的回调被误判为 stale, 所以必须发新令牌。
+        """
         active_turn = self._active_chat_turn
         if active_turn is not None:
             token = self._next_chat_turn_token()
@@ -400,6 +442,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return token == self._chat_turn_token
 
     def _finish_chat_turn(self, token: int) -> None:
+        """worker 收尾: 仅当令牌仍有效时复位 busy/worker。
+
+        存在 last_pending_input(等待权限确认)时保留 _active_chat_turn, 因为回答后
+        还要在同一 turn 里恢复执行。
+        """
         if not self._is_current_chat_turn(token):
             return
         self._refresh_task_plan_panel_from_current_session()
@@ -409,6 +456,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             self._active_chat_turn = None
 
     def _handle_escape_interrupt(self) -> bool:
+        """Esc 打断: chat 空闲时不消费; 运行中要求窗口期内连按两次确认。"""
         if not self._chat_busy:
             self._last_escape_at = 0.0
             return False
@@ -422,6 +470,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return True
 
     def _interrupt_chat_turn(self) -> None:
+        """打断当前 turn: 令牌 +1 使旧 worker 的所有回调变 stale, 再取消执行。
+
+        三道保险: 递增 token(UI 侧丢弃晚到事件) -> 丢弃已入队的流式 delta ->
+        通知 chat_runner 取消(agent 侧停止) -> 取消 Textual worker(协程侧停止)。
+        """
         self._chat_turn_token += 1
         self._discard_stream_deltas()
         cancel_current_turn = getattr(self.chat_runner, "cancel_current_turn", None)
@@ -440,6 +493,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._write_line("Interrupted current turn.", kind=TuiEntryKind.SYSTEM)
 
     def _record_input_history(self, text: str) -> None:
+        # 与上一条相同则不重复入栈, 避免连按提交刷出重复历史。
         if not self._input_history or self._input_history[-1] != text:
             self._input_history.append(text)
         self._input_history_index = None
@@ -464,6 +518,14 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return None
 
     def _submit_chat_text(self, text: str, *, attachments: list[UserAttachment] | None = None) -> None:
+        """普通聊天的入口路由, 按当前状态分四路。
+
+        1. chat 忙: 不排队新 turn, 而是把文本作为 guidance 注入运行中的 turn;
+        2. 有挂起的权限确认: 先匹配写前审查的纯 UI 命令(review all/clear/<path>,
+        只改展开状态不进会话), 再按 1/2/3/4 解析为权限选择, 无法解析就重打选项
+        重问, 解析成功则恢复原 turn;
+        3. 以上都不是: 开新 turn。
+        """
         if self.chat_runner is None:
             self._write_line("普通聊天入口尚未接入 AgentLoop。", kind=TuiEntryKind.ERROR)
             return
@@ -503,6 +565,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                     return
             choice = permission_choice_for_text(text, pending)
             if choice is None:
+                # 不是有效选项: 重打选项卡等用户再答, 不推进任何状态。
                 self._write_line(permission_options_text(pending), kind=TuiEntryKind.PERMISSION)
                 return
             self._chat_busy = True
@@ -515,6 +578,13 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._chat_worker = self.run_worker(self._run_chat_turn(text, token, attachments=attachments))
 
     def _handle_command_action(self, action: dict[str, Any] | None, *, output: str = "") -> bool:
+        """执行命令层经 CommandResult.action 带上来的 UI 副作用。
+
+        action 是命令层(纯逻辑, 不碰 widget) 通知 TUI 做事的唯一通道:
+        submit_chat 注入文本当用户消息; new_session 清屏; *_picker 打开选择器;
+        replay_session 重放会话; model_changed 刷顶栏; skill_referenced 把技能
+        引用插进输入框。
+        """
         if not action:
             return False
         action_type = action.get("type")
@@ -621,6 +691,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         return True
 
     def _picker_select_index(self, index: int) -> None:
+        """选中 picker 项: 回译成对应 slash command 走命令层, 复用同一套命令路径。"""
         picker = self._picker
         if picker is None or self.command_handler is None:
             return
@@ -663,6 +734,10 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         input_widget.focus()
 
     def _replace_last_command_output(self, text: str) -> None:
+        """原地更新最后一条 COMMAND 条目(picker 重绘用), 找不到就追加一行。
+
+        entry.widget 为 None 说明输出区是测试替身, 只能整段重渲 transcript。
+        """
         for entry in reversed(self.transcript.entries):
             if entry.kind == TuiEntryKind.COMMAND:
                 entry.body = text
@@ -682,6 +757,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._remove_output_children()
 
     def _rerender_transcript(self) -> None:
+        """清空输出区后按 transcript 条目重建; ASSISTANT 条目走 Markdown 渲染。"""
         entries = list(self.transcript.entries)
         self.transcript = TuiTranscript()
         self._remove_output_children()
@@ -692,6 +768,7 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                 self._write_line(entry.body, kind=entry.kind, label=entry.label, status=entry.status)
 
     def _remove_output_children(self) -> None:
+        # 真实 Textual 容器有 remove_children; 测试替身只有 children 列表, 逐个 remove。
         output = self.query_one("#output")
         if hasattr(output, "remove_children"):
             output.remove_children()
@@ -703,6 +780,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
                     remove()
 
     def _replay_current_session(self) -> None:
+        """resume/fork 后从 session view 重建整屏渲染。
+
+        view 是会话历史的投影: user 消息前缀 ">", assistant 文本走 Markdown,
+        tool_call/tool_result 压成一行工具状态。重放完同步 pending input 并重画
+        权限卡, 保证恢复到"等待权限确认"的会话时 UI 也停在同一步。
+        """
         current_session = self.current_session
         if current_session is None:
             return
@@ -754,6 +837,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         self._write_pending_input()
 
     async def _resume_permission_turn(self, request_id: str, answer: str, token: int) -> None:
+        """权限确认回答后的恢复 worker: 重新安装带 token 的 handler 再续跑。
+
+        与 _run_chat_turn 同构: CancelledError(被打断)静默退出; 异常只在令牌仍有
+        效时写错误行; finally 恢复旧 handler 并收尾 turn; 响应只在令牌有效时落屏。
+        """
         previous_stream_handler = None
         previous_tool_handler = None
         try:
@@ -785,6 +873,11 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> None:
+        """一个完整聊天 turn 的 worker: 安装 handler -> 跑 runner -> 校验令牌后落屏。
+
+        handler 在 worker 内安装/恢复而不是常驻, 是因为每个 turn 的 token 不同,
+        且恢复旧 handler 可以让测试替身或外层监听者不受污染。
+        """
         previous_stream_handler = None
         previous_tool_handler = None
         try:
@@ -819,6 +912,12 @@ class FirstCoderApp(FirstCoderViewMixin, App[None]):
             self._write_chat_response(response)
 
     def _write_chat_response(self, response) -> None:
+        """turn 结束后落屏: 与已流式渲染的内容去重, 再补 display_lines 里漏掉的行。
+
+        流式期间文本和工具行已经直播过了, display_lines 是 agent 侧的完整记录,
+        直接全打会重复, 所以: 流式文本段用 normalize 后的内容比对剔除; 本轮见过
+        实时工具事件则剔除 display_lines 里的工具行; 两者都发生时整份跳过。
+        """
         self._drain_stream_deltas()
         display_lines = list(getattr(self.chat_runner, "last_display_lines", []) or [])
         content = getattr(response, "content", "")

@@ -299,11 +299,16 @@ class AgentLoop:
         )
 
     def _resume_with_user_input_sync(self, request_id: str, answer: str) -> AgentTurnResult:
-        """用用户回答恢复一个暂停中的权限确认。
+        """用用户回答恢复一个暂停中的权限确认, 然后继续工具循环。
 
-        普通 `ask_user` 第一版仍通过“下一条用户消息”继续；权限确认不能这样做，
-        因为模型原始 tool_call 已经在历史里等待一个匹配的 tool_result。这里必须先
-        用本地 pending 状态补齐最终 tool_result，再继续下一次 provider 调用。
+        为什么需要专门通道: 暂停时模型的 tool_call 已经落库, 但还没有配对的
+        tool_result, 历史处于悬空状态; 而 provider API 要求 assistant(tool_calls)
+        后面必须紧跟每个 tool_call_id 对应的 tool_result。如果像普通 ask_user 那样
+        把用户的"同意/拒绝"当成下一条 user 消息直接追加, 序列就不合法, API 会拒绝。
+
+        所以这里做的是"补洞": 按 request_id 从 session 找到 pending 的原始 tool_call
+        (不信 UI 回传参数), 根据回答补齐最终 tool_result (拒绝则造拒绝结果, 同意则
+        真正执行), 落库闭合历史后, 再进入工具循环继续问模型。
         """
 
         try:
@@ -313,6 +318,8 @@ class AgentLoop:
             raise
 
     def _resume_with_user_input_sync_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        # 恢复不算新一轮对话: 只有 pending 匹配时才重置计时器, 且不清空护栏计数,
+        # 让这次恢复仍然占用原来那一轮的预算 (详见 _begin_turn)
         pending = self.session.pending_permission_execution
         if pending is not None and pending.request_id == request_id:
             self._begin_turn(new_user_turn=False)
@@ -323,11 +330,15 @@ class AgentLoop:
             return self._complete_turn(self._limit_response(exc.reason))
         except AgentCancelledError:
             return self._complete_turn(self._interrupted_response())
+        # 核心一步: 按回答补齐悬空的 tool_result (拒绝则造拒绝结果, 同意则执行原始
+        # tool_call), 落库闭合历史. 返回非 None 说明 pending 不存在等异常, 直接收尾
         result = self._append_permission_resume_result(request_id, answer)
         if result is not None:
             return result
+        # 权限悬空已由上面补齐; 这里再对账一遍, 修复取消/崩溃留下的其他悬空 tool_call
         self._repair_interrupted_tool_calls_before_provider_request()
         self._check_cancelled()
+        # 历史合法后重新进入工具循环, 带着补全的 tool_result 继续问模型
         return self._run_tool_loop_interactive(self._complete_once_with_recovery)
 
     async def _resume_with_user_input_streaming(self, request_id: str, answer: str) -> AgentTurnResult:
@@ -340,6 +351,11 @@ class AgentLoop:
             raise
 
     async def _resume_with_user_input_streaming_impl(self, request_id: str, answer: str) -> AgentTurnResult:
+        """同步路径 (_resume_with_user_input_sync_impl) 的流式镜像, 步骤一一对应:
+
+        恢复计时 (不算新一轮) -> 超时/取消检查 -> 补洞落库 -> 进流式工具循环。
+        """
+
         pending = self.session.pending_permission_execution
         if pending is not None and pending.request_id == request_id:
             self._begin_turn(new_user_turn=False)
@@ -454,17 +470,28 @@ class AgentLoop:
                 )
 
     def _append_permission_resume_result(self, request_id: str, answer: str) -> AgentTurnResult | None:
+        """补洞主流程: 校验 pending -> 按回答得到 tool_result -> 落库收尾。
+
+        返回 None 表示悬空 tool_call 已闭合, 调用方应继续工具循环; 返回
+        AgentTurnResult 表示前置校验失败 (无匹配 pending / 无权限管理器),
+        直接作为本轮结果返回。
+        """
+
         pending = self._pending_permission_for_resume(request_id)
         if isinstance(pending, AgentTurnResult):
             return pending
+        # 被拦下的路径 (拒绝 / 预览失效) 在这里直接得到合成 tool_result, 不会执行工具
         result = self._prepare_permission_resume(pending, answer)
         if result is None:
+            # 放行: 真正执行 session 保存的原始 tool_call, 拿到真实结果
             result = self._execute_resumed_permission_tool_call(pending)
             self._emit_finished_permission_resume(pending, result)
         self._finish_permission_resume(pending, result)
         return None
 
     async def _append_permission_resume_result_async(self, request_id: str, answer: str) -> AgentTurnResult | None:
+        """同步版的异步镜像: 步骤完全一致, 仅把工具执行丢到线程里避免阻塞事件循环。"""
+
         pending = self._pending_permission_for_resume(request_id)
         if isinstance(pending, AgentTurnResult):
             return pending
@@ -479,6 +506,12 @@ class AgentLoop:
         self,
         request_id: str,
     ) -> PendingPermissionExecution | AgentTurnResult:
+        """按 request_id 在 session 运行期状态里找待恢复的 pending。
+
+        找不到 (或不匹配, 比如 UI 拿过期 id 重放) 就造一个错误收尾结果返回,
+        用返回值而不是异常表达失败, 让调用方统一走"直接返回"分支。
+        """
+
         pending = self.session.pending_permission_execution
         if pending is None or pending.request_id != request_id:
             return AgentTurnResult(
@@ -507,6 +540,12 @@ class AgentLoop:
         pending: PendingPermissionExecution,
         answer: str,
     ) -> ToolResult | None:
+        """先判定这个回答要不要拦住执行, 并发观测事件。
+
+        返回 ToolResult: 被拦 (用户拒绝 / 写前预览失效), 调用方直接用该结果补洞;
+        返回 None: 放行, 调用方接着执行原始 tool_call。
+        """
+
         result = self._blocked_permission_resume_result(pending, answer)
         if result is not None:
             self._emit_tool_event(
@@ -533,6 +572,8 @@ class AgentLoop:
         pending: PendingPermissionExecution,
         result: ToolResult,
     ) -> None:
+        """补发执行完成的观测事件, 让 UI 能把 started -> finished 配成一对。"""
+
         self._emit_tool_event(
             "finished",
             pending.tool_call,
@@ -541,9 +582,13 @@ class AgentLoop:
         )
 
     def _finish_permission_resume(self, pending: PendingPermissionExecution, result: ToolResult) -> None:
+        """收尾: 清 pending, 把最终 tool_result 落库, 悬空 tool_call 至此闭合。"""
+
         self.session.pending_permission_execution = None
         self._observe_tool_result(pending.tool_call, result)
         self.session.append_tool_result(tool_call=pending.tool_call, result=result)
+        # 当初同批次里排在这个需审批调用之后的调用被跳过了, 这里补记为 skipped,
+        # 保证同批每个 tool_call 都有配对的收尾记录
         self._emit_settlements("skipped", self.tool_settlement.append_skipped(pending.skipped_tool_calls))
         self._tool_rounds_completed += 1
 
@@ -552,6 +597,13 @@ class AgentLoop:
         pending: PendingPermissionExecution,
         answer: str,
     ):
+        """把用户的文本回答解析成权限决定 (ALLOW / DENY)。
+
+        review_only (写前预览) 走单独分支: 同意前重新预检一遍, 防止预览期间文件
+        或策略变化, 避免"批准了一个现在已经不允许的修改"。未知回答一律按 DENY
+        处理 (fail-closed)。
+        """
+
         permission_manager = self.session.permission_manager
         assert permission_manager is not None
         if not pending.review_only:
@@ -574,6 +626,12 @@ class AgentLoop:
         pending: PendingPermissionExecution,
         answer: str,
     ) -> ToolResult | None:
+        """算出"不执行原调用"时的合成 tool_result; 返回 None 表示放行执行。
+
+        三种拦截: ① 用户拒绝; ② 写前预览本身就失败; ③ 预览已过期 (确认期间
+        目标文件被改动, 旧 diff 不可信)。
+        """
+
         decision = self._resolve_pending_confirmation(pending, answer)
         if decision.kind == PermissionDecisionKind.DENY:
             return make_permission_denied_result(

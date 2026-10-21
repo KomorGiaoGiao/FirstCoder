@@ -1,4 +1,8 @@
-"""Model switching slash command."""
+"""模型切换 slash 命令。
+
+/model 无参打开选择器(model_picker action), /model <provider>/<model> 直接切换
+(model_changed action 通知 TUI 刷顶栏)。
+"""
 
 from __future__ import annotations
 
@@ -24,15 +28,22 @@ class ModelSwitcherLike(Protocol):
 
 @dataclass(slots=True)
 class ModelCommandHandler:
-    """Handle `/model` commands for quick provider/model switching."""
+    """处理 `/model` 的 provider/model 快捷切换。"""
 
     switcher: ModelSwitcherLike
 
     def handle(self, text: str) -> CommandResult:
+        """按空白归一化后的整串匹配: /model|/models 打开选择器, /model <spec> 直接切换。
+
+        handled=False 只出现在两种"不归我管"的情况: 不是 slash 输入, 或不是
+        /model 开头, 让位给后续 handler。切换失败(模型未配置等) 返回
+        handled=True 并把错误当输出展示, 不再让别的 handler 试。
+        """
         command = " ".join(text.strip().split())
         if not command.startswith("/"):
             return CommandResult(handled=False)
         if command in {"/model", "/models"}:
+            # 无参: action 携带候选列表与当前项索引, TUI 原地渲染 model picker
             current = self.switcher.current_model()
             choices = self.switcher.model_choices()
             return CommandResult(
@@ -59,6 +70,7 @@ class ModelCommandHandler:
             handled=True,
             output=f"Model switched: {switched.provider}/{switched.model}",
             action={
+                # TUI 收到后刷新顶栏的 provider/model 显示
                 "type": "model_changed",
                 "provider": switched.provider,
                 "model": switched.model,

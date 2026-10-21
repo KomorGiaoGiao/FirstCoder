@@ -170,6 +170,10 @@ class AgentChatRunner:
         return before_count, token, self._create_loop(token, streaming=streaming)
 
     def _resume_turn(self, *, streaming: bool = False) -> tuple[int, CancellationToken, AgentLoop]:
+        """恢复被权限确认暂停的 turn, 优先复用暂停中的 AgentLoop。
+
+        复用让预算与中途状态延续; 仅当 loop 缺失或 session 已被 /resume 换掉时才新建。
+        """
         before_count = len(self.current_session.rebuild_view().messages)
         self.last_pending_input = None
         token = self._begin_cancellable_turn()
@@ -178,10 +182,10 @@ class AgentChatRunner:
             loop = self._create_loop(token, streaming=streaming)
         else:
             loop.replace_cancellation_token(token)
-            # Permission resume reuses the paused AgentLoop so budget/state continue.
-            # TUI/runtime may have installed fresher stream/tool handlers (and a new
-            # turn token) while waiting for the user; rebind them or live UI events
-            # keep going through the pre-pause closures and get dropped as stale.
+            # 权限恢复复用暂停中的 AgentLoop, 预算与状态得以延续。
+            # 等待用户期间 TUI 可能已安装了更新的 stream/tool handler(以及新的 turn
+            # token); 不重新绑定的话, 实时 UI 事件会继续走暂停前的旧闭包, 被当作
+            # stale 丢弃。
             loop.stream_event_handler = self.stream_event_handler if streaming else None
             loop.tool_event_handler = self.tool_event_handler
             if streaming:
@@ -204,7 +208,7 @@ class AgentChatRunner:
         *,
         attachments: list[UserAttachment] | None = None,
     ) -> ChatResponse:
-        """Synchronous outer boundary for CLI callers."""
+        """同步聊天入口, 供 CLI 等非 Textual 调用方使用。"""
 
         return asyncio.run(self.arun_user_turn(content, attachments=attachments))
 
@@ -212,7 +216,7 @@ class AgentChatRunner:
         """恢复等待中的权限确认。
 
         普通 `ask_user` 后续仍走新的用户消息；权限确认必须先补齐原 tool_call 的
-        tool_result，所以 UI 通过这个入口把用户选择交回 agent loop。
+        tool_result, 所以 UI 通过这个入口把用户选择交回 agent loop。
         """
 
         return asyncio.run(self.aresume_with_user_input(request_id, answer))
@@ -278,15 +282,22 @@ class AgentChatRunner:
         return self._waiting_for_input_response(result.pending_input)
 
     def _current_tools(self) -> list[Tool] | None:
-        """Resolve tools once per loop so the session registry sees that same list."""
+        """每次建 loop 时解析一次工具集, 让 session registry 看到的也是同一份列表。"""
 
         return self.tools_provider() if self.tools_provider is not None else self.tools
 
     def context_budget(self, view):
-        loop = self.loops[-1] if self.loops else self._create_loop(CancellationToken())
+        # 无历史 loop 时为算预算临时建一个, 不登记进 self.loops, 避免泄漏
+        loop = self.loops[-1] if self.loops else self._create_loop(CancellationToken(), track=False)
         return loop.context_budget_for_view(view)
 
-    def _create_loop(self, cancellation_token: CancellationToken, *, streaming: bool = False) -> AgentLoop:
+    def _create_loop(
+        self,
+        cancellation_token: CancellationToken,
+        *,
+        streaming: bool = False,
+        track: bool = True,
+    ) -> AgentLoop:
         kwargs = {
             "session": self.current_session.session,
             "provider": self.provider,
@@ -307,10 +318,17 @@ class AgentChatRunner:
         if streaming:
             kwargs["stream_event_handler"] = self.stream_event_handler
         loop = AgentLoop(**kwargs)
-        self.loops.append(loop)
+        if track:
+            self.loops.append(loop)
         return loop
 
     def _waiting_for_input_response(self, pending: UserInputRequest | None) -> ChatResponse:
+        """为"等待用户输入"伪造一个 ChatResponse。
+
+        loop 因权限确认/ask_user 暂停时没有真实模型响应, 但 TUI 的 turn 收尾路径
+        需要一个返回值; TUI 实际靠 last_pending_input 渲染权限卡, 这个 response
+        只承担 finish_reason 信号与占位文本。
+        """
         response = ChatResponse(
             provider=self.provider.name,
             model=self.provider.model,
@@ -340,6 +358,8 @@ def _display_lines_from_messages(messages: list[AgentMessage]) -> list[str]:
 
 
 def _run_coroutine_in_thread(coro):
+    """在 worker 线程里跑独立 asyncio.run: Textual 占着主事件循环, AgentLoop 的协程
+    只能在自己的线程事件循环里执行。"""
     return asyncio.run(coro)
 
 

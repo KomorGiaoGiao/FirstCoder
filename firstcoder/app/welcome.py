@@ -1,10 +1,11 @@
-"""Welcome screen renderables."""
+"""欢迎屏渲染: 像素 logo + 粒子帧动画, 小终端退化为文字标。"""
 
 from __future__ import annotations
 
 from rich.align import Align
 from rich.text import Text
 
+# logo 像素画的调色板: 字符 -> 颜色。
 WELCOME_LOGO_PALETTE = {
     "M": "#81e8bb",
     "C": "#18cfcb",
@@ -67,7 +68,10 @@ WELCOME_PARTICLE_FRAMES = (
 
 
 def welcome_renderable(*, compact: bool = False, particle_frame: int = 0) -> Align:
-    """Render the animated logo, or a small-screen wordmark when space is tight."""
+    """渲染动画 logo; 空间不足(compact) 时退化为小字号文字标。
+
+    粒子帧只把粒子写到 "." 空位上, 不覆盖 logo 本体像素。
+    """
     if compact:
         return Align.center(
             Text.assemble(

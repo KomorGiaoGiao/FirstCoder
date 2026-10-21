@@ -21,6 +21,8 @@ from firstcoder.utils.text import ellipsis_truncate, optional_str
 
 @dataclass(slots=True)
 class TranscriptBuilder:
+    """从事件流构建只读 Transcript: 逐事件转成展示条目, 正文过脱敏, 不写回任何状态。"""
+
     store: JsonlSessionStore
     catalog: SessionCatalog | None = None
 
@@ -28,6 +30,7 @@ class TranscriptBuilder:
         resolved = options or ShareOptions()
         catalog = self.catalog or SessionCatalog(self.store.root)
         record = catalog.get_session(session_id)
+        # 损坏/空会话不导出: transcript 是给人看的, 宁可报错也不导出残缺内容
         if record.status == "corrupt":
             raise SessionCorruptError(record.error or f"session is corrupt: {session_id}")
         if record.status == "empty":
@@ -48,6 +51,9 @@ def _entries_from_event(
     options: ShareOptions,
     redaction: RedactionOptions,
 ) -> list[TranscriptEntry]:
+    """按事件类型路由成 TranscriptEntry: 消息事件按 part 拆条, checkpoint 直接展示摘要,
+    compaction 只在显式开启时给一条元数据条目, 其余事件类型不出现在 transcript 里。"""
+
     if event.type in {"user_message", "assistant_message", "tool_result"}:
         return _message_entries(event, options=options, redaction=redaction)
     if event.type == "checkpoint_created":
@@ -141,6 +147,7 @@ def _tool_result_content(
     status = "success" if metadata.get("ok", True) else "failed"
     archive_id = optional_str(metadata.get("archive_id"))
     if archive_id:
+        # 已归档的结果不导出原文: 只给状态 + archive_id + 摘要, preview 也受 archive_mode 限制
         lines = [
             f"Status: {status}",
             f"Archive: {archive_id}",

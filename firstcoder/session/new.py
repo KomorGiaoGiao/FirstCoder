@@ -1,4 +1,4 @@
-"""Create fresh interactive sessions."""
+"""创建全新的交互会话 (窄入口)。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 
 @dataclass(slots=True)
 class NewSessionService:
-    """Create a new session and return its runtime object."""
+    """创建新会话并返回运行时对象; 可选标题以元数据事件追加, 不污染对话正文。"""
 
     store: JsonlSessionStore
     project_root: str | Path

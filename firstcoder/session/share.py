@@ -29,6 +29,8 @@ class SessionShareService:
         output_path: str | Path | None = None,
         options: ShareOptions | None = None,
     ) -> Path:
+        """导出流程: 事件日志 -> 只读 Transcript -> 渲染 Markdown -> 写盘, 全程不改源会话。"""
+
         resolved = options or ShareOptions()
         builder = self.transcript_builder or TranscriptBuilder(self.store)
         transcript = builder.build(session_id, resolved)
@@ -39,6 +41,8 @@ class SessionShareService:
 
 
 def _render_markdown(transcript: Transcript, *, options: ShareOptions) -> str:
+    # ShareOptions 默认保守: 不展开工具结果, archive 只给占位/预览; 标题, workspace 等
+    # 元数据同样要过 redact_text, 因为标题往往就是用户输入, 可能含路径或密钥
     session = transcript.session
     redaction = RedactionOptions(redact_paths=options.redact_paths, redact_secrets=options.redact_secrets)
     title = redact_text(session.title, redaction)
@@ -74,6 +78,8 @@ def _render_entry(entry: TranscriptEntry, *, include_event_ids: bool) -> list[st
 
 
 def _fenced(content: str) -> str:
+    """围栏长度随内容自适应: 内容里出现 ``` 时加长围栏, 保证代码块不会被内容顶穿。"""
+
     fence = "```"
     while fence in content:
         fence += "`"

@@ -1,4 +1,7 @@
-"""Stable protocol ports for the app/TUI boundary."""
+"""app/TUI 边界的稳定 Protocol 端口。
+
+TUI 只依赖这些 Protocol, 不直接引用 agent/session 的具体实现, 方便测试替身注入。
+"""
 
 from __future__ import annotations
 

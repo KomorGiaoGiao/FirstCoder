@@ -1,4 +1,7 @@
-"""Rendering, activity, and streaming helpers for the Textual TUI."""
+"""Textual TUI 的渲染、活动行与流式输出助手。
+
+本模块是纯渲染层: 只把 chat_runner 的事件与响应画到屏幕上, 不改任何业务状态。
+"""
 
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ from firstcoder.tools.hidden import HIDDEN_TOOL_STATUS_NAMES
 
 
 def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:
+    """把 COMMAND 条目里 "> " 开头的引用行染成品牌色, 其余原样返回。"""
     if entry.kind != TuiEntryKind.COMMAND:
         return rendered
     if not any(line.startswith("> ") for line in rendered.splitlines()):
@@ -65,11 +69,10 @@ def _entry_renderable(entry: TuiTranscriptEntry, rendered: str) -> object:
 
 
 class FirstCoderViewMixin:
-    """Rendering, activity, and streaming helpers for the Textual app.
+    """Textual app 的渲染、活动行与流式输出助手。
 
-    This mixin is combined with Textual's ``App`` in ``FirstCoderApp``. The
-    annotations below declare the members the concrete app subclass provides;
-    they exist so the mixin type-checks on its own.
+    该 mixin 在 ``FirstCoderApp`` 中与 Textual 的 ``App`` 组合。下面的类型标注
+    声明了由具体 app 子类提供的成员, 只为让 mixin 自身能通过类型检查。
     """
 
     current_session: CurrentSessionLike | None
@@ -122,6 +125,7 @@ class FirstCoderViewMixin:
             topbar.update(self._topbar_text(session_id=session_id, width=self._topbar_width()))
 
     def _topbar_width(self) -> int | None:
+        # 测试替身通常没有 size, 返回 None 走不限宽分支。
         size = getattr(self, "size", None)
         width = getattr(size, "width", None)
         if isinstance(width, int) and width > 0:
@@ -129,6 +133,11 @@ class FirstCoderViewMixin:
         return None
 
     def _topbar_text(self, *, session_id: str | None = None, width: int | None = None) -> str:
+        """拼顶栏: 品牌 + 活动状态 + provider/model/权限模式/cwd。
+
+        给定宽度时逐级压缩: 先尝试居中布局, 空间不足则截断状态文本, 再不足截断
+        metadata, 保证顶栏永远不超宽。
+        """
         if session_id is None and self.current_session is not None:
             session_id = self.current_session.session_id
         brand = "[#7bba55]FirstCoder[/]"
@@ -185,6 +194,12 @@ class FirstCoderViewMixin:
         return f"{brand}{' ' * left_gap}{status}{' ' * right_gap}{metadata}"
 
     def _install_stream_event_handler(self, token: int | None = None):
+        """把流式事件 handler 绑到 chat_runner 上, 返回被替换的旧 handler。
+
+        每次安装都重置全部流式状态并递增 generation: 上一个 turn 残留在队列里的
+        delta 因 generation 不匹配而被丢弃。handler 链式调用旧 handler(不吞掉别的
+        监听者), 再用 turn token 做 stale 检测, 只处理 reasoning_delta/text_delta。
+        """
         if self.chat_runner is None or not hasattr(self.chat_runner, "stream_event_handler"):
             return None
         previous_handler = getattr(self.chat_runner, "stream_event_handler", None)
@@ -288,6 +303,12 @@ class FirstCoderViewMixin:
             setattr(self.chat_runner, attr, previous_handler)
 
     def _call_ui_thread(self, callback, *args, **kwargs):
+        """从任意线程安全地执行 UI 回调。
+
+        app 未运行(测试)或已在 UI 线程时直接同步调用; 否则经 call_from_thread
+        派发到 Textual 事件循环 —— chat_runner 的 stream/tool handler 都跑在
+        agent 线程里, 画屏操作必须跨过这条线程边界。
+        """
         if not getattr(self, "is_running", False):
             return callback(*args, **kwargs)
         if getattr(self, "_thread_id", None) == threading.get_ident():
@@ -301,6 +322,12 @@ class FirstCoderViewMixin:
         return self.call_later(callback, *args)
 
     def _enqueue_stream_delta(self, kind: str, text: str, generation: int) -> None:
+        """worker 线程侧: delta 入队, 并保证 UI 线程上有一次 drain 被调度。
+
+        generation 是防抖令牌: 安装新 handler 或 _discard_stream_deltas 会递增
+        _stream_event_generation, 旧 generation 的入队和 drain 全部静默丢弃。
+        _stream_event_dispatch_scheduled 保证同一时刻最多一个待执行的 drain。
+        """
         with self._stream_event_lock:
             if generation != self._stream_event_generation:
                 return
@@ -311,11 +338,17 @@ class FirstCoderViewMixin:
             self._stream_event_dispatch_scheduled = True
         if self._schedule_ui_callback(self._drain_stream_deltas, generation):
             return
+        # 调度失败(事件循环已停), 回滚标记, 允许后续 delta 重新调度。
         with self._stream_event_lock:
             if generation == self._stream_event_generation:
                 self._stream_event_dispatch_scheduled = False
 
     def _drain_stream_deltas(self, generation: int | None = None) -> None:
+        """UI 线程侧: 取出本 generation 累积的 delta 并渲染。
+
+        drain 过程中可能有新 delta 入队(has_pending), 此时再排一次 drain 续传,
+        直到队列清空才把 dispatch 标记复位。
+        """
         generation = self._stream_event_generation if generation is None else generation
         with self._stream_event_lock:
             if generation != self._stream_event_generation:
@@ -350,6 +383,7 @@ class FirstCoderViewMixin:
             self._pending_reasoning_text.clear()
 
     def _scroll_output_end_if_pinned(self, output) -> None:
+        """只有用户本就停在底部时才自动滚到底, 往上翻历史时不拽回去。"""
         if not hasattr(output, "scroll_end"):
             return
         scroll_y = float(getattr(output, "scroll_y", 0) or 0)
@@ -367,6 +401,7 @@ class FirstCoderViewMixin:
         label: str | None = None,
         status: str | None = None,
     ) -> TuiTranscriptEntry:
+        """所有屏幕行输出的统一入口: 先记 transcript(重放/重绘的事实来源), 再挂载 widget。"""
         entry = self.transcript.add(kind, text, label=label, status=status)
         classes = classes or entry_classes(entry)
         rendered = entry_plain_text(entry)
@@ -491,6 +526,11 @@ class FirstCoderViewMixin:
         self._refresh_topbar()
 
     def _record_tool_activity(self, event) -> None:
+        """把工具事件记入 transcript 活动列表, 并驱动活动行动画。
+
+        running 计入并发数并开 running 动画; success 短暂回到"思考中"(模型通常
+        还要基于结果继续推理); 其余终态显示静态状态行。
+        """
         tool_call = getattr(event, "tool_call", None)
         name = str(getattr(tool_call, "name", "") or "tool")
         status = tool_event_status(event) or "unknown"
@@ -531,6 +571,7 @@ class FirstCoderViewMixin:
             panel.add_class("hidden")
 
     def _render_task_plan_panel(self, task_plan: TaskPlan | None) -> None:
+        """按 plan revision 增量刷新任务面板; revision 未变时跳过, 避免每次工具事件都重排。"""
         panel = self.query_one("#task-plan-panel")
         if task_plan is None:
             panel.update("")
@@ -559,6 +600,12 @@ class FirstCoderViewMixin:
             output.write_line(text)
 
     def _write_pending_input(self) -> None:
+        """把 chat_runner 挂起的用户输入请求画到屏幕上。
+
+        这是 AgentLoop WAITING_FOR_USER_INPUT 的 UI 侧落点: 权限确认渲染审查卡
+        (如有 prewrite_review)与选项, 活动行切到 "waiting · permission"; 普通
+        ask_user 只展示问题文本。回答通过 _submit_chat_text 回到 chat_runner。
+        """
         pending = getattr(self.chat_runner, "last_pending_input", None)
         if pending is None:
             return
@@ -707,6 +754,12 @@ class FirstCoderViewMixin:
         return f"{text}{' ' * (width - len(text) - len(metrics))}{metrics}"
 
     def _append_stream_text(self, text: str) -> None:
+        """往当前流式段追加文本, 并节流刷新 Markdown widget。
+
+        首个 delta 立即渲染(尽快出字), 后续 delta 只更新 buffer, 由
+        STREAM_RENDER_INTERVAL_SECONDS 定时器合并刷新, 避免每个 delta 重排一次
+        Markdown。widget 以 selectable=False 挂载, 流式期间禁止选中。
+        """
         if self._stream_segment_closed_for_tool:
             self._start_new_stream_segment()
         self._stream_text_buffer += text
@@ -732,6 +785,7 @@ class FirstCoderViewMixin:
             output.write(f"{prefix}{text}")
 
     def _close_stream_segment_for_tool(self) -> None:
+        """工具事件到达时关闭当前流式段: 之后的文本会另起一个新段。"""
         self._drain_stream_deltas()
         if self._stream_text_widget is None and not self._stream_text_buffer:
             return
@@ -739,7 +793,12 @@ class FirstCoderViewMixin:
         self._stream_segment_closed_for_tool = True
 
     def _finalize_stream_widget(self) -> None:
-        """Finish a closed stream segment before allowing its Markdown selection."""
+        """关闭一段流式输出: 写入最终 Markdown 后解除选中封锁。
+
+        流式期间 FirstCoderMarkdown 以 selectable=False 挂载(见 FirstCoderScreen
+        的选区封锁), 避免选中框跟着内容增长跳动; 段关闭后才 set_selectable(True)。
+        有事件循环时经 worker 异步等待 pending_update 完成, 保证最终内容不乱序。
+        """
 
         widget = self._stream_text_widget
         if widget is None:
@@ -786,13 +845,14 @@ class FirstCoderViewMixin:
         )
 
     async def wait_for_stream_finalization(self, widget: FirstCoderMarkdown) -> None:
-        """Wait until a closed stream widget has its final Markdown and selection state."""
+        """等到指定流式 widget 的最终 Markdown 与可选中状态都就绪(测试用)。"""
 
         completion = self._stream_finalizations.get(widget)
         if completion is not None:
             await completion
 
     def _start_new_stream_segment(self) -> None:
+        """工具事件插入后开新的一段流式文本, 旧段已被 finalize 封锁。"""
         self._stream_text_buffer = ""
         self._stream_text_widget = None
         self._stream_text_entry = None

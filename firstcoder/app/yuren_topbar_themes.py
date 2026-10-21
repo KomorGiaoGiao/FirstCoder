@@ -1,10 +1,10 @@
-"""Yuren topbar easter-egg themes.
+"""Yuren 顶栏彩蛋主题。
 
-Keep this optional chrome effect isolated from the main TUI so palette and match
-rules can evolve or be removed without touching general provider rendering.
+这个可选的装饰效果与主 TUI 隔离, 调色板与匹配规则可以独立演进或删除,
+不影响普通 provider 的渲染。
 
-Trigger rule: provider display name must be exactly "Yuren", then model id must
-match an entry in MODEL_GLOW_PALETTES.
+触发规则: provider 显示名恰好是 "Yuren"(或 "yurenapi"), 且模型 id 命中
+MODEL_GLOW_PALETTES, 顶栏 provider/model 才会逐字流光。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ MODEL_GLOW_PALETTES: dict[str, tuple[str, ...]] = {
 
 
 def model_glow_palette(provider: str, model: str) -> tuple[str, ...] | None:
-    """Return the animated palette for a supported Yuren model, else None."""
+    """命中彩蛋时返回流光调色板, 否则 None。"""
 
     if provider not in PROVIDER_NAMES:
         return None
@@ -46,7 +46,10 @@ def should_animate(provider: str, model: str) -> bool:
 
 
 def provider_model_markup(provider: str, model: str, *, glow_frame: int = 0) -> str | None:
-    """Return Yuren glow markup when the easter egg applies; otherwise None."""
+    """彩蛋适用时返回流光 markup, 否则 None(调用方回落到普通渲染)。
+
+    model 的 glow_frame 偏移 provider 长度 + 1(斜杠), 让流光相位跨斜杠连续。
+    """
 
     palette = model_glow_palette(provider, model)
     if palette is None:

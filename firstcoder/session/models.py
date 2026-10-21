@@ -36,8 +36,8 @@ class SessionRecord:
     latest_user_input: str | None = None
     latest_assistant_output: str | None = None
     latest_checkpoint_id: str | None = None
-    status: SessionStatus | str = "ok"
-    error: str | None = None
+    status: SessionStatus | str = "ok"          # ok/empty/corrupt: 损坏隔离的标记, corrupt 会话仍可展示但不可 resume
+    error: str | None = None                    # status 非 ok 时的诊断信息 (如损坏原因)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -56,14 +56,14 @@ class ShareOptions:
     默认值保持保守：不展开工具结果，不读取 archive 原文，并脱敏路径和 secret。
     """
 
-    include_event_ids: bool = False
-    include_compaction_metadata: bool = False
-    include_tool_calls: bool = True
-    include_tool_results: bool = False
-    max_tool_result_chars: int = 1200
-    redact_paths: bool = True
-    redact_secrets: bool = True
-    archive_mode: ArchiveMode | str = "placeholder"
+    include_event_ids: bool = False              # 是否导出事件 id (默认不暴露内部标识)
+    include_compaction_metadata: bool = False    # 是否导出压缩过程元数据 (默认隐藏实现细节)
+    include_tool_calls: bool = True              # 工具调用参数导出 (展示 agent 做了什么)
+    include_tool_results: bool = False           # 工具结果默认不展开, 防止大段输出刷屏
+    max_tool_result_chars: int = 1200            # 工具结果导出的字符上限
+    redact_paths: bool = True                    # 脱敏本地绝对路径
+    redact_secrets: bool = True                  # 脱敏密钥/token 等
+    archive_mode: ArchiveMode | str = "placeholder"  # 已归档结果只给占位符; preview_only 才附带截断预览
 
 
 @dataclass(slots=True)

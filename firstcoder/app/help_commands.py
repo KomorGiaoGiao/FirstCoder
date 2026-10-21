@@ -1,4 +1,4 @@
-"""Help slash command."""
+"""/help 静态帮助文本。"""
 
 from __future__ import annotations
 
@@ -38,6 +38,11 @@ class HelpCommandHandler:
     """Render the current TUI slash command surface."""
 
     def handle(self, text: str) -> CommandResult:
+        """精确匹配 /help 返回静态帮助文本。
+
+        空白归一化后比较, 多余空格不影响匹配; 其他输入返回 handled=False 让位
+        给后续 handler。帮助文本是静态表, 新增命令时需同步维护 HELP_COMMANDS。
+        """
         command = " ".join(text.strip().split())
         if command != "/help":
             return CommandResult(handled=False)

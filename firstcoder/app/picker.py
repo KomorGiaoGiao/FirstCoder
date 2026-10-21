@@ -1,4 +1,8 @@
-"""Reusable TUI picker state and rendering helpers."""
+"""可复用的 TUI 选择器(picker) 状态与渲染助手。
+
+picker 是 transcript 里的一条可原地重绘的 COMMAND 条目: 上下键移动、Enter 选中、
+Esc 取消, 选中后由 picker_adapters 回译成 slash command 走正常命令路径。
+"""
 
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ class TuiPickerState:
     count_label: str = "items"
 
     def move(self, delta: int) -> None:
+        """移动选中项, 到顶/到底时停住不循环。"""
         if not self.items:
             self.selected_index = 0
             return
@@ -41,6 +46,7 @@ class TuiPickerState:
 
 
 def visible_picker_window(items: list[TuiPickerItem], *, selected_index: int, limit: int) -> tuple[int, list[TuiPickerItem]]:
+    """选中项贴底的滚动窗口: 向下选中项尽量停在窗口最后一行, 向上才翻页。"""
     if not items:
         return 0, []
     selected_index = max(0, min(selected_index, len(items) - 1))

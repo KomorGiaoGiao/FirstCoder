@@ -78,27 +78,27 @@ class AgentSession:
     """
 
     session_id: str
-    store: JsonlSessionStore
-    runtime_state: SessionRuntimeState
-    tool_registry: ToolRegistryLike
-    writer: SessionEventWriter
+    store: JsonlSessionStore              # append-only 事实层入口, 所有可恢复事实的最终归宿
+    runtime_state: SessionRuntimeState    # 运行期状态 (任务边界 hash, 压缩熔断, 已消费结果集合), 不落进自然语言消息
+    tool_registry: ToolRegistryLike       # session 级工具注册表, 绑定本会话的 runtime_state/turn 等上下文
+    writer: SessionEventWriter            # 事件写入器, 会话事实都经它追加进 JSONL
     agents_md: str = ""
     skill_catalog: SkillCatalog = field(default_factory=SkillCatalog)
     base_rules: str = DEFAULT_BASE_RULES
-    prompt_cache: PromptPrefixCache = field(default_factory=PromptPrefixCache)
+    prompt_cache: PromptPrefixCache = field(default_factory=PromptPrefixCache)  # system prefix 缓存, 输入指纹不变就复用
     prompt_builder: SystemPromptBuilder = field(default_factory=SystemPromptBuilder)
     provider_capability_overrides: dict[str, object] = field(default_factory=dict)
     permission_manager: PermissionManager | None = None
     permission_policy: dict[str, object] = field(default_factory=lambda: dict(DEFAULT_PERMISSION_POLICY))
     sandbox_access: SandboxAccess = field(default_factory=SandboxAccess)
-    known_message_ids: set[str] = field(default_factory=set)
-    turn_counter: int = 0
+    known_message_ids: set[str] = field(default_factory=set)  # 模型可引用的历史消息 id (task_boundary 锚点校验用), resume 时必须从视图灌回
+    turn_counter: int = 0                                     # 当前轮次计数, resume 时按 user 消息数推断
     mode: str = "default"
     benchmark_task: str = ""
     require_prewrite_review: bool = True
-    pending_permission_execution: PendingPermissionExecution | None = None
+    pending_permission_execution: PendingPermissionExecution | None = None  # 等用户确认的工具调用, resume 只重建状态, 绝不自动执行
     _tool_result_lock: RLock = field(default_factory=RLock, repr=False)
-    _tool_result_message_ids: dict[str, str] = field(default_factory=dict, repr=False)
+    _tool_result_message_ids: dict[str, str] = field(default_factory=dict, repr=False)  # tool_call_id -> message_id 去重索引, 保证结果写入幂等
 
     @classmethod
     def create(
@@ -204,9 +204,13 @@ class AgentSession:
         `known_message_ids`，否则恢复后的 task_boundary 工具会拒绝模型引用旧消息。
         """
 
+        # 恢复步骤一: 重放 runtime state (task hash, compact 熔断, 已消费结果集合)
         runtime_state = replay_runtime_state(store, session_id)
+        # 恢复步骤二: 重放事件日志, 重建内存视图 (消息 + checkpoint + task_plan)
         view = store.rebuild_session_view(session_id)
+        # 恢复步骤三: 灌入历史 message id, 否则 task_boundary 工具会拒绝模型引用旧消息
         known_message_ids = {message.id for message in view.messages}
+        # 恢复步骤四: 按 user 消息数推断下一轮 turn 编号, 让新事件的 created_turn 接上历史
         turn_counter = _infer_turn_counter(view.messages)
         writer = SessionEventWriter(store=store, session_id=session_id, current_turn=turn_counter)
         registry = create_session_tool_registry(
@@ -235,8 +239,10 @@ class AgentSession:
             sandbox_access=sandbox_access or SandboxAccess(),
             turn_counter=turn_counter,
             mode=permission_manager.mode.value if permission_manager is not None else "default",
+            # 恢复步骤五: 重建 tool_result 去重索引, resume 后重复写同一结果仍幂等
             _tool_result_message_ids=_tool_result_message_ids_from_view(view),
         )
+        # 恢复步骤六: 按权限模式同步沙箱策略, 恢复后的会话即刻可用
         session._sync_sandbox_access_with_mode()
         return session
 
@@ -253,6 +259,7 @@ class AgentSession:
             return None
 
         tool_call, skipped_tool_calls, persisted_review_only = pending[0]
+        # 只做权限预检重建确认请求, 不执行工具; 是否执行由用户确认后的另一条路径决定
         preflight = self.preflight_tool_call_permission(tool_call)
         if preflight is None:
             return None
@@ -347,7 +354,7 @@ class AgentSession:
         return entry.messages
 
     def set_benchmark_task(self, task: str) -> None:
-        """Attach the current isolated benchmark task to the system prompt."""
+        """把当前隔离的 benchmark 任务挂到 system prompt 上。"""
 
         self.benchmark_task = task.strip()
 
@@ -638,7 +645,7 @@ def _tool_call_from_part(part: MessagePart) -> ToolCall:
 
 
 def _tool_result_message_ids_from_view(view: SessionView) -> dict[str, str]:
-    """Index existing tool results so resumed sessions preserve idempotent settlement."""
+    """给已存在的 tool_result 建索引, 让 resume 后的会话保持结果写入幂等。"""
 
     result: dict[str, str] = {}
     for message in view.messages:

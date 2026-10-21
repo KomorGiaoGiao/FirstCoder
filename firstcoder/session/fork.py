@@ -1,4 +1,8 @@
-"""Fork existing sessions into new editable sessions."""
+"""把已有会话 fork 成一个新的可编辑会话。
+
+事件日志是 append-only 的, fork 只需要把源日志复制成一份新 id 的日志再补一条
+forked_from 元数据; 两边没有共享可变状态, 天然互相隔离。
+"""
 
 from __future__ import annotations
 
@@ -22,7 +26,7 @@ from firstcoder.utils.sandbox_access import SandboxAccess
 
 @dataclass(slots=True)
 class ForkSessionService:
-    """Copy a session event log and resume the copy."""
+    """复制一份会话事件日志, 并以新会话身份 resume 这份副本。"""
 
     store: JsonlSessionStore
     project_root: str | Path
@@ -33,6 +37,9 @@ class ForkSessionService:
     catalog: SessionCatalog | None = None
 
     def fork(self, source_session_id: str, *, title: str | None = None) -> ResumeResult:
+        """fork 五步: 校验源会话 -> 重写事件到新 id -> 写 forked_from 元数据 -> 拷贝归档 -> bootstrap resume。"""
+
+        # 第一步: 校验源会话, 损坏/空日志不允许 fork
         validate_session_schema(self.store, source_session_id)
         catalog = self.catalog or SessionCatalog(self.store.root)
         record = require_usable_record(catalog.get_session(source_session_id))
@@ -42,12 +49,15 @@ class ForkSessionService:
             raise SessionNotFoundError(f"session not found: {source_session_id}")
 
         forked_session_id = new_session_id()
+        # 第二步: 逐条重写事件 (新事件 id + 新 session id), 追加进新日志
         for event in events:
             self.store.append_event(_fork_event(event, source_session_id, forked_session_id))
+        # 第三步: 补一条 forked_from 元数据, 记录血缘和标题
         SessionEventWriter(store=self.store, session_id=forked_session_id).append_session_metadata_updated(
             forked_from=source_session_id,
             title=title or f"Fork of {record.title}",
         )
+        # 第四步: 拷贝压缩归档目录, 让占位符在新会话里也能取回原文
         self._copy_archives(source_session_id, forked_session_id)
 
         bootstrap = SessionBootstrap(
@@ -59,6 +69,7 @@ class ForkSessionService:
             sandbox_access=self.sandbox_access,
         )
         session = bootstrap.resume(forked_session_id)
+        # 第五步: 恢复 pending 权限确认 (只重建状态, 不执行工具), fork 即可继续对话
         session.restore_pending_permission_execution()
         return ResumeResult(session=session, record=catalog.get_session(forked_session_id))
 
@@ -82,6 +93,12 @@ def _fork_event(event: SessionEvent, source_session_id: str, forked_session_id: 
 
 
 def _rewrite_session_id(value, source_session_id: str, forked_session_id: str):
+    """递归替换 payload 里所有等于源 session_id 的字符串。
+
+    payload 深处可能内嵌对所属会话的引用 (如归档路径, checkpoint 元数据), 不换掉的话
+    fork 副本会指回旧会话; 只按精确相等替换, 不会误伤包含 id 子串的普通文本。
+    """
+
     if isinstance(value, dict):
         return {key: _rewrite_session_id(item, source_session_id, forked_session_id) for key, item in value.items()}
     if isinstance(value, list):
