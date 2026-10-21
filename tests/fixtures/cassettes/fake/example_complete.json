@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "metadata": {
+    "provider": "fake",
+    "model": "fake-model",
+    "recorded_at": "2026-10-21T09:19:41.064771+00:00"
+  },
+  "interactions": [
+    {
+      "kind": "complete",
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "示例问题",
+            "content_parts": null,
+            "name": null,
+            "tool_call_id": null,
+            "tool_calls": []
+          }
+        ],
+        "tools": [],
+        "tool_choice": "auto",
+        "temperature": null,
+        "max_tokens": null,
+        "extra_body": {}
+      },
+      "response": {
+        "provider": "fake",
+        "model": "fake-model",
+        "content": "示例回复",
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "usage": null,
+        "diagnostics": {
+          "reasoning": null,
+          "raw_finish_reason": null,
+          "warnings": []
+        }
+      }
+    }
+  ]
+}

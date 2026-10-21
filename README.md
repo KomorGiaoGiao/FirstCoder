@@ -220,6 +220,15 @@ Run a focused test file:
 .venv/bin/python -m pytest tests/test_app_tui.py -q
 ```
 
+### Provider cassettes (record/replay)
+
+`firstcoder/providers/cassette.py` provides a VCR-style `CassetteProvider` decorator: record real provider interactions once into JSON cassettes under `tests/fixtures/cassettes/`, then replay them in tests — no network, no API keys. Inspired by opencode's `@opencode/http-recorder`.
+
+- The mode is controlled by `FIRSTCODER_CASSETTE_MODE`: `auto` (default; replay when the cassette exists, record otherwise), `record`, `replay`, `off`. With `CI=true`, a missing cassette fails instead of recording.
+- In tests, use the `cassette_provider` fixture from `tests/conftest.py`. Replay claims the first unused matching interaction; interactions left unconsumed fail the test at close.
+- To refresh a cassette, delete the file and rerun its test, so the set of refreshed recordings stays visible and reviewable in the diff.
+- Cassettes are redacted locally before being written (API keys, phone numbers, ID numbers — reusing the PII redaction rules), but redaction is defense in depth; review cassette diffs before committing.
+
 ## Philosophy
 
 FirstCoder was built to answer a question most coding agents do not address:

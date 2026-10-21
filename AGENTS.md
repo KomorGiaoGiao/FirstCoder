@@ -37,7 +37,7 @@ Use standard Python style with 4-space indentation, explicit names, and small fu
 
 ## Testing Guidelines
 
-This repository uses pytest. Add or update tests for behavior changes, especially around agent loops, context recovery, permissions, providers, and tool execution. Run the narrowest relevant tests first, then the full suite for broad or cross-module changes. Avoid tests that depend on real API keys or network access; use fakes and fixtures instead.
+This repository uses pytest. Add or update tests for behavior changes, especially around agent loops, context recovery, permissions, providers, and tool execution. Run the narrowest relevant tests first, then the full suite for broad or cross-module changes. Avoid tests that depend on real API keys or network access; use fakes and fixtures instead. For provider integration tests, prefer replaying recorded cassettes (`firstcoder/providers/cassette.py`, fixtures in `tests/fixtures/cassettes/`) so the default run needs neither network nor credentials.
 
 ## Commit & Pull Request Guidelines
 

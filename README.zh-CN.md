@@ -218,6 +218,15 @@ python -m venv .venv
 .venv/bin/python -m pytest tests/test_app_tui.py -q
 ```
 
+### Provider 录制回放（cassette）
+
+`firstcoder/providers/cassette.py` 提供 VCR 式的 `CassetteProvider` 装饰器：把真实 provider 交互录制成 JSON cassette 提交到 `tests/fixtures/cassettes/`，之后测试默认回放——不联网、不需要 API key。借鉴自 opencode 的 `@opencode/http-recorder`。
+
+- 模式由 `FIRSTCODER_CASSETTE_MODE` 控制：`auto`（默认，有 cassette 回放、没有则录制）/ `record` / `replay` / `off`；`CI=true` 时缺失 cassette 直接失败而不是录制。
+- 测试里用 `tests/conftest.py` 的 `cassette_provider` fixture；回放按"认领第一条未消费的匹配交互"语义匹配请求，未消费的交互在结束时判失败。
+- 刷新 cassette 的方式是删除对应文件后重跑测试，让"哪些录制被更新"在 diff 中可见、可 review。
+- 落盘前会经过本地脱敏（API key、手机号、身份证号等，复用 PII 脱敏规则），但脱敏是纵深防御，提交前仍应检查 cassette diff。
+
 ## 设计理念
 
 FirstCoder 想回答的是一个很多 coding agent 不会正面回答的问题：
