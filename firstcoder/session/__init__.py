@@ -12,6 +12,7 @@ from firstcoder.session.errors import (
     SessionNotFoundError,
 )
 from firstcoder.session.models import (
+    PiiOptions,
     RedactionOptions,
     SessionRecord,
     ShareOptions,
@@ -22,6 +23,7 @@ from firstcoder.session.share import SessionShareService
 from firstcoder.session.transcript import TranscriptBuilder
 
 __all__ = [
+    "PiiOptions",
     "RedactionOptions",
     "SessionCorruptError",
     "SessionEmptyError",

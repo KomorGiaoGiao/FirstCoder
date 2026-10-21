@@ -88,6 +88,42 @@ def test_model_catalog_reads_context_window() -> None:
     assert profile.request.max_tokens == 8_192
 
 
+def test_pii_options_defaults_to_mask_on_share_and_transcript() -> None:
+    options = AppConfig(env={}).pii_options()
+
+    assert options.strategy == "mask"
+    assert options.surfaces == ("share", "transcript")
+
+
+def test_pii_options_project_config_overrides_global() -> None:
+    config = AppConfig(
+        env={},
+        global_config={"pii_strategy": "mask", "pii_surfaces": ["share", "transcript"]},
+        project_config={"pii_strategy": "partial", "pii_surfaces": ["share"]},
+    )
+
+    options = config.pii_options()
+
+    assert options.strategy == "partial"
+    assert options.surfaces == ("share",)
+
+
+def test_pii_options_empty_surfaces_disables_all_surfaces() -> None:
+    options = AppConfig(env={}, project_config={"pii_surfaces": []}).pii_options()
+
+    assert options.surfaces == ()
+
+
+def test_pii_options_rejects_unknown_strategy() -> None:
+    with pytest.raises(ValueError, match="pii_strategy"):
+        AppConfig(env={}, project_config={"pii_strategy": "scramble"}).pii_options()
+
+
+def test_pii_options_rejects_unknown_surface() -> None:
+    with pytest.raises(ValueError, match="pii_surfaces"):
+        AppConfig(env={}, project_config={"pii_surfaces": ["email"]}).pii_options()
+
+
 @pytest.mark.parametrize("value", [0, -1, True, "128000"])
 def test_model_catalog_rejects_invalid_context_window(value) -> None:
     config = AppConfig(

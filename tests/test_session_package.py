@@ -1,4 +1,5 @@
 from firstcoder.session import (
+    PiiOptions,
     RedactionOptions,
     SessionCorruptError,
     SessionEmptyError,
@@ -25,6 +26,7 @@ def test_session_package_exports_core_models_and_errors() -> None:
     assert transcript.entries[0].content == "你好"
     assert RedactionOptions().redact_paths is True
     assert ShareOptions().include_tool_results is False
+    assert PiiOptions().strategy == "mask"
     assert issubclass(SessionNotFoundError, SessionError)
     assert issubclass(SessionInvalidIdError, SessionError)
     assert issubclass(SessionEmptyError, SessionError)

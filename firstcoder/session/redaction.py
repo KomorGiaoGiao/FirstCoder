@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from firstcoder.session.models import RedactionOptions
+from firstcoder.session.pii import redact_pii
 
 SECRET_VALUE = "[REDACTED_SECRET]"
 PATH_VALUE = "[REDACTED_PATH]"
@@ -41,6 +42,9 @@ def redact_text(text: str, options: RedactionOptions | None = None) -> str:
         result = _redact_secrets(result)
     if resolved.redact_paths:
         result = _redact_paths(result)
+    # PII 放最后: 裸 sk- 密钥、手机号、身份证在 secret/path 清洗后的文本上再做一轮
+    if resolved.pii is not None:
+        result = redact_pii(result, resolved.pii)
     return result
 
 

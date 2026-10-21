@@ -161,6 +161,17 @@ Use `firstcoder --model provider/model` to choose the initial profile for a run.
 
 `task_boundary_classifier_model` is optional. When set, hidden task-boundary requests use that fixed model profile while the main agent and L4 compaction keep using the selected main profile. It may point to another model under the same provider, so it reuses that provider's API-key environment variable and base URL. Its `temperature` and request extensions are inherited, but its output remains capped at 512 tokens; provider/format failures still fall back to the existing conservative `uncertain` decision.
 
+### PII redaction
+
+Share/transcript exports rewrite PII in place before it leaves the workspace: rule-driven and fully local, with no external API calls. Three pattern families are covered: provider API keys (`sk-`, `sk-ant-`, `sk-proj-`, `gsk_`, `AIza`, `xai-`, `hf_`, ...), mainland China mobile numbers (`1[3-9]` ranges, optional `+86`/`0086` prefix), and 18-digit Chinese ID numbers (province code + 1900–2099 birth date + check digit, all validated). Legacy 15-digit IDs and non-Chinese numbers are deliberately out of scope.
+
+```toml
+pii_strategy = "mask"                   # mask | partial | off
+pii_surfaces = ["share", "transcript"]  # prompt / tool_output / im reserved
+```
+
+`mask` replaces the whole match with placeholders like `[REDACTED_PHONE]`; `partial` keeps head and tail (e.g. `139****5678`, `110105********002X`); `off` or `pii_surfaces = []` disables it. Without any configuration, `mask` applies to the share/transcript export surfaces by default.
+
 > A small detail for observant users: some provider/model combinations give the
 > TUI topbar a little more character.
 

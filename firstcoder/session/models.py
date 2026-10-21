@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 SessionStatus = Literal["ok", "empty", "corrupt"]
 ArchiveMode = Literal["placeholder", "preview_only"]
+PiiStrategy = Literal["mask", "partial", "off"]
 
 
 @dataclass(slots=True)
@@ -41,12 +42,24 @@ class SessionRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class PiiOptions:
+    """PII 脱敏配置: strategy 决定改写方式, surfaces 声明生效的导出表面。
+
+    本期只有 share/transcript 导出表面接线; prompt / tool_output / im 只是预留词表。
+    """
+
+    strategy: PiiStrategy | str = "mask"
+    surfaces: tuple[str, ...] = ("share", "transcript")
+
+
 @dataclass(slots=True)
 class RedactionOptions:
     """分享和预览文本的默认脱敏选项。"""
 
     redact_paths: bool = True
     redact_secrets: bool = True
+    pii: PiiOptions | None = None               # None = 不启用 PII 脱敏, 由服务层按配置注入
 
 
 @dataclass(slots=True)
@@ -64,6 +77,7 @@ class ShareOptions:
     redact_paths: bool = True                    # 脱敏本地绝对路径
     redact_secrets: bool = True                  # 脱敏密钥/token 等
     archive_mode: ArchiveMode | str = "placeholder"  # 已归档结果只给占位符; preview_only 才附带截断预览
+    pii: PiiOptions | None = None                # None = 沿用 SessionShareService 注入的配置
 
 
 @dataclass(slots=True)

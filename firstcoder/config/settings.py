@@ -16,8 +16,12 @@ import tomllib
 from dotenv import load_dotenv
 
 from firstcoder.config.models import ModelCatalog, build_model_catalog
+from firstcoder.session.models import PiiOptions
 
 PROJECT_CONFIG_NAME = "firstcoder.toml"
+
+# pii_surfaces 的合法词表; 本期只有 share/transcript 接线, 其余是预留表面
+_KNOWN_PII_SURFACES = frozenset({"share", "transcript", "prompt", "tool_output", "im"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +95,30 @@ class AppConfig:
             global_config=self.global_config,
             project_config=self.project_config,
         )
+
+    def pii_options(self) -> PiiOptions:
+        """读取顶层 `pii_strategy` / `pii_surfaces`, 项目配置覆盖全局配置。
+
+        未配置时默认 mask 策略作用于 share/transcript 导出; 显式 `pii_surfaces = []`
+        或 `pii_strategy = "off"` 可关闭。
+        """
+
+        strategy = self.get_config_value("pii_strategy", default="mask")
+        if strategy not in ("mask", "partial", "off"):
+            raise ValueError("pii_strategy 必须是 mask/partial/off 之一")
+        surfaces_raw: Any = None
+        for config in (self.project_config, self.global_config):
+            if config and "pii_surfaces" in config:
+                surfaces_raw = config["pii_surfaces"]
+                break
+        if surfaces_raw is None:
+            return PiiOptions(strategy=strategy)
+        if not isinstance(surfaces_raw, list) or not all(isinstance(item, str) for item in surfaces_raw):
+            raise ValueError("pii_surfaces 必须是字符串数组")
+        unknown = set(surfaces_raw) - _KNOWN_PII_SURFACES
+        if unknown:
+            raise ValueError(f"pii_surfaces 包含未知表面: {', '.join(sorted(unknown))}")
+        return PiiOptions(strategy=strategy, surfaces=tuple(surfaces_raw))
 
     @property
     def loaded_config_paths(self) -> list[Path]:
@@ -176,6 +204,10 @@ def render_default_config() -> str:
             'label = "GPT-5.5"',
             "context_window = 128000",
             "vision = true",
+            "",
+            "# PII 脱敏: 默认在 share/transcript 导出时以 mask 策略开启",
+            '# pii_strategy = "mask"  # mask | partial | off',
+            '# pii_surfaces = ["share", "transcript"]',
             "",
             "[permissions]",
             'mode = "ask"',

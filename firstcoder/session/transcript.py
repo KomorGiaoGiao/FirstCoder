@@ -38,6 +38,7 @@ class TranscriptBuilder:
         redaction = RedactionOptions(
             redact_paths=resolved.redact_paths,
             redact_secrets=resolved.redact_secrets,
+            pii=resolved.pii,
         )
         entries: list[TranscriptEntry] = []
         for event in self.store.list_events(session_id):

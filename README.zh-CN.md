@@ -160,6 +160,17 @@ label = "Yuren Luna（任务边界分类）"
 项目:  ./firstcoder.toml
 ```
 
+### PII 脱敏
+
+share/transcript 导出会默认在本地对 PII 就地改写：规则驱动、不调用外部 API，敏感数据在离开工作区之前被替换。覆盖三类模式：Provider API Key（`sk-`、`sk-ant-`、`sk-proj-`、`gsk_`、`AIza`、`xai-`、`hf_` 等格式）、中国大陆手机号（`1[3-9]` 号段，可选 `+86`/`0086` 前缀）、18 位身份证号（省份码 + 1900–2099 出生日期 + 校验位三重验证）。15 位旧身份证和其他国家号码刻意不在覆盖内。
+
+```toml
+pii_strategy = "mask"                   # mask | partial | off
+pii_surfaces = ["share", "transcript"]  # 预留 prompt / tool_output / im
+```
+
+`mask` 整体替换为 `[REDACTED_PHONE]` 等占位符；`partial` 保留头尾（如 `139****5678`、`110105********002X`）；`off` 或 `pii_surfaces = []` 关闭。未配置时默认以 `mask` 作用于 share/transcript 导出表面。
+
 > 给细心用户的小提示：某些 provider 与模型组合，会让 TUI 顶栏多一点个性。
 
 ## TUI

@@ -41,6 +41,7 @@ from firstcoder.providers.types import MainRequestOptions
 from firstcoder.session.bootstrap import SessionBootstrap
 from firstcoder.session.catalog import SessionCatalog
 from firstcoder.session.fork import ForkSessionService
+from firstcoder.session.models import PiiOptions
 from firstcoder.session.new import NewSessionService
 from firstcoder.session.resume import ResumeService
 from firstcoder.session.share import SessionShareService
@@ -273,7 +274,7 @@ def create_firstcoder_app(
         new_service=new_service,
         fork_service=fork_service,
         resume_service=resume_service,
-        share_service=SessionShareService(store),
+        share_service=SessionShareService(store, pii_options=_pii_for_export(resolved_app_config)),
         store=store,
         on_resume=current.set_session,
     )
@@ -424,6 +425,18 @@ def _main_request_options(profile: ModelProfile | None) -> MainRequestOptions:
         max_tokens=request.max_tokens,
         extra_body=request.extra_body,
     )
+
+
+def _pii_for_export(app_config: AppConfig) -> PiiOptions | None:
+    """share/transcript 导出表面的 PII 配置; 表面未启用或策略为 off 时返回 None。
+
+    transcript 与 share 共用同一条导出管线, 由 share 表面开关一并控制。
+    """
+
+    options = app_config.pii_options()
+    if options.strategy == "off" or "share" not in options.surfaces:
+        return None
+    return options
 
 
 def _initial_model_profile(

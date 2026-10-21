@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from firstcoder.utils.text import display_value, model_label
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from firstcoder.context.store import JsonlSessionStore
-from firstcoder.session.models import RedactionOptions, ShareOptions, Transcript, TranscriptEntry
+from firstcoder.session.models import PiiOptions, RedactionOptions, ShareOptions, Transcript, TranscriptEntry
 from firstcoder.session.redaction import redact_text
 from firstcoder.session.transcript import TranscriptBuilder
 
@@ -21,6 +21,8 @@ from firstcoder.session.transcript import TranscriptBuilder
 class SessionShareService:
     store: JsonlSessionStore
     transcript_builder: TranscriptBuilder | None = None
+    # 从应用配置注入的 PII 策略; 调用方未显式指定 ShareOptions.pii 时生效
+    pii_options: PiiOptions | None = None
 
     def export_markdown(
         self,
@@ -32,6 +34,8 @@ class SessionShareService:
         """导出流程: 事件日志 -> 只读 Transcript -> 渲染 Markdown -> 写盘, 全程不改源会话。"""
 
         resolved = options or ShareOptions()
+        if resolved.pii is None and self.pii_options is not None:
+            resolved = replace(resolved, pii=self.pii_options)
         builder = self.transcript_builder or TranscriptBuilder(self.store)
         transcript = builder.build(session_id, resolved)
         path = Path(output_path) if output_path is not None else self.store.root / "shares" / f"{session_id}.md"
@@ -44,7 +48,7 @@ def _render_markdown(transcript: Transcript, *, options: ShareOptions) -> str:
     # ShareOptions 默认保守: 不展开工具结果, archive 只给占位/预览; 标题, workspace 等
     # 元数据同样要过 redact_text, 因为标题往往就是用户输入, 可能含路径或密钥
     session = transcript.session
-    redaction = RedactionOptions(redact_paths=options.redact_paths, redact_secrets=options.redact_secrets)
+    redaction = RedactionOptions(redact_paths=options.redact_paths, redact_secrets=options.redact_secrets, pii=options.pii)
     title = redact_text(session.title, redaction)
     lines = [
         f"# {_clean_heading(title)}",
